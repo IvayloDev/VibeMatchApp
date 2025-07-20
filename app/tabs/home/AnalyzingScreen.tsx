@@ -18,7 +18,7 @@ type RootStackParamList = {
   // ...other routes
 };
 
-async function uploadImageAsync(localUri: string, userId: string) {
+async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
   // Read the file as a base64 string
   const file = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
   const filePath = `user-images/${userId || 'anonymous'}/${Date.now()}.jpg`;
@@ -27,22 +27,23 @@ async function uploadImageAsync(localUri: string, userId: string) {
   const byteArray = Uint8Array.from(atob(file), c => c.charCodeAt(0));
 
   // Upload to Supabase Storage
-  const { data, error } = await supabase.storage
-    .from('images') // your storage bucket name
+  const { error: uploadError } = await supabase.storage
+    .from('images')
     .upload(filePath, byteArray, {
       contentType: 'image/jpeg',
       upsert: true,
-      // Add this:
-      headers: {
-        Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1lYmp6d3d0dXp3Y3J3dWd4anZ1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI5Mzg2NDAsImV4cCI6MjA2ODUxNDY0MH0.x7GFKp-YC89d1Y-p9VNzDwfyOuWR34xd9b_t4ylFn6g',
-      },
     });
 
-  if (error) throw error;
+  if (uploadError) throw uploadError;
 
-  // Get the public URL
-  const { publicUrl } = supabase.storage.from('images').getPublicUrl(filePath).data;
-  return publicUrl;
+  // Get a signed URL (valid for 1 hour)
+  const { data, error: signedUrlError } = await supabase.storage
+    .from('images')
+    .createSignedUrl(filePath, 60 * 60);
+
+  if (signedUrlError) throw signedUrlError;
+
+  return data.signedUrl;
 }
 
 const AnalyzingScreen = () => {
@@ -58,23 +59,29 @@ const AnalyzingScreen = () => {
 
     const analyzePhoto = async () => {
       try {
-        // 1. Upload the local image to Supabase Storage
-        const publicUrl = await uploadImageAsync(image, userId || 'anonymous');
-        console.log('Uploaded image public URL:', publicUrl);
+        // 1. Upload the local image and get a signed URL
+        const signedUrl = await uploadImageAndGetSignedUrl(image, userId || 'anonymous');
+        console.log('Uploaded image signed URL:', signedUrl);
 
-        // 2. Call your Supabase Edge Function with the public URL
-        const payload = { imageUrl: publicUrl, genre: selectedGenre };
+        // 2. Call your Supabase Edge Function with the signed URL
+        const payload = { imageUrl: signedUrl, genre: selectedGenre };
         console.log('Calling Supabase Edge Function with:', payload);
+
+        const { data: { session } } = await supabase.auth.getSession();
+        const accessToken = session?.access_token;
 
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(accessToken && { 'Authorization': `Bearer ${accessToken}` }),
+          },
           body: JSON.stringify(payload),
         });
         const data = await response.json();
         console.log('Received response:', data);
 
-        navigation.navigate('Results', { image: publicUrl, songs: data.songs });
+        navigation.navigate('Results', { image: signedUrl, songs: data.songs });
       } catch (error) {
         console.log('Error during analysis:', error);
         navigation.navigate('Results', { image, songs: [] });
