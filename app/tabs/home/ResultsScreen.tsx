@@ -2,12 +2,29 @@ import React from 'react';
 import { View, StyleSheet, Image, ScrollView, Linking } from 'react-native';
 import { Text, Button, Card } from 'react-native-paper';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+type Song = {
+  title: string;
+  artist: string;
+  reason: string;
+  spotify_url?: string;
+};
+
+type ResultsParams = {
+  image: string;
+  songs: Song[];
+};
+
+type RootStackParamList = {
+  Dashboard: undefined;
+  // ...other routes
+};
 
 const ResultsScreen = () => {
   const route = useRoute();
-  const navigation = useNavigation();
-  // These would be passed from AnalyzingScreen after OpenAI/Spotify integration
-  const { image, songs = [] } = route.params || {};
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { image, songs = [] } = (route.params || {}) as ResultsParams;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -24,7 +41,7 @@ const ResultsScreen = () => {
                 onPress={() => Linking.openURL(song.spotify_url)}
                 style={{ marginTop: 8 }}
               >
-                Play Preview
+                Play on Spotify
               </Button>
             )}
           </Card.Content>
