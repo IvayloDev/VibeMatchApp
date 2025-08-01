@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, StyleSheet, Image } from 'react-native';
 import { Text, Button, RadioButton } from 'react-native-paper';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const genres = ['Pop', 'Rap', 'House', 'Rock', 'Jazz', 'Classical'];
 
@@ -13,7 +14,7 @@ const RecommendationTypeScreen = () => {
   const [selectedGenre, setSelectedGenre] = useState(genres[0]);
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       {image && <Image source={{ uri: image }} style={styles.imagePreview} />}
       <Text variant="titleLarge" style={{ marginBottom: 16 }}>
         How should we match the vibe?
@@ -34,7 +35,7 @@ const RecommendationTypeScreen = () => {
       }}>
         Next
       </Button>
-    </View>
+    </SafeAreaView>
   );
 };
 

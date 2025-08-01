@@ -5,6 +5,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { supabase } from '../../../lib/supabase'; // adjust path as needed
 import * as FileSystem from 'expo-file-system';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const statusMessages = [
   'Analyzing your photo...',
@@ -69,6 +70,7 @@ const AnalyzingScreen = () => {
 
         const { data: { session } } = await supabase.auth.getSession();
         const accessToken = session?.access_token;
+        const userId = session?.user?.id;
 
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
           method: 'POST',
@@ -80,6 +82,20 @@ const AnalyzingScreen = () => {
         });
         const data = await response.json();
         console.log('Received response:', data);
+
+        // Save to Supabase history table
+        if (userId && signedUrl && data.songs) {
+          const { error } = await supabase.from('history').insert([
+            {
+              user_id: userId,
+              image_url: signedUrl,
+              songs: data.songs,
+            },
+          ]);
+          if (error) {
+            console.error('Error saving history:', error);
+          }
+        }
 
         navigation.navigate('Results', { image: signedUrl, songs: data.songs });
       } catch (error) {
@@ -94,10 +110,10 @@ const AnalyzingScreen = () => {
   }, [navigation, image, selectedGenre, userId]);
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <ActivityIndicator animating size="large" />
       <Text style={styles.status}>{statusMessages[statusIndex]}</Text>
-    </View>
+    </SafeAreaView>
   );
 };
 
