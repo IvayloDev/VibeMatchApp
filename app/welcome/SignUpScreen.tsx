@@ -1,22 +1,29 @@
 import React from 'react';
-import { View, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView, Dimensions } from 'react-native';
 import { TextInput, Button, Text } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { supabase } from '../../lib/supabase';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
+import { Colors, Typography, Spacing, Layout } from '../../lib/designSystem';
+
+const { width, height } = Dimensions.get('window');
 
 // Define the navigation stack param list
- type RootStackParamList = {
-   Welcome: undefined;
-   SignUp: undefined;
-   SignIn: undefined;
- };
+type RootStackParamList = {
+  Welcome: undefined;
+  SignUp: undefined;
+  SignIn: undefined;
+  MainTabs: undefined;
+};
 
 const SignUpScreen = () => {
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [loading, setLoading] = React.useState(false);
+  const [socialLoading, setSocialLoading] = React.useState<'google' | 'apple' | null>(null);
 
   const handleSignUp = async () => {
     setLoading(true);
@@ -30,39 +37,340 @@ const SignUpScreen = () => {
     }
   };
 
+  const handleGoogleSignUp = async () => {
+    setSocialLoading('google');
+    try {
+      const result = await signInWithGoogle();
+      if (!result.success && result.error) {
+        Alert.alert('Google Sign-Up Error', result.error);
+      }
+      // Navigation is handled automatically by AuthContext on success
+    } catch (error) {
+      console.error('Google sign-up error:', error);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    }
+    setSocialLoading(null);
+  };
+
+  const handleAppleSignUp = async () => {
+    setSocialLoading('apple');
+    try {
+      const result = await signInWithApple();
+      if (!result.success && result.error) {
+        Alert.alert('Apple Sign-Up Error', result.error);
+      }
+      // Navigation is handled automatically by AuthContext on success
+    } catch (error) {
+      console.error('Apple sign-up error:', error);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    }
+    setSocialLoading(null);
+  };
+
   return (
     <View style={styles.container}>
-      <Text variant="titleLarge" style={{ marginBottom: 24 }}>Sign Up</Text>
-      <TextInput
-        label="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        style={styles.input}
-      />
-      <TextInput
-        label="Password"
-        value={password}
-        onChangeText={setPassword}
-        secureTextEntry
-        style={styles.input}
-      />
-      <Button mode="contained" onPress={handleSignUp} style={styles.button} loading={loading} disabled={loading}>
-        Sign Up
-      </Button>
-      <TouchableOpacity onPress={() => navigation.navigate('SignIn')} style={styles.linkContainer}>
-        <Text style={styles.linkText}>Already have an account? Sign In</Text>
-      </TouchableOpacity>
+      <LinearGradient
+        colors={['#0f3460', '#16213e', '#1a1a2e']}
+        locations={[0, 0.6, 1]}
+        style={styles.gradientBackground}
+      >
+        {/* Background decorative elements */}
+        <View style={styles.backgroundElements}>
+          <View style={[styles.circle, styles.circle1]} />
+          <View style={[styles.circle, styles.circle2]} />
+          <View style={[styles.circle, styles.circle3]} />
+          <View style={[styles.musicNote, styles.musicNote1]}>
+            <MaterialCommunityIcons name="music-note" size={24} color="rgba(100,200,255,0.15)" />
+          </View>
+          <View style={[styles.musicNote, styles.musicNote2]}>
+            <MaterialCommunityIcons name="music" size={32} color="rgba(100,200,255,0.1)" />
+          </View>
+          <View style={[styles.musicNote, styles.musicNote3]}>
+            <MaterialCommunityIcons name="music-note-eighth" size={20} color="rgba(100,200,255,0.18)" />
+          </View>
+        </View>
+        
+        <KeyboardAvoidingView 
+          style={styles.keyboardContainer} 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <ScrollView 
+            contentContainerStyle={styles.scrollContainer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.headerContainer}>
+              <Text variant="displaySmall" style={styles.title}>Create Account</Text>
+              <Text variant="bodyLarge" style={styles.subtitle}>Join the musical revolution</Text>
+            </View>
+      
+            <View style={styles.formContainer}>
+          <View style={styles.inputContainer}>
+            <TextInput
+              label="Email Address"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              style={styles.input}
+              mode="outlined"
+              left={<TextInput.Icon icon="email-outline" />}
+            />
+          </View>
+          <View style={styles.inputContainer}>
+            <TextInput
+              label="Password"
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              style={styles.input}
+              mode="outlined"
+              left={<TextInput.Icon icon="lock-outline" />}
+            />
+          </View>
+          <Button 
+            mode="contained" 
+            onPress={handleSignUp} 
+            style={styles.signUpButton} 
+            contentStyle={styles.buttonContent}
+            loading={loading} 
+            disabled={loading}
+          >
+            Create Account
+          </Button>
+        </View>
+
+        <View style={styles.dividerContainer}>
+          <View style={styles.divider} />
+          <Text style={styles.dividerText}>or</Text>
+          <View style={styles.divider} />
+        </View>
+
+        <View style={styles.socialButtonsContainer}>
+          <TouchableOpacity 
+            style={[styles.socialButton, styles.googleButton, socialLoading === 'google' && styles.socialButtonDisabled]} 
+            onPress={handleGoogleSignUp}
+            disabled={socialLoading !== null}
+          >
+            <View style={styles.socialIconContainer}>
+              {socialLoading === 'google' ? (
+                <MaterialCommunityIcons name="loading" size={22} color="#DB4437" />
+              ) : (
+                <MaterialCommunityIcons name="google" size={22} color="#DB4437" />
+              )}
+            </View>
+            <Text style={[styles.socialButtonText, styles.googleButtonText]}>
+              {socialLoading === 'google' ? 'Signing up...' : 'Continue with Google'}
+            </Text>
+          </TouchableOpacity>
+          
+          {Platform.OS === 'ios' && (
+            <TouchableOpacity 
+              style={[styles.socialButton, styles.appleButton, socialLoading === 'apple' && styles.socialButtonDisabled]} 
+              onPress={handleAppleSignUp}
+              disabled={socialLoading !== null}
+            >
+              <View style={styles.socialIconContainer}>
+                {socialLoading === 'apple' ? (
+                  <MaterialCommunityIcons name="loading" size={22} color="#FFFFFF" />
+                ) : (
+                  <MaterialCommunityIcons name="apple" size={22} color="#FFFFFF" />
+                )}
+              </View>
+              <Text style={[styles.socialButtonText, styles.appleButtonText]}>
+                {socialLoading === 'apple' ? 'Signing up...' : 'Continue with Apple'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+            <TouchableOpacity onPress={() => navigation.navigate('SignIn')} style={styles.linkContainer}>
+              <Text style={styles.linkText}>Already have an account? Sign In</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </LinearGradient>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24, backgroundColor: '#fff' },
-  input: { width: '100%', marginBottom: 16 },
-  button: { marginTop: 8, width: '100%' },
-  linkContainer: { marginTop: 16 },
-  linkText: { color: '#6200ee', textAlign: 'center' },
+  container: { 
+    flex: 1,
+  },
+  gradientBackground: {
+    flex: 1,
+    position: 'relative',
+  },
+  backgroundElements: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  circle: {
+    position: 'absolute',
+    borderRadius: 100,
+    backgroundColor: 'rgba(100,200,255,0.03)',
+  },
+  circle1: {
+    width: 200,
+    height: 200,
+    top: -50,
+    right: -50,
+  },
+  circle2: {
+    width: 150,
+    height: 150,
+    top: height * 0.3,
+    left: -75,
+  },
+  circle3: {
+    width: 100,
+    height: 100,
+    bottom: 100,
+    right: 50,
+  },
+  musicNote: {
+    position: 'absolute',
+  },
+  musicNote1: {
+    top: height * 0.15,
+    right: 80,
+  },
+  musicNote2: {
+    top: height * 0.7,
+    left: 40,
+  },
+  musicNote3: {
+    top: height * 0.45,
+    right: 30,
+  },
+  keyboardContainer: {
+    flex: 1,
+  },
+  scrollContainer: { 
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: Layout.screenPadding,
+    paddingTop: 80,
+    paddingBottom: 40,
+  },
+  headerContainer: {
+    marginBottom: Spacing.xl * 1.5,
+    alignItems: 'center',
+  },
+  title: { 
+    ...Typography.heading1,
+    fontSize: 32,
+    fontWeight: '700',
+    marginBottom: Spacing.sm,
+    textAlign: 'center',
+    color: '#FFFFFF',
+  },
+  subtitle: {
+    ...Typography.body,
+    fontSize: 16,
+    marginBottom: 0,
+    textAlign: 'center',
+    color: 'rgba(255,255,255,0.8)',
+    opacity: 0.9,
+  },
+  formContainer: {
+    marginBottom: Spacing.xl,
+  },
+  inputContainer: {
+    marginBottom: Spacing.md,
+  },
+  input: { 
+    backgroundColor: Colors.cardBackground,
+    borderRadius: 12,
+  },
+  signUpButton: { 
+    marginTop: Spacing.lg,
+    borderRadius: 12,
+    elevation: 2,
+    shadowColor: Colors.accent.blue,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  buttonContent: {
+    paddingVertical: Spacing.sm,
+  },
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: Spacing.xl,
+  },
+  divider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: Colors.border,
+    opacity: 0.3,
+  },
+  dividerText: {
+    ...Typography.caption,
+    marginHorizontal: Spacing.lg,
+    color: 'rgba(255,255,255,0.6)',
+    fontWeight: '500',
+  },
+  socialButtonsContainer: {
+    marginBottom: Spacing.xl,
+    gap: Spacing.md,
+  },
+  socialButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.md + 2,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: 12,
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  googleButton: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E8E8E8',
+  },
+  appleButton: {
+    backgroundColor: '#000000',
+    borderWidth: 0,
+  },
+  socialButtonDisabled: {
+    opacity: 0.6,
+  },
+  socialIconContainer: {
+    marginRight: Spacing.sm,
+  },
+  socialButtonText: {
+    ...Typography.body,
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  googleButtonText: {
+    color: '#1F1F1F',
+  },
+  appleButtonText: {
+    color: '#FFFFFF',
+  },
+  linkContainer: { 
+    marginTop: Spacing.lg,
+    alignItems: 'center',
+    paddingVertical: Spacing.sm,
+  },
+  linkText: { 
+    ...Typography.body,
+    color: Colors.accent.blue,
+    textAlign: 'center',
+    fontWeight: '600',
+    fontSize: 16,
+  },
 });
 
 export default SignUpScreen; 

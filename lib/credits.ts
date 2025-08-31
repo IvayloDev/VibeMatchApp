@@ -1,5 +1,5 @@
-import { supabase } from './supabase';
-import * as InAppPurchases from 'expo-in-app-purchases';
+import { supabase, isRefreshTokenError, handleAuthError } from './supabase';
+// import * as InAppPurchases from 'expo-in-app-purchases';
 
 export interface CreditPackage {
   id: string;
@@ -22,7 +22,14 @@ export const FIRST_ANALYSIS_FREE = true;
 // Get user's current credits
 export async function getUserCredits(): Promise<number> {
   try {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError) {
+      console.error('Auth error getting user:', userError);
+      if (isRefreshTokenError(userError)) {
+        await handleAuthError(userError);
+      }
+      return 0;
+    }
     if (!user) return 0;
 
     const { data, error } = await supabase
@@ -39,6 +46,9 @@ export async function getUserCredits(): Promise<number> {
     return data?.credits || FREE_CREDITS_ON_SIGNUP; // Default to free credits for new users
   } catch (error) {
     console.error('Error getting user credits:', error);
+    if (isRefreshTokenError(error)) {
+      await handleAuthError(error);
+    }
     return FREE_CREDITS_ON_SIGNUP;
   }
 }
@@ -46,11 +56,18 @@ export async function getUserCredits(): Promise<number> {
 // Update user's credits
 export async function updateUserCredits(newCredits: number): Promise<boolean> {
   try {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError) {
+      console.error('Auth error getting user for credit update:', userError);
+      if (isRefreshTokenError(userError)) {
+        await handleAuthError(userError);
+      }
+      return false;
+    }
     if (!user) return false;
 
     const { error } = await supabase.rpc('update_user_credits', {
-      user_id: user.id,
+      user_id_param: user.id,
       new_credits: newCredits
     });
 
@@ -62,6 +79,9 @@ export async function updateUserCredits(newCredits: number): Promise<boolean> {
     return true;
   } catch (error) {
     console.error('Error updating user credits:', error);
+    if (isRefreshTokenError(error)) {
+      await handleAuthError(error);
+    }
     return false;
   }
 }
@@ -82,12 +102,23 @@ export async function deductCredits(amount: number = 1): Promise<boolean> {
   }
 }
 
-// Purchase credits
+// Purchase credits (temporarily disabled for development)
 export async function purchaseCredits(packageId: string): Promise<boolean> {
   try {
     const package_ = creditPackages.find(p => p.id === packageId);
     if (!package_) return false;
 
+    // Temporarily simulate successful purchase for development
+    console.log('Simulating purchase of', package_.credits, 'credits');
+    
+    // Add credits without actual payment
+    const currentCredits = await getUserCredits();
+    const success = await updateUserCredits(currentCredits + package_.credits);
+    
+    return success;
+
+    // TODO: Uncomment when ready for production
+    /*
     // Initialize in-app purchases
     await InAppPurchases.connectAsync();
 
@@ -106,6 +137,7 @@ export async function purchaseCredits(packageId: string): Promise<boolean> {
     }
 
     return false;
+    */
   } catch (error) {
     console.error('Error purchasing credits:', error);
     return false;

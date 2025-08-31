@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Alert } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView } from 'react-native';
 import { Text, Button, Card, IconButton, ActivityIndicator, Badge } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { creditPackages, purchaseCredits, FREE_CREDITS_ON_SIGNUP } from '../../lib/credits';
+import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 
 const PaymentScreen = () => {
   const navigation = useNavigation();
@@ -15,6 +16,7 @@ const PaymentScreen = () => {
       const success = await purchaseCredits(packageId);
       if (success) {
         Alert.alert('Success', 'Credits purchased successfully!');
+        // Navigate back to refresh the parent screen
         navigation.goBack();
       } else {
         Alert.alert('Error', 'Failed to purchase credits. Please try again.');
@@ -27,7 +29,7 @@ const PaymentScreen = () => {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
       {/* Header */}
       <View style={styles.header}>
         <IconButton
@@ -39,49 +41,51 @@ const PaymentScreen = () => {
         <View style={{ width: 48 }} />
       </View>
       
-      <View style={styles.container}>
-        <Text variant="titleMedium" style={styles.subtitle}>
-          New users get {FREE_CREDITS_ON_SIGNUP} free credits!
-        </Text>
-        
-        {creditPackages.map((pkg) => (
-          <Card 
-            key={pkg.id} 
-            style={[
-              styles.card, 
-              pkg.id === '3' && styles.bestValueCard
-            ]}
-          >
-            <Card.Content>
-              <View style={styles.cardHeader}>
-                <Text variant="titleMedium" style={{ marginBottom: 8 }}>
-                  {pkg.credits} Credits
+      <ScrollView contentContainerStyle={styles.scrollContainer}>
+        <View style={styles.container}>
+          <Text variant="titleMedium" style={styles.subtitle}>
+            New users get {FREE_CREDITS_ON_SIGNUP} free credits!
+          </Text>
+          
+          {creditPackages.map((pkg) => (
+            <Card 
+              key={pkg.id} 
+              style={[
+                styles.card, 
+                pkg.id === '3' && styles.bestValueCard
+              ]}
+            >
+              <Card.Content>
+                <View style={styles.cardHeader}>
+                  <Text variant="titleMedium" style={{ marginBottom: 8 }}>
+                    {pkg.credits} Credits
+                  </Text>
+                  {pkg.id === '3' && (
+                    <Badge style={styles.bestValueBadge}>BEST VALUE</Badge>
+                  )}
+                </View>
+                <Text variant="titleLarge" style={{ marginBottom: 16, color: '#007AFF' }}>
+                  {pkg.price}
                 </Text>
                 {pkg.id === '3' && (
-                  <Badge style={styles.bestValueBadge}>BEST VALUE</Badge>
+                  <Text style={styles.savingsText}>
+                    Save 20% vs smaller packages!
+                  </Text>
                 )}
-              </View>
-              <Text variant="titleLarge" style={{ marginBottom: 16, color: '#007AFF' }}>
-                {pkg.price}
-              </Text>
-              {pkg.id === '3' && (
-                <Text style={styles.savingsText}>
-                  Save 20% vs smaller packages!
-                </Text>
-              )}
-              <Button 
-                mode="contained" 
-                onPress={() => handlePurchase(pkg.id)}
-                disabled={loading === pkg.id}
-                loading={loading === pkg.id}
-                style={pkg.id === '3' ? styles.bestValueButton : undefined}
-              >
-                {loading === pkg.id ? 'Purchasing...' : 'Buy Now'}
-              </Button>
-            </Card.Content>
-          </Card>
-        ))}
-      </View>
+                <Button 
+                  mode="contained" 
+                  onPress={() => handlePurchase(pkg.id)}
+                  disabled={loading === pkg.id}
+                  loading={loading === pkg.id}
+                  style={pkg.id === '3' ? styles.bestValueButton : undefined}
+                >
+                  {loading === pkg.id ? 'Purchasing...' : 'Buy Now'}
+                </Button>
+              </Card.Content>
+            </Card>
+          ))}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 };
@@ -94,24 +98,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: Colors.border,
   },
   headerTitle: {
     flex: 1,
     textAlign: 'center',
     fontWeight: 'bold',
   },
-  container: { flex: 1, alignItems: 'center', padding: 24, backgroundColor: '#fff' },
+  scrollContainer: {
+    flexGrow: 1,
+  },
+  container: { flex: 1, alignItems: 'center', padding: 24, backgroundColor: Colors.background },
   subtitle: {
     marginBottom: 24,
     textAlign: 'center',
-    color: '#666',
+    color: Colors.textSecondary,
   },
   card: { width: '100%', marginBottom: 16 },
   bestValueCard: {
     borderWidth: 2,
-    borderColor: '#007AFF',
-    backgroundColor: '#f8f9ff',
+    borderColor: Colors.accent.blue,
+    backgroundColor: Colors.accent.blue + '20',
   },
   cardHeader: {
     flexDirection: 'row',
