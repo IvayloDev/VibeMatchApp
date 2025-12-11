@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -14,9 +14,24 @@ type RootStackParamList = {
   SignIn: undefined;
 };
 
+const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy/';
+
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { width } = Dimensions.get('window');
+  
+  const handlePrivacyPolicyPress = async () => {
+    try {
+      const supported = await Linking.canOpenURL(PRIVACY_POLICY_URL);
+      if (supported) {
+        await Linking.openURL(PRIVACY_POLICY_URL);
+      } else {
+        console.error("Don't know how to open URI: " + PRIVACY_POLICY_URL);
+      }
+    } catch (error) {
+      console.error('Error opening privacy policy:', error);
+    }
+  };
   
   return (
     <SafeAreaView style={styles.container}>
@@ -68,7 +83,10 @@ const WelcomeScreen = () => {
           
           <Text style={styles.termsText}>
             By using VibeMatch, you agree to our{'\n'}
-            <Text style={styles.linkText}>Terms of Service</Text> and <Text style={styles.linkText}>Privacy Policy</Text>
+            <Text style={styles.linkText}>Terms of Service</Text> and{' '}
+            <Text style={styles.linkText} onPress={handlePrivacyPolicyPress}>
+              Privacy Policy
+            </Text>
           </Text>
         </View>
       </View>

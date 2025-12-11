@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, Linking, TouchableOpacity, Alert, Animated, Dimensions, Modal } from 'react-native';
+import { View, StyleSheet, Image, Linking, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator } from 'react-native';
 import { Text, Card } from 'react-native-paper';
 import { useRoute, useNavigation } from '@react-navigation/native';
+import type { CompositeNavigationProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { getImageSignedUrl } from '../../../lib/supabase';
 import { supabase } from '../../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/designSystem';
+import { triggerHaptic } from '../../../lib/utils/haptics';
+import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 
 type Song = {
   title: string;
@@ -20,27 +25,75 @@ type ResultsParams = {
   image: string; // This can be either a file path or signed URL
   songs: Song[];
   historyItemId?: string; // Optional history item ID for deletion
+  imagePath?: string; // Original storage path for refreshing signed URLs
 };
+
+type TabParamList = {
+  Home: undefined;
+  History: undefined;
+  Profile: undefined;
+};
+
+type HistoryStackParamList = {
+  History: undefined;
+  HistoryResults: ResultsParams;
+};
+
+type ResultsNavigationProp = CompositeNavigationProp<
+  NativeStackNavigationProp<any>,
+  CompositeNavigationProp<
+    BottomTabNavigationProp<TabParamList>,
+    NativeStackNavigationProp<HistoryStackParamList>
+  >
+>;
 
 const ResultsScreen = () => {
   const route = useRoute();
-  const navigation = useNavigation();
+  const navigation = useNavigation<ResultsNavigationProp>();
   const insets = useSafeAreaInsets();
-  const { image, songs = [], historyItemId } = (route.params || {}) as ResultsParams;
+  const { image, songs = [], historyItemId, imagePath } = (route.params || {}) as ResultsParams;
   const [imageUrl, setImageUrl] = useState<string>(image);
   const [showAnimation, setShowAnimation] = useState(!historyItemId); // Only animate for new results, not history
   const [showMatchCards, setShowMatchCards] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const [imageModalVisible, setImageModalVisible] = useState(false);
+  const [modalImageSize, setModalImageSize] = useState<{ width: number; height: number } | null>(null);
   
   // Animation values
   const matchTextOpacity = useRef(new Animated.Value(0)).current;
   const matchTextScale = useRef(new Animated.Value(0.3)).current;
+  const matchTextRotation = useRef(new Animated.Value(0)).current;
+  const glowOpacity = useRef(new Animated.Value(0)).current;
+  const glowScale = useRef(new Animated.Value(0.5)).current;
+  const ring1Scale = useRef(new Animated.Value(0)).current;
+  const ring1Opacity = useRef(new Animated.Value(0)).current;
+  const ring2Scale = useRef(new Animated.Value(0)).current;
+  const ring2Opacity = useRef(new Animated.Value(0)).current;
+  const ring3Scale = useRef(new Animated.Value(0)).current;
+  const ring3Opacity = useRef(new Animated.Value(0)).current;
+  // Removed particle animations to avoid React Native tracking errors
+  // Using simpler visual effects instead
+  
+  // Simplified emoji animations - individual refs to avoid tracking errors
+  const emoji1Scale = useRef(new Animated.Value(0)).current;
+  const emoji1Rotation = useRef(new Animated.Value(0)).current;
+  const emoji2Scale = useRef(new Animated.Value(0)).current;
+  const emoji2Rotation = useRef(new Animated.Value(0)).current;
+  const emoji3Scale = useRef(new Animated.Value(0)).current;
+  const emoji3Rotation = useRef(new Animated.Value(0)).current;
+  const backgroundPulse = useRef(new Animated.Value(0)).current;
+  const overlayOpacity = useRef(new Animated.Value(showAnimation ? 1 : 0)).current;
   const imageScale = useRef(new Animated.Value(showAnimation ? 1.5 : 1)).current;
   const imagePosition = useRef(new Animated.ValueXY(showAnimation ? { x: 0, y: 0 } : { x: 0, y: 0 })).current;
   const contentOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
   const mainSongOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
   const alternativesOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
+  
+  // Staggered animations for alternative songs (max 2 alternatives)
+  const alternativeAnimations = useRef([
+    { opacity: new Animated.Value(0), translateX: new Animated.Value(50) },
+    { opacity: new Animated.Value(0), translateX: new Animated.Value(50) },
+  ]).current;
   
   // Tinder-style match card animations
   const userCardPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -53,22 +106,142 @@ const ResultsScreen = () => {
 
   console.log('ResultsScreen params:', { image, songsCount: songs?.length, historyItemId, showAnimation });
 
+  const storageImagePath = imagePath || (image && !image.startsWith('http') ? image : undefined);
+
   useEffect(() => {
-    // Check if the image is a file path (doesn't start with http)
-    if (image && !image.startsWith('http')) {
-      // It's a file path, generate a fresh signed URL
-      getImageSignedUrl(image).then(signedUrl => {
-        if (signedUrl) {
-          setImageUrl(signedUrl);
+    let isMounted = true;
+
+    const loadImage = async () => {
+      if (storageImagePath) {
+        try {
+          const signedUrl = await getImageSignedUrl(storageImagePath);
+          if (signedUrl && isMounted) {
+            setImageUrl(signedUrl);
+          }
+        } catch (error) {
+          console.error('Error fetching signed image URL:', error);
         }
-      });
+      } else {
+        setImageUrl(image);
+      }
+    };
+
+    loadImage();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [image, storageImagePath]);
+
+  useEffect(() => {
+    if (!imageUrl) {
+      setModalImageSize(null);
+      return;
     }
-  }, [image]);
+
+    Image.getSize(
+      imageUrl,
+      (width, height) => {
+        const window = Dimensions.get('window');
+        const maxWidth = Math.max(window.width - Spacing.lg * 2, 200);
+        const maxHeight = Math.max(window.height - (insets.top + insets.bottom + 120), 200);
+
+        let displayWidth = maxWidth;
+        let displayHeight = (height / width) * displayWidth;
+
+        if (displayHeight > maxHeight) {
+          displayHeight = maxHeight;
+          displayWidth = (width / height) * displayHeight;
+        }
+
+        setModalImageSize({ width: displayWidth, height: displayHeight });
+      },
+      (error) => {
+        console.error('Error getting image size:', error);
+        const window = Dimensions.get('window');
+        setModalImageSize({
+          width: Math.max(window.width - Spacing.lg * 2, 200),
+          height: Math.max(window.height - (insets.top + insets.bottom + 120), 200),
+        });
+      }
+    );
+  }, [imageUrl, insets.bottom, insets.top]);
 
   // Animation sequence
   useEffect(() => {
     if (showAnimation && songs.length > 0) {
-      // Step 1: Show "It's a Match!" text (delay to let screen settle)
+      // Step 1: Initial pulse and glow (delay to let screen settle)
+      setTimeout(() => {
+        // Background pulse animation (continuous)
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(backgroundPulse, {
+              toValue: 1,
+              duration: 2000,
+              useNativeDriver: true,
+            }),
+            Animated.timing(backgroundPulse, {
+              toValue: 0,
+              duration: 2000,
+              useNativeDriver: true,
+            }),
+          ])
+        ).start();
+
+        // Glow effect
+        Animated.parallel([
+          Animated.timing(glowOpacity, {
+            toValue: 1,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+          Animated.spring(glowScale, {
+            toValue: 1.2,
+            tension: 50,
+            friction: 7,
+            useNativeDriver: true,
+          }),
+        ]).start();
+
+        // Rotating rings animation
+        const createRingAnimation = (scale: Animated.Value, opacity: Animated.Value, delay: number) => {
+          setTimeout(() => {
+            Animated.parallel([
+              Animated.spring(scale, {
+                toValue: 2.5,
+                tension: 30,
+                friction: 8,
+                useNativeDriver: true,
+              }),
+              Animated.sequence([
+                Animated.timing(opacity, {
+                  toValue: 0.6,
+                  duration: 400,
+                  useNativeDriver: true,
+                }),
+                Animated.timing(opacity, {
+                  toValue: 0,
+                  duration: 1000,
+                  useNativeDriver: true,
+                }),
+              ]),
+            ]).start();
+          }, delay);
+        };
+
+        createRingAnimation(ring1Scale, ring1Opacity, 0);
+        createRingAnimation(ring2Scale, ring2Opacity, 200);
+        createRingAnimation(ring3Scale, ring3Opacity, 400);
+
+        // Particle effects removed to avoid React Native tracking errors
+
+        // Haptic feedback sequence
+        triggerHaptic('success');
+        setTimeout(() => triggerHaptic('medium'), 200);
+        setTimeout(() => triggerHaptic('light'), 400);
+      }, 300);
+
+      // Step 2: Show "It's a Match!" text with dramatic entrance
       setTimeout(() => {
         Animated.parallel([
           Animated.timing(matchTextOpacity, {
@@ -82,16 +255,101 @@ const ResultsScreen = () => {
             friction: 8,
             useNativeDriver: true,
           }),
+          Animated.sequence([
+            Animated.timing(matchTextRotation, {
+              toValue: 1,
+              duration: 400,
+              useNativeDriver: true,
+            }),
+            Animated.timing(matchTextRotation, {
+              toValue: 0,
+              duration: 400,
+              useNativeDriver: true,
+            }),
+          ]),
         ]).start();
-      }, 300);
 
-      // Step 2: Hide match text and animate image to position (after 2 seconds)
+        // Continuous pulsing glow
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(glowScale, {
+              toValue: 1.3,
+              duration: 1000,
+              useNativeDriver: true,
+            }),
+            Animated.timing(glowScale, {
+              toValue: 1.1,
+              duration: 1000,
+              useNativeDriver: true,
+            }),
+          ])
+        ).start();
+
+        // Animate emojis with bounce - using individual refs to avoid tracking errors
+        const animateEmoji = (scale: Animated.Value, rotation: Animated.Value, delay: number) => {
+          setTimeout(() => {
+            Animated.parallel([
+              Animated.spring(scale, {
+                toValue: 1,
+                tension: 100,
+                friction: 6,
+                useNativeDriver: true,
+              }),
+              Animated.sequence([
+                Animated.timing(rotation, {
+                  toValue: 1,
+                  duration: 300,
+                  useNativeDriver: true,
+                }),
+                Animated.timing(rotation, {
+                  toValue: 0,
+                  duration: 300,
+                  useNativeDriver: true,
+                }),
+              ]),
+            ]).start();
+
+            // Continuous bounce animation
+            Animated.loop(
+              Animated.sequence([
+                Animated.timing(scale, {
+                  toValue: 1.2,
+                  duration: 800,
+                  useNativeDriver: true,
+                }),
+                Animated.timing(scale, {
+                  toValue: 1,
+                  duration: 800,
+                  useNativeDriver: true,
+                }),
+              ])
+            ).start();
+          }, delay);
+        };
+
+        animateEmoji(emoji1Scale, emoji1Rotation, 800);
+        animateEmoji(emoji2Scale, emoji2Rotation, 950);
+        animateEmoji(emoji3Scale, emoji3Rotation, 1100);
+      }, 500);
+
+      // Step 3: Hide match text, fade out overlay, and animate image to position (after 3 seconds)
       setTimeout(() => {
         Animated.parallel([
-          // Hide match text
+          // Hide match text and effects
           Animated.timing(matchTextOpacity, {
             toValue: 0,
             duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(glowOpacity, {
+            toValue: 0,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          // Fade out the entire overlay
+          Animated.timing(overlayOpacity, {
+            toValue: 0,
+            duration: 600,
             useNativeDriver: true,
           }),
           // Move and scale image to final position
@@ -105,10 +363,13 @@ const ResultsScreen = () => {
             duration: 800,
             useNativeDriver: true,
           }),
-        ]).start();
-      }, 2500);
+        ]).start(() => {
+          // Remove overlay from DOM after fade-out completes
+          setShowAnimation(false);
+        });
+      }, 3500);
 
-      // Step 3: Show content with staggered animations (after image settles)
+      // Step 4: Show content with staggered animations (after image settles)
       setTimeout(() => {
         // Show main content
         Animated.timing(contentOpacity, {
@@ -126,20 +387,56 @@ const ResultsScreen = () => {
           }).start();
         }, 200);
 
-        // Staggered reveal of alternatives
+        // Staggered reveal of alternatives with slide-in
         setTimeout(() => {
           Animated.timing(alternativesOpacity, {
             toValue: 1,
             duration: 600,
             useNativeDriver: true,
           }).start();
+          
+          // Animate each alternative song card individually
+          alternativeAnimations.forEach((anim, index) => {
+            setTimeout(() => {
+              Animated.parallel([
+                Animated.timing(anim.opacity, {
+                  toValue: 1,
+                  duration: 500,
+                  useNativeDriver: true,
+                }),
+                Animated.spring(anim.translateX, {
+                  toValue: 0,
+                  tension: 50,
+                  friction: 7,
+                  useNativeDriver: true,
+                }),
+              ]).start();
+            }, index * 150);
+          });
         }, 500);
-      }, 3500);
+      }, 4500);
+    } else {
+      // If no animation, show alternatives immediately
+      alternativeAnimations.forEach((anim) => {
+        anim.opacity.setValue(1);
+        anim.translateX.setValue(0);
+      });
     }
   }, [showAnimation, songs.length]);
 
   const handleBackPress = () => {
-    navigation.goBack();
+    triggerHaptic('light');
+    // Check if we're in HistoryResults (History stack) or Results (Home stack)
+    const routeName = route.name;
+    
+    if (routeName === 'HistoryResults') {
+      // If we're in HistoryResults, navigate to History list
+      // This ensures we always go back to History, not Analyzing
+      navigation.navigate('History', { screen: 'History' });
+    } else {
+      // If we're in Results (Home stack), just go back normally
+      navigation.goBack();
+    }
   };
 
   const handleContinueToResults = () => {
@@ -185,9 +482,21 @@ const ResultsScreen = () => {
     });
   };
 
-  const handleImagePress = () => {
+  const handleImagePress = React.useCallback(() => {
     setImageModalVisible(true);
-  };
+
+    if (storageImagePath) {
+      getImageSignedUrl(storageImagePath)
+        .then((refreshedUrl) => {
+          if (refreshedUrl) {
+            setImageUrl(refreshedUrl);
+          }
+        })
+        .catch((error) => {
+          console.error('Error refreshing image URL:', error);
+        });
+    }
+  }, [storageImagePath]);
 
   const closeImageModal = () => {
     setImageModalVisible(false);
@@ -226,30 +535,41 @@ const ResultsScreen = () => {
               // First, let's check if the item exists and belongs to this user
               const { data: existingItem, error: fetchError } = await supabase
                 .from('history')
-                .select('*')
+                .select('id, user_id, image_url')
                 .eq('id', historyItemId)
-                .eq('user_id', session.user.id)
                 .single();
 
-              console.log('Existing item check:', { existingItem, fetchError });
+              console.log('Existing item check:', { 
+                existingItem, 
+                fetchError,
+                itemUserId: existingItem?.user_id,
+                currentUserId: session.user.id,
+                userIdsMatch: existingItem?.user_id === session.user.id
+              });
 
               if (fetchError || !existingItem) {
-                console.error('Item not found or does not belong to user');
-                Alert.alert('Error', 'Item not found or you do not have permission to delete it.');
+                console.error('Item not found:', fetchError);
+                Alert.alert('Error', 'Item not found.');
                 return;
               }
 
-              console.log('Item found, proceeding with delete');
-              
-              // Delete from Supabase
-              const { error, data } = await supabase
-                .from('history')
-                .delete()
-                .eq('id', historyItemId)
-                .eq('user_id', session.user.id) // Also check user_id for security
-                .select();
+              // Verify the item belongs to the current user
+              if (existingItem.user_id !== session.user.id) {
+                console.error('Item does not belong to current user. Item user_id:', existingItem.user_id, 'Current user_id:', session.user.id);
+                Alert.alert('Error', 'You do not have permission to delete this item.');
+                return;
+              }
 
-              console.log('Delete response:', { error, data });
+              console.log('Item found and verified, proceeding with delete...');
+              
+              // Delete from Supabase - only using id since we already verified ownership
+              const { error, count } = await supabase
+                .from('history')
+                .delete({ count: 'exact' })
+                .eq('id', historyItemId)
+                .eq('user_id', session.user.id);
+
+              console.log('Delete response:', { error, count, historyItemId });
 
               if (error) {
                 console.error('Error deleting history item:', error);
@@ -257,15 +577,19 @@ const ResultsScreen = () => {
                 return;
               }
 
-              if (!data || data.length === 0) {
-                console.log('No rows deleted - item may not exist or belong to user');
-                Alert.alert('Error', 'Item not found or you do not have permission to delete it.');
+              // Check if any rows were actually deleted
+              if (count !== null && count === 0) {
+                console.error('Delete returned 0 rows - RLS policy may be blocking deletion');
+                Alert.alert('Error', 'Failed to delete item. This may be a permissions issue.');
                 return;
               }
 
-              console.log('Item deleted successfully');
-              Alert.alert('Success', 'Item deleted successfully.');
-              // Navigate back to history
+              console.log('Item deleted successfully. Rows deleted:', count);
+              
+              // Small delay to ensure database consistency
+              await new Promise(resolve => setTimeout(resolve, 300));
+              
+              // Navigate back immediately - the useFocusEffect will refresh the list
               navigation.goBack();
             } catch (error) {
               console.error('Error deleting history item:', error);
@@ -293,21 +617,154 @@ const ResultsScreen = () => {
       </View>
       
       <View style={styles.container}>
-                 {/* "It's a Match!" Overlay */}
-         {showAnimation && (
-           <Animated.View 
-             style={[
-               styles.matchOverlay,
-               {
-                 opacity: matchTextOpacity,
-                 transform: [{ scale: matchTextScale }],
-               }
-             ]}
-           >
-             <Text style={styles.matchText}>It's a Match! 🎉</Text>
-             <Text style={styles.matchSubtext}>Perfect song found for your vibe</Text>
-           </Animated.View>
-         )}
+        {/* "It's a Match!" Overlay with Enhanced Effects */}
+        {showAnimation && (
+          <Animated.View 
+            style={[
+              styles.matchOverlay,
+              {
+                opacity: overlayOpacity,
+              }
+            ]}
+          >
+            {/* Pulsing Background Gradient */}
+            <Animated.View
+              style={[
+                styles.matchBackgroundGradient,
+                {
+                  opacity: backgroundPulse.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.3, 0.5],
+                  }),
+                }
+              ]}
+            >
+              <LinearGradient
+                colors={[Colors.accent.blue + '20', Colors.accent.coral + '15', Colors.accent.yellow + '10', 'transparent']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+            </Animated.View>
+
+            {/* Expanding Rings */}
+            <Animated.View
+              style={[
+                styles.expandingRing,
+                {
+                  transform: [{ scale: ring1Scale }],
+                  opacity: ring1Opacity,
+                }
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.expandingRing,
+                {
+                  transform: [{ scale: ring2Scale }],
+                  opacity: ring2Opacity,
+                }
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.expandingRing,
+                {
+                  transform: [{ scale: ring3Scale }],
+                  opacity: ring3Opacity,
+                }
+              ]}
+            />
+
+            {/* Particle effects removed - using rings and glow instead for better performance */}
+
+            {/* Glow Effect */}
+            <Animated.View
+              style={[
+                styles.glowEffect,
+                {
+                  opacity: glowOpacity,
+                  transform: [{ scale: glowScale }],
+                }
+              ]}
+            />
+
+            {/* Main Match Text */}
+            <Animated.View
+              style={{
+                opacity: matchTextOpacity,
+                transform: [
+                  { scale: matchTextScale },
+                  {
+                    rotate: matchTextRotation.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['-5deg', '5deg'],
+                    }),
+                  },
+                ],
+              }}
+            >
+              <Text style={styles.matchText}>It's a Match! 🎉</Text>
+              <Text style={styles.matchSubtext}>Perfect song found for your vibe</Text>
+              <View style={styles.matchEmojiContainer}>
+                <Animated.Text
+                  style={[
+                    styles.matchEmoji,
+                    {
+                      transform: [
+                        { scale: emoji1Scale },
+                        {
+                          rotate: emoji1Rotation.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['-15deg', '15deg'],
+                          }),
+                        },
+                      ],
+                    }
+                  ]}
+                >
+                  🎵
+                </Animated.Text>
+                <Animated.Text
+                  style={[
+                    styles.matchEmoji,
+                    {
+                      transform: [
+                        { scale: emoji2Scale },
+                        {
+                          rotate: emoji2Rotation.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['-15deg', '15deg'],
+                          }),
+                        },
+                      ],
+                    }
+                  ]}
+                >
+                  ✨
+                </Animated.Text>
+                <Animated.Text
+                  style={[
+                    styles.matchEmoji,
+                    {
+                      transform: [
+                        { scale: emoji3Scale },
+                        {
+                          rotate: emoji3Rotation.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ['-15deg', '15deg'],
+                          }),
+                        },
+                      ],
+                    }
+                  ]}
+                >
+                  🔥
+                </Animated.Text>
+              </View>
+            </Animated.View>
+          </Animated.View>
+        )}
 
          {/* Tinder-Style Match Cards */}
          {showMatchCards && (
@@ -473,8 +930,19 @@ const ResultsScreen = () => {
           >
             <Text style={styles.alternativesLabel}>ALTERNATIVES</Text>
             <View style={styles.alternativesList}>
-              {songs.slice(1, 3).map((song, idx) => (
-                <View key={idx} style={styles.alternativeItem}>
+              {songs.slice(1, 3).map((song, idx) => {
+                const anim = alternativeAnimations[idx] || { opacity: new Animated.Value(1), translateX: new Animated.Value(0) };
+                return (
+                <Animated.View 
+                  key={idx} 
+                  style={[
+                    styles.alternativeItem,
+                    {
+                      opacity: anim.opacity,
+                      transform: [{ translateX: anim.translateX }],
+                    }
+                  ]}
+                >
                   <View style={styles.alternativeInfo}>
                     <Text style={styles.alternativeTitle} numberOfLines={1}>
                       {song.title}
@@ -494,8 +962,9 @@ const ResultsScreen = () => {
                       <MaterialCommunityIcons name="spotify" size={14} color={Colors.accent.green} />
                     </TouchableOpacity>
                   )}
-                </View>
-              ))}
+                </Animated.View>
+              );
+              })}
             </View>
           </Animated.View>
         </Animated.View>
@@ -525,12 +994,14 @@ const ResultsScreen = () => {
 
               {/* Full-Screen Image */}
               <View style={styles.fullImageContainer}>
-                {imageUrl && (
+                {imageUrl && modalImageSize ? (
                   <Image
                     source={{ uri: imageUrl }}
-                    style={styles.fullImage}
+                    style={[styles.fullImage, modalImageSize]}
                     resizeMode="contain"
                   />
+                ) : (
+                  <ActivityIndicator size="large" color={Colors.accent.blue} />
                 )}
               </View>
 
@@ -549,8 +1020,8 @@ const ResultsScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
+  container: {
+    flex: 1,
     backgroundColor: Colors.background,
   },
   
@@ -563,26 +1034,63 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: Colors.background + 'F0',
+    backgroundColor: Colors.background,
     zIndex: 1000,
+    overflow: 'hidden',
+  },
+  matchBackgroundGradient: {
+    position: 'absolute',
+    top: -100,
+    left: -100,
+    right: -100,
+    bottom: -100,
+  },
+  expandingRing: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 3,
+    borderColor: Colors.accent.blue,
+  },
+  glowEffect: {
+    position: 'absolute',
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    backgroundColor: Colors.accent.blue,
+    opacity: 0.3,
   },
   matchText: {
     ...Typography.display,
-    fontSize: 36,
-    fontWeight: '800',
-    color: Colors.accent.blue,
+    fontSize: 42,
+    fontWeight: '900',
+    color: Colors.textPrimary,
     textAlign: 'center',
     marginBottom: Spacing.sm,
-    textShadowColor: Colors.accent.blue + '60',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 8,
+    textShadowColor: Colors.accent.blue,
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 20,
+    letterSpacing: 1,
   },
-     matchSubtext: {
-     ...Typography.body,
-     color: Colors.textSecondary,
-     textAlign: 'center',
-     fontSize: 16,
-   },
+  matchSubtext: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    fontSize: 18,
+    marginTop: Spacing.xs,
+    fontWeight: '500',
+  },
+  matchEmojiContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: Spacing.md,
+    gap: Spacing.md,
+  },
+  matchEmoji: {
+    fontSize: 32,
+  },
    
    // Tinder-style match cards
    matchCardsContainer: {
@@ -877,12 +1385,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
+    width: '100%',
   },
   fullImage: {
-    maxWidth: '100%',
-    maxHeight: '100%',
-    width: '100%',
-    height: '100%',
+    borderRadius: BorderRadius.md,
   },
   imageInfo: {
     position: 'absolute',

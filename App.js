@@ -12,6 +12,7 @@ import PaymentScreen from './app/payment/PaymentScreen';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import LoadingScreen from './lib/LoadingScreen';
 import { Colors } from './lib/designSystem';
+import { initRevenueCat, identifyUser, logOutUser } from './lib/revenuecat';
 
 const Stack = createNativeStackNavigator();
 
@@ -45,13 +46,51 @@ const PaperTheme = {
 function AppContent() {
   const { user, loading } = useAuth();
 
+  // Track previous user ID to detect logout
+  const prevUserIdRef = React.useRef(null);
+
+  // Initialize RevenueCat and identify user when auth state changes
+  React.useEffect(() => {
+    // Delay initialization slightly to ensure native module is ready
+    const setupRevenueCat = async () => {
+      try {
+        // Longer delay to ensure native modules are fully loaded
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Initialize with user ID if available
+        await initRevenueCat(user?.id);
+        
+        if (user?.id) {
+          prevUserIdRef.current = user.id;
+        } else if (prevUserIdRef.current) {
+          // User logged out - reset RevenueCat
+          await logOutUser();
+          prevUserIdRef.current = null;
+        }
+      } catch (error) {
+        console.error('RevenueCat setup error:', error);
+        // Don't block app if RevenueCat fails
+      }
+    };
+    
+    setupRevenueCat();
+  }, [user?.id]);
+
   if (loading) {
     return <LoadingScreen />;
   }
 
   return (
     <NavigationContainer theme={NavigationTheme}>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Navigator 
+        screenOptions={{ 
+          headerShown: false,
+          animation: 'slide_from_right',
+          animationDuration: 300,
+          gestureEnabled: true,
+          gestureDirection: 'horizontal',
+        }}
+      >
         {user ? (
           // User is authenticated - show main app
           <>
@@ -63,7 +102,6 @@ function AppContent() {
                 headerShown: false,
               }}
             />
-            <Stack.Screen name="Payment" component={PaymentScreen} />
           </>
         ) : (
           // User is not authenticated - show auth screens
@@ -73,6 +111,8 @@ function AppContent() {
             <Stack.Screen name="SignIn" component={SignInScreen} />
           </>
         )}
+        {/* Payment screen accessible regardless of auth state (Apple guideline 5.1.1) */}
+        <Stack.Screen name="Payment" component={PaymentScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

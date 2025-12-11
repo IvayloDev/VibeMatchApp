@@ -16,11 +16,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "2",
+      "buildNumber": "13",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "runtimeVersion": "1.0.0"
     },
     "android": {
       "adaptiveIcon": {
@@ -28,7 +29,10 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.paltech.tunematch"
+      "package": "com.paltech.tunematch",
+      "runtimeVersion": {
+        "policy": "appVersion"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -37,6 +41,9 @@
       "eas": {
         "projectId": "14bf2de1-7498-48b4-9f4f-f148e682b06f"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/14bf2de1-7498-48b4-9f4f-f148e682b06f"
     }
   }
 }

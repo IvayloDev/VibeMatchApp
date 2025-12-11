@@ -42,9 +42,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       if (error) {
         console.error('Error getting session:', error);
         // If we get an auth error during initial session retrieval, clear the session
-        if (isRefreshTokenError(error)) {
-          console.log('Invalid refresh token detected, clearing session');
+        if (isRefreshTokenError(error) || error.message?.includes('JWT does not exist')) {
+          console.log('Invalid session detected, clearing...');
           clearSession();
+          // Sign out to clear stale tokens
+          supabase.auth.signOut().catch(() => {});
           return;
         }
       }
@@ -53,8 +55,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setLoading(false);
     }).catch((error) => {
       console.error('Unexpected error during session retrieval:', error);
-      if (isRefreshTokenError(error)) {
+      if (isRefreshTokenError(error) || error.message?.includes('JWT does not exist')) {
         clearSession();
+        supabase.auth.signOut().catch(() => {});
       } else {
         setLoading(false);
       }
