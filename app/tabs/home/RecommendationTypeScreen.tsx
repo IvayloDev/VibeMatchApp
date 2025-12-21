@@ -32,6 +32,7 @@ const popularGenres = [
   { id: 'rock', name: 'Rock', emoji: '🤘', color: Colors.accent.red },
   { id: 'electronic', name: 'Electronic', emoji: '⚡', color: Colors.accent.yellow },
   { id: 'hiphop', name: 'Hip Hop', emoji: '🎧', color: Colors.accent.coral },
+  { id: 'rap', name: 'Rap', emoji: '🎤', color: Colors.accent.red },
   { id: 'jazz', name: 'Jazz', emoji: '🎷', color: Colors.accent.blue },
   { id: 'chill', name: 'Chill', emoji: '😌', color: Colors.accent.blue },
   { id: 'energetic', name: 'Energetic', emoji: '🔥', color: Colors.accent.red },
@@ -57,7 +58,6 @@ const popularGenres = [
   { id: 'trap', name: 'Trap', emoji: '🎚️', color: Colors.accent.red },
   { id: 'kpop', name: 'K-Pop', emoji: '✨', color: Colors.accent.coral },
   { id: 'gospel', name: 'Gospel', emoji: '🙏', color: Colors.accent.yellow },
-  { id: 'ska', name: 'Ska', emoji: '🎺', color: Colors.accent.green },
   { id: 'funny', name: 'Funny', emoji: '😂', color: Colors.accent.yellow },
 ];
 

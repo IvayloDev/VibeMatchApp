@@ -11,7 +11,8 @@ import {
   purchasePackage,
   getCreditsForProduct,
 } from '../../lib/revenuecat';
-import { getUserCredits, updateUserCredits } from '../../lib/credits';
+import { getUserCredits } from '../../lib/credits';
+import { validatePurchase } from '../../lib/supabase';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
@@ -179,8 +180,10 @@ const PaymentScreen = () => {
     if (pkg.isMock) {
       triggerHaptic('error');
       Alert.alert(
-        'Store Unavailable',
-        'In-app purchases are temporarily unavailable. Please try again later.',
+        __DEV__ ? 'Development Mode' : 'Store Unavailable',
+        __DEV__ 
+          ? 'RevenueCat is disabled in development mode. To test purchases:\n\n1. Set SKIP_REVENUECAT_IN_DEV to false in revenuecat.ts\n2. Configure App Store products in RevenueCat\n3. Use a sandbox tester account'
+          : 'In-app purchases are temporarily unavailable. Please try again later.',
         [{ text: 'OK' }]
       );
       return;
@@ -200,24 +203,24 @@ const PaymentScreen = () => {
       
       const result = await purchasePackage(actualPackage);
       
-      if (result.success && result.creditsGranted) {
-        // Update user credits in database
-        const newCredits = currentCredits + result.creditsGranted;
-        const updated = await updateUserCredits(newCredits);
+      if (result.success && result.transactionId && result.productId) {
+        // CRITICAL: Validate purchase server-side (Apple requirement)
+        // This ensures credits are only granted after server validation
+        const validation = await validatePurchase(result.transactionId, result.productId);
         
-        if (updated) {
+        if (validation.success && validation.creditsGranted) {
           triggerHaptic('success');
-          setCurrentCredits(newCredits);
+          setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
           Alert.alert(
             '🎉 Purchase Successful!',
-            `You received ${result.creditsGranted} credits!\n\nYour new balance: ${newCredits} credits`,
+            `You received ${validation.creditsGranted} credits!\n\nYour new balance: ${validation.newBalance || currentCredits + validation.creditsGranted} credits`,
             [{ text: 'Awesome!', onPress: () => navigation.goBack() }]
           );
         } else {
-          triggerHaptic('success');
+          triggerHaptic('error');
           Alert.alert(
-            '🎉 Purchase Successful!',
-            `You received ${result.creditsGranted} credits!`,
+            'Purchase Validated',
+            'Your purchase was successful, but there was an issue granting credits. Please contact support if credits are not added within a few minutes.',
             [{ text: 'OK', onPress: () => navigation.goBack() }]
           );
         }
@@ -381,7 +384,7 @@ const PaymentScreen = () => {
         {/* Compact Info Section */}
         <View style={styles.infoSection}>
           <MaterialCommunityIcons name="check-circle" size={14} color={Colors.accent.blue} />
-          <Text style={styles.infoText}>1 credit = 1 analysis • Secure payment • Credits never expire</Text>
+          <Text style={styles.infoText}>1 credit = 1 analysis • In-app purchase only • Credits never expire</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

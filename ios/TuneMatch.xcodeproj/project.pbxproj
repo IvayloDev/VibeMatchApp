@@ -8,25 +8,25 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		18625EBDA29F2188E7CFD8E7 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C44919B8D8C3B6BA31F58B8 /* ExpoModulesProvider.swift */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
-		59ABC3C2F3D11BD88DFD47C1 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B57ECE7A39E9B64E8D497EC /* ExpoModulesProvider.swift */; };
-		960398BC34BE99DD16124415 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 85F8BB14D0BBD300338C3AB5 /* PrivacyInfo.xcprivacy */; };
+		3FD0D5530D8C88A243B17D73 /* libPods-TuneMatch.a in Frameworks */ = {isa = PBXBuildFile; fileRef = DFF202C380A901130236996C /* libPods-TuneMatch.a */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
-		C864FC000ADA43C58D43D6C7 /* libPods-TuneMatch.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 829BBC901B70320BBBDBB2FC /* libPods-TuneMatch.a */; };
+		EF295D72C6A8260E3AEA28BA /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 81D04558DBAFF5239667FB00 /* PrivacyInfo.xcprivacy */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0BC37008F28BE50364DCDF1B /* Pods-TuneMatch.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TuneMatch.release.xcconfig"; path = "Target Support Files/Pods-TuneMatch/Pods-TuneMatch.release.xcconfig"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* TuneMatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TuneMatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = TuneMatch/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = TuneMatch/Info.plist; sourceTree = "<group>"; };
-		1861CE4B46BE6ED587FCBE82 /* Pods-TuneMatch.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TuneMatch.release.xcconfig"; path = "Target Support Files/Pods-TuneMatch/Pods-TuneMatch.release.xcconfig"; sourceTree = "<group>"; };
-		5B57ECE7A39E9B64E8D497EC /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-TuneMatch/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
-		829BBC901B70320BBBDBB2FC /* libPods-TuneMatch.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-TuneMatch.a"; sourceTree = BUILT_PRODUCTS_DIR; };
-		85F8BB14D0BBD300338C3AB5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = TuneMatch/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		94E05F55606D7828A082FA86 /* Pods-TuneMatch.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TuneMatch.debug.xcconfig"; path = "Target Support Files/Pods-TuneMatch/Pods-TuneMatch.debug.xcconfig"; sourceTree = "<group>"; };
+		2C44919B8D8C3B6BA31F58B8 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-TuneMatch/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		695BB7A307E087E3F2817DA8 /* Pods-TuneMatch.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-TuneMatch.debug.xcconfig"; path = "Target Support Files/Pods-TuneMatch/Pods-TuneMatch.debug.xcconfig"; sourceTree = "<group>"; };
+		81D04558DBAFF5239667FB00 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = TuneMatch/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = TuneMatch/SplashScreen.storyboard; sourceTree = "<group>"; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
+		DFF202C380A901130236996C /* libPods-TuneMatch.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-TuneMatch.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = TuneMatch/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* TuneMatch-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "TuneMatch-Bridging-Header.h"; path = "TuneMatch/TuneMatch-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -37,21 +37,13 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C864FC000ADA43C58D43D6C7 /* libPods-TuneMatch.a in Frameworks */,
+				3FD0D5530D8C88A243B17D73 /* libPods-TuneMatch.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		00A13818886CF2316D65C32E /* TuneMatch */ = {
-			isa = PBXGroup;
-			children = (
-				5B57ECE7A39E9B64E8D497EC /* ExpoModulesProvider.swift */,
-			);
-			name = TuneMatch;
-			sourceTree = "<group>";
-		};
 		13B07FAE1A68108700A75B9A /* TuneMatch */ = {
 			isa = PBXGroup;
 			children = (
@@ -61,7 +53,7 @@
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
-				85F8BB14D0BBD300338C3AB5 /* PrivacyInfo.xcprivacy */,
+				81D04558DBAFF5239667FB00 /* PrivacyInfo.xcprivacy */,
 			);
 			name = TuneMatch;
 			sourceTree = "<group>";
@@ -70,18 +62,17 @@
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				829BBC901B70320BBBDBB2FC /* libPods-TuneMatch.a */,
+				DFF202C380A901130236996C /* libPods-TuneMatch.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		823A6C3559E82D12E13E619D /* Pods */ = {
+		73D2F35988D166FF46029B6C /* TuneMatch */ = {
 			isa = PBXGroup;
 			children = (
-				94E05F55606D7828A082FA86 /* Pods-TuneMatch.debug.xcconfig */,
-				1861CE4B46BE6ED587FCBE82 /* Pods-TuneMatch.release.xcconfig */,
+				2C44919B8D8C3B6BA31F58B8 /* ExpoModulesProvider.swift */,
 			);
-			path = Pods;
+			name = TuneMatch;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -98,8 +89,8 @@
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
-				823A6C3559E82D12E13E619D /* Pods */,
-				E7E29497F7FECBD76286298B /* ExpoModulesProviders */,
+				F7D4F50747AF81439B5B7489 /* Pods */,
+				A5ED8A6AD4174A7F0B48D00D /* ExpoModulesProviders */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -114,6 +105,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		A5ED8A6AD4174A7F0B48D00D /* ExpoModulesProviders */ = {
+			isa = PBXGroup;
+			children = (
+				73D2F35988D166FF46029B6C /* TuneMatch */,
+			);
+			name = ExpoModulesProviders;
+			sourceTree = "<group>";
+		};
 		BB2F792B24A3F905000567C9 /* Supporting */ = {
 			isa = PBXGroup;
 			children = (
@@ -123,12 +122,13 @@
 			path = TuneMatch/Supporting;
 			sourceTree = "<group>";
 		};
-		E7E29497F7FECBD76286298B /* ExpoModulesProviders */ = {
+		F7D4F50747AF81439B5B7489 /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				00A13818886CF2316D65C32E /* TuneMatch */,
+				695BB7A307E087E3F2817DA8 /* Pods-TuneMatch.debug.xcconfig */,
+				0BC37008F28BE50364DCDF1B /* Pods-TuneMatch.release.xcconfig */,
 			);
-			name = ExpoModulesProviders;
+			path = Pods;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -139,13 +139,13 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "TuneMatch" */;
 			buildPhases = (
 				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
-				5EA8B8E069B58FDF0C7B811F /* [Expo] Configure project */,
+				1AFC5776659EDFED17ABFE9D /* [Expo] Configure project */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
-				2C9C74B423BCC8AEF08D9B11 /* [CP] Embed Pods Frameworks */,
+				9A0C6D3A3805E9D1119AECF6 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -195,7 +195,7 @@
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
-				960398BC34BE99DD16124415 /* PrivacyInfo.xcprivacy in Resources */,
+				EF295D72C6A8260E3AEA28BA /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -241,29 +241,7 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
-		2C9C74B423BCC8AEF08D9B11 /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-TuneMatch/Pods-TuneMatch-frameworks.sh",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/React-Core-prebuilt/React.framework/React",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ReactNativeDependencies/ReactNativeDependencies.framework/ReactNativeDependencies",
-				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputPaths = (
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework",
-				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-TuneMatch/Pods-TuneMatch-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		5EA8B8E069B58FDF0C7B811F /* [Expo] Configure project */ = {
+		1AFC5776659EDFED17ABFE9D /* [Expo] Configure project */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -337,6 +315,28 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-TuneMatch/Pods-TuneMatch-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		9A0C6D3A3805E9D1119AECF6 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-TuneMatch/Pods-TuneMatch-frameworks.sh",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/React-Core-prebuilt/React.framework/React",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/ReactNativeDependencies/ReactNativeDependencies.framework/ReactNativeDependencies",
+				"${PODS_XCFRAMEWORKS_BUILD_DIR}/hermes-engine/Pre-built/hermes.framework/hermes",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputPaths = (
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/React.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/ReactNativeDependencies.framework",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/hermes.framework",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-TuneMatch/Pods-TuneMatch-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -345,7 +345,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
-				59ABC3C2F3D11BD88DFD47C1 /* ExpoModulesProvider.swift in Sources */,
+				18625EBDA29F2188E7CFD8E7 /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -354,7 +354,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 94E05F55606D7828A082FA86 /* Pods-TuneMatch.debug.xcconfig */;
+			baseConfigurationReference = 695BB7A307E087E3F2817DA8 /* Pods-TuneMatch.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -391,7 +391,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 1861CE4B46BE6ED587FCBE82 /* Pods-TuneMatch.release.xcconfig */;
+			baseConfigurationReference = 0BC37008F28BE50364DCDF1B /* Pods-TuneMatch.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;

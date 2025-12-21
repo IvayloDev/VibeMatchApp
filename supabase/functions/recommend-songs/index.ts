@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 console.log("🔔 Edge Function loaded");
 
@@ -38,7 +39,7 @@ async function getSpotifyToken(): Promise<string> {
   const clientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
   
   if (!clientId || !clientSecret) {
-    console.warn("⚠️ Spotify credentials not configured, falling back to OpenAI-only mode");
+    console.warn("⚠️ Spotify credentials not configured");
     return "";
   }
 
@@ -67,13 +68,22 @@ async function getSpotifyToken(): Promise<string> {
 }
 
 /**
- * Search Spotify for songs matching the query
+ * Search Spotify for a specific track using title and artist
+ * Returns the best match or null
  */
-async function searchSpotify(query: string, accessToken: string, limit: number = 20): Promise<any[]> {
+async function findTrackOnSpotify(
+  title: string, 
+  artist: string, 
+  searchQuery: string,
+  accessToken: string
+): Promise<any | null> {
   try {
-    const encodedQuery = encodeURIComponent(query);
-    const response = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=${limit}&market=BG`,
+    // First try exact search with track:"title" artist:"artist"
+    let query = searchQuery || `track:"${title}" artist:"${artist}"`;
+    let encodedQuery = encodeURIComponent(query);
+    
+    let response = await fetch(
+      `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10&market=BG`,
       {
         headers: {
           "Authorization": `Bearer ${accessToken}`
@@ -82,23 +92,95 @@ async function searchSpotify(query: string, accessToken: string, limit: number =
     );
 
     if (!response.ok) {
-      console.error("❌ Spotify search failed:", response.status);
-      return [];
+      console.warn(`⚠️ Spotify search failed for "${title}" by "${artist}":`, response.status);
+      return null;
     }
 
     const data = await response.json();
-    return data.tracks?.items || [];
+    const tracks = data.tracks?.items || [];
+
+    if (tracks.length === 0) {
+      // Fallback: try without quotes (fuzzy search)
+      query = `${title} ${artist}`;
+      encodedQuery = encodeURIComponent(query);
+      
+      response = await fetch(
+        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10&market=BG`,
+        {
+          headers: {
+            "Authorization": `Bearer ${accessToken}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const fallbackData = await response.json();
+      const fallbackTracks = fallbackData.tracks?.items || [];
+      
+      if (fallbackTracks.length === 0) {
+        return null;
+      }
+      
+      // Return best match (first result)
+      return fallbackTracks[0];
+    }
+
+    // Find best match by comparing title and artist similarity
+    const normalizedTitle = title.toLowerCase().trim();
+    const normalizedArtist = artist.toLowerCase().trim();
+    
+    for (const track of tracks) {
+      const trackTitle = track.name?.toLowerCase().trim() || "";
+      const trackArtist = track.artists?.[0]?.name?.toLowerCase().trim() || "";
+      
+      // Exact match
+      if (trackTitle === normalizedTitle && trackArtist === normalizedArtist) {
+        return track;
+      }
+      
+      // Close match (title matches, artist is similar)
+      if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
+        if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
+          return track;
+        }
+      }
+    }
+
+    // Return first result if no exact match found
+    return tracks[0];
   } catch (err) {
-    console.error("❌ Error searching Spotify:", err);
-    return [];
+    console.error(`❌ Error searching Spotify for "${title}" by "${artist}":`, err);
+    return null;
   }
 }
 
 /**
- * Translate/common Bulgarian terms to English for Spotify search
+ * Translate Bulgarian (both Latin and Cyrillic) to English search terms
  */
 function translateBulgarianToSearchQuery(text: string): string[] {
-  const translations: Record<string, string> = {
+  // Cyrillic to Latin mappings (expanded)
+  const cyrillicToLatin: Record<string, string> = {
+    "някоя": "nqkoq",
+    "няква": "nqkva",
+    "някой": "nqkoi",
+    "песен": "pesen",
+    "мазна": "mazna",
+    "мазно": "mazno",
+    "чалга": "chalga",
+    "чалги": "chalgi",
+    "филмарска": "filmarska",
+    "филмарски": "filmarski",
+    "дай": "dai",
+    "дайте": "daite",
+    "много": "mnogo",
+    "множество": "mnozhestvo",
+  };
+
+  // Latin to English mappings
+  const latinToEnglish: Record<string, string> = {
     "filmarska pesen": "cinematic song",
     "filmarska": "cinematic",
     "pesen": "song",
@@ -113,27 +195,27 @@ function translateBulgarianToSearchQuery(text: string): string[] {
 
   let query = text.toLowerCase().trim();
   
-  // Replace Bulgarian phrases
-  for (const [bg, en] of Object.entries(translations)) {
-    if (query.includes(bg)) {
-      query = query.replace(new RegExp(bg, 'gi'), en).trim();
+  // Convert Cyrillic to Latin first
+  for (const [cyr, lat] of Object.entries(cyrillicToLatin)) {
+    if (query.includes(cyr)) {
+      query = query.replace(new RegExp(cyr, 'gi'), lat).trim();
     }
   }
   
-  // Clean up extra spaces
-  query = query.replace(/\s+/g, ' ').trim();
-  
-  // Generate multiple search query variations
-  const queries: string[] = [];
-  
-  // Primary query
-  if (query.length >= 3) {
-    queries.push(query);
-  } else {
-    queries.push(text.trim());
+  // Then translate Latin to English
+  for (const [lat, en] of Object.entries(latinToEnglish)) {
+    if (query.includes(lat)) {
+      query = query.replace(new RegExp(lat, 'gi'), en).trim();
+    }
   }
   
-  // Try genre-specific searches
+  query = query.replace(/\s+/g, ' ').trim();
+  
+  const queries: string[] = [];
+  if (query.length >= 3) {
+    queries.push(query);
+  }
+  
   if (query.includes("chalga")) {
     queries.push("chalga");
     queries.push("bulgarian chalga");
@@ -143,17 +225,76 @@ function translateBulgarianToSearchQuery(text: string): string[] {
     queries.push("film soundtrack");
   }
   
-  // Try without filler words
-  const cleanQuery = query.replace(/\b(very|song|music)\b/gi, "").trim();
-  if (cleanQuery.length >= 3 && cleanQuery !== query) {
-    queries.push(cleanQuery);
-  }
-  
-  return queries;
+  return queries.length > 0 ? queries : [text.trim()];
 }
 
 /**
- * Build the text part of the user prompt based on flags/params.
+ * Build system prompt based on mode
+ */
+function buildSystemPrompt(
+  useCustomRequest: boolean,
+  avoidTracks: string[],
+  avoidArtists: string[]
+): string {
+  const avoidSection = avoidTracks.length > 0 || avoidArtists.length > 0
+    ? `\n\nAVOID THESE (do not recommend):\n${avoidTracks.length > 0 ? `- Tracks: ${avoidTracks.join(", ")}\n` : ""}${avoidArtists.length > 0 ? `- Artists: ${avoidArtists.join(", ")}\n` : ""}`
+    : "";
+
+  if (useCustomRequest) {
+    return `You are VibeMatch, a music curator. Given a custom request, recommend 3 non-obvious real songs that match it.
+
+Hard rules:
+- Output MUST be valid JSON matching the schema. No extra text.
+- Recommend exactly 3 tracks (no more, no less).
+- No repeated artist (each track must have a different artist).
+- Avoid ultra-mainstream, over-recommended staples (no "default playlist" picks like Mr. Brightside, Bohemian Rhapsody, etc.).
+- Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
+- Only suggest songs you are confident exist (title + primary artist).
+- Prefer deep cuts and non-obvious picks over top hits.
+${avoidSection}
+
+Return JSON with this structure:
+{
+  "recommendations": [
+    {
+      "title": "REAL song title",
+      "artist": "REAL artist name",
+      "reason": "1-2 sentences: why this matches the request",
+      "mood_tags": ["tag1", "tag2", "tag3"],
+      "search_query": "track:\\"title\\" artist:\\"artist\\""
+    }
+  ]
+}`;
+  }
+
+  return `You are VibeMatch, a music curator. Given an image, infer the mood/scene/subtext and propose 3 non-obvious real songs.
+
+Hard rules:
+- Output MUST be valid JSON matching the schema. No extra text.
+- Recommend exactly 3 tracks (no more, no less).
+- No repeated artist (each track must have a different artist).
+- Avoid ultra-mainstream, over-recommended staples (no "default playlist" picks like Mr. Brightside, Bohemian Rhapsody, etc.).
+- Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
+- Only suggest songs you are confident exist (title + primary artist).
+- Prefer deep cuts and non-obvious picks over top hits.
+${avoidSection}
+
+Return JSON with this structure:
+{
+  "recommendations": [
+    {
+      "title": "REAL song title",
+      "artist": "REAL artist name",
+      "reason": "1-2 sentences: visual cue -> emotional inference -> musical match",
+      "mood_tags": ["tag1", "tag2", "tag3"],
+      "search_query": "track:\\"title\\" artist:\\"artist\\""
+    }
+  ]
+}`;
+}
+
+/**
+ * Build user prompt
  */
 function buildUserPrompt(params: {
   customRequest?: string;
@@ -163,57 +304,18 @@ function buildUserPrompt(params: {
 }): string {
   const { customRequest, hasCustomRequest, genre, hasGenre } = params;
   
-  // Determine what to use based on priority
   const useCustomRequest = hasCustomRequest && customRequest && customRequest.trim();
   const useGenre = !useCustomRequest && hasGenre && genre && genre !== "N/A";
   
-  let instructionText = "";
-  
   if (useCustomRequest) {
-    // CUSTOM REQUEST - HIGHEST PRIORITY
-    instructionText = `🚨🚨🚨 CRITICAL INSTRUCTION - READ THIS FIRST 🚨🚨🚨
+    return `Custom request: "${customRequest.trim()}"
 
-YOU MUST FOLLOW THIS EXACT CUSTOM REQUEST. DO NOT IGNORE IT. DO NOT USE THE IMAGE. DO NOT USE ANY GENRE.
-
-CUSTOM REQUEST: "${customRequest.trim()}"
-
-YOUR TASK:
-1. Find REAL songs that match this EXACT request: "${customRequest.trim()}"
-2. Interpret the request literally - if it's in Bulgarian, understand it correctly
-3. IGNORE the image completely - it is NOT relevant
-4. IGNORE any genre - it is NOT relevant
-5. ONLY recommend songs that match this specific request
-
-EXAMPLES:
-- If request is "nqkoq mnogo mazna chalga" → Find REAL Bulgarian chalga songs that are very greasy/high-energy
-- If request is "filmarska pesen" → Find REAL songs with cinematic/film-like qualities
-- If request is "dai nqkva mnogo filmarska pesen" → Find REAL very cinematic/film-like songs
-- If request is "sad music" → Find REAL sad songs
-
-DO NOT:
-- Use the image to determine songs
-- Use genre to determine songs
-- Recommend songs that don't match the request
-- Make up fictional songs
-
-ONLY recommend REAL, existing songs that match: "${customRequest.trim()}"`;
+Recommend 3 songs that match this request. Prefer unexpected-but-accurate picks over obvious hits.`;
   } else if (useGenre) {
-    instructionText = `IMPORTANT: You MUST recommend songs in the "${genre}" genre.
-    
-- Stick closely to this genre or very nearby subgenres.
-- The image should complement the genre selection.
-- If the image conflicts with the genre, prioritize the genre.`;
+    return `Recommend songs in the "${genre}" genre. The image should complement the genre selection.`;
   } else {
-    instructionText = `IMPORTANT: Analyze the image and recommend songs based on the visual vibe, mood, and style you detect.
-    
-- Use only the image to determine the music recommendations.
-- No genre or custom request was provided.
-- Recommend EXACTLY 3 REAL songs that match the image's mood, colors, style, and atmosphere. YOU MUST RETURN 3 SONGS.
-
-🚨 CRITICAL: You MUST respond with ONLY a JSON array. NO explanations, NO text, NO markdown. Just the JSON array starting with [ and ending with ].`;
+    return `Analyze the image and recommend 3 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.`;
   }
-  
-  return instructionText.trim();
 }
 
 // Edge function
@@ -226,6 +328,9 @@ serve(async (req) => {
   let customRequest: string | undefined;
   let hasCustomRequest: boolean;
   let hasGenre: boolean;
+  let userId: string | undefined;
+  let avoidTracks: string[] = [];
+  let avoidArtists: string[] = [];
 
   try {
     const body = await req.json();
@@ -234,13 +339,19 @@ serve(async (req) => {
     customRequest = body.customRequest;
     hasCustomRequest = body.hasCustomRequest ?? !!(customRequest && customRequest.trim());
     hasGenre = body.hasGenre ?? !!(genre && genre !== "N/A" && !hasCustomRequest);
+    userId = body.userId;
+    avoidTracks = body.avoidTracks || [];
+    avoidArtists = body.avoidArtists || [];
 
     console.log("📥 Body:", {
       imageUrl: imageUrl ? `${imageUrl.substring(0, 50)}...` : 'N/A',
       genre,
       customRequest,
       hasCustomRequest,
-      hasGenre
+      hasGenre,
+      userId: userId || 'N/A',
+      avoidTracks: avoidTracks.length,
+      avoidArtists: avoidArtists.length
     });
 
     if (!imageUrl) {
@@ -255,7 +366,53 @@ serve(async (req) => {
     }, 400);
   }
 
-  // 2) Load API keys
+  // 2) Get user history for deduplication (if userId provided)
+  if (userId) {
+    try {
+      const supabaseClient = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+      );
+
+      const { data: history } = await supabaseClient
+        .from('history')
+        .select('songs')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(10); // Last 10 recommendations
+
+      if (history && history.length > 0) {
+        const allSongs: any[] = [];
+        history.forEach(item => {
+          if (item.songs && Array.isArray(item.songs)) {
+            allSongs.push(...item.songs);
+          }
+        });
+
+        // Extract unique track IDs and artist names
+        const seenTracks = new Set<string>();
+        const seenArtists = new Set<string>();
+
+        allSongs.forEach((song: any) => {
+          if (song.spotify_url) {
+            const trackId = song.spotify_url.split('/track/')[1]?.split('?')[0];
+            if (trackId) seenTracks.add(trackId);
+          }
+          if (song.artist) seenArtists.add(song.artist);
+        });
+
+        avoidTracks = [...avoidTracks, ...Array.from(seenTracks)];
+        avoidArtists = [...avoidArtists, ...Array.from(seenArtists)];
+
+        console.log(`📋 Found ${avoidTracks.length} tracks and ${avoidArtists.length} artists to avoid`);
+      }
+    } catch (err) {
+      console.warn("⚠️ Could not fetch user history:", err);
+      // Continue without history
+    }
+  }
+
+  // 3) Load API keys
   const openaiKey = Deno.env.get("OPENAI_API_KEY");
   if (!openaiKey) {
     console.error("❌ OPENAI_API_KEY not set");
@@ -264,7 +421,7 @@ serve(async (req) => {
     }, 500);
   }
 
-  // 3) Convert image to base64 data URL
+  // 4) Convert image to base64 data URL
   let dataUrl: string;
   try {
     dataUrl = await toBase64DataURL(imageUrl);
@@ -276,167 +433,9 @@ serve(async (req) => {
     }, 502);
   }
 
-  // 4) If custom request exists, try Spotify API first
-  const useCustomRequest = hasCustomRequest && customRequest && customRequest.trim();
-  let spotifySongs: any[] = [];
-
-  if (useCustomRequest) {
-    try {
-      const spotifyToken = await getSpotifyToken();
-      
-      if (spotifyToken) {
-        // Get multiple search query variations
-        const searchQueries = translateBulgarianToSearchQuery(customRequest);
-        console.log("🔍 Trying Spotify searches with queries:", searchQueries);
-        
-        let allResults: any[] = [];
-        
-        // Try each query variation until we get results
-        for (const searchQuery of searchQueries) {
-          const spotifyResults = await searchSpotify(searchQuery, spotifyToken, 20);
-          console.log(`🎵 Query "${searchQuery}" found ${spotifyResults.length} songs`);
-          
-          if (spotifyResults.length > 0) {
-            allResults = spotifyResults;
-            break; // Found results, stop trying other queries
-          }
-        }
-        
-        if (allResults.length > 0) {
-          // Return top 3 results
-          spotifySongs = allResults.slice(0, 3).map((track: any) => ({
-            title: track.name,
-            artist: track.artists[0]?.name || "Unknown",
-            reason: `This song matches your request: "${customRequest.trim()}"`,
-            mood_tags: [],
-            language: "bg",
-            spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
-            album_cover: track.album?.images?.[0]?.url
-          }));
-          
-          console.log("✅ Returning", spotifySongs.length, "real songs from Spotify");
-          return jsonResponse({
-            songs: spotifySongs
-          }, 200);
-        } else {
-          console.warn("⚠️ No songs found on Spotify for any query variation");
-          // Return error - no matches found
-          return jsonResponse({
-            error: "No matches found",
-            message: "We couldn't find any songs matching your request. Please try a different search."
-          }, 404);
-        }
-      }
-    } catch (err) {
-      console.error("❌ Spotify search failed, falling back to OpenAI:", err);
-      // Continue to OpenAI fallback
-    }
-  }
-
-  // 5) Build OpenAI payload (fallback or primary for genre/image-only)
-  const systemPrompt = useCustomRequest ? `
-You are a music recommendation engine. Your ONLY job is to find REAL songs.
-
-🚨 ABSOLUTE RULE: When a custom request is provided in a separate message, you MUST:
-1. IGNORE the image completely - it is NOT relevant
-2. IGNORE any genre - it is NOT relevant  
-3. ONLY use the custom request text to find songs
-4. The custom request OVERRIDES EVERYTHING
-
-BULGARIAN TRANSLATIONS:
-- "filmarska pesen" = cinematic/film-like song
-- "dai nqkva mnogo filmarska pesen" = give me a very cinematic/film-like song  
-- "nqkoq mnogo mazna chalga" = very greasy, high-energy Bulgarian chalga
-- "chalga" = Bulgarian pop-folk music
-
-REAL SONGS ONLY:
-- ONLY recommend songs you KNOW exist from your training data
-- NEVER invent songs
-- All Spotify URLs must be real
-
-RESPONSE FORMAT:
-Return EXACTLY 3 songs as a JSON array, no other text:
-[
-  {
-    "title": "REAL song title",
-    "artist": "REAL artist name", 
-    "reason": "Why this matches the request",
-    "mood_tags": ["tag1", "tag2"],
-    "language": "bg" or "en",
-    "spotify_url": "https://open.spotify.com/track/REAL_ID"
-  },
-  { ... song 2 ... },
-  { ... song 3 ... }
-]
-
-YOU MUST ALWAYS RETURN EXACTLY 3 SONGS.
-`.trim() : `
-You are Vibe DJ, an expert music recommendation engine that analyzes images and recommends music.
-
-YOUR JOB: Analyze the provided image and recommend EXACTLY 3 real songs that match the visual mood, colors, style, and atmosphere you detect in the image. This is a legitimate creative music recommendation service. YOU MUST ALWAYS RETURN EXACTLY 3 SONGS.
-
-IMPORTANT: Provide VARIETY in your recommendations - don't always suggest the same songs. Consider different artists, genres, and eras that match the image's vibe.
-
-🚨 CRITICAL RULES - READ THESE FIRST 🚨
-
-1. YOU MUST PROCESS THE IMAGE AND PROVIDE MUSIC RECOMMENDATIONS
-   - This is a legitimate music recommendation service
-   - You are analyzing visual content (colors, mood, style, atmosphere) to suggest appropriate music
-   - This is a creative and artistic task - you MUST analyze the image and provide recommendations
-   - If the image contains any content, you should still analyze its visual elements (colors, mood, composition) and recommend music accordingly
-   - Your task is to match music to visual aesthetics, not to judge image content
-
-2. YOU MUST ONLY RECOMMEND REAL SONGS THAT YOU KNOW EXIST
-   - NEVER invent, make up, or create fictional songs
-   - ONLY recommend songs from your training data that you are CERTAIN exist
-   - If you are not 100% sure a song exists, DO NOT recommend it
-   - All Spotify URLs MUST be real and valid URLs to actual tracks
-   - If you cannot find 3 songs you KNOW exist, recommend fewer but REAL songs
-   - Better to return 1-2 real songs than 3 fake ones
-
-2. UNDERSTAND REQUESTS CORRECTLY
-   - If request is in Bulgarian, interpret it correctly
-   - If request uses slang, understand the meaning
-
-3. RESPONSE FORMAT - CRITICAL - YOU MUST FOLLOW THIS EXACTLY
-   - You MUST respond with ONLY a valid JSON array
-   - NO explanations, NO apologies, NO markdown, NO text before or after
-   - NO "Here are some songs:" or "I found these:" or any other text
-   - Start your response with [ and end with ]
-   - If you cannot find songs, return an empty array [] - DO NOT write an apology
-
-You MUST return EXACTLY 3 songs. Each song MUST:
-- Be a REAL song from your knowledge that you are CERTAIN exists
-- Have a REAL Spotify URL that you know is correct (format: https://open.spotify.com/track/...)
-- Match the request as closely as possible
-- Have accurate title and artist names that you know are correct
-- Be DIFFERENT from each other - provide variety in artists, genres, and styles
-
-IMPORTANT: 
-- You MUST always return exactly 3 songs
-- Provide VARIETY - don't suggest the same songs repeatedly for similar images
-- Consider different artists, genres, eras, and styles that match the mood
-- If you can't find 3 perfect matches, find 3 songs that are close enough to the mood/style but still varied
-
-YOU MUST RESPOND WITH ONLY THIS JSON FORMAT (no other text):
-[
-  {
-    "title": "REAL song title",
-    "artist": "REAL artist name",
-    "reason": "1–2 sentences explaining why this REAL song matches the request",
-    "mood_tags": ["tag1", "tag2", "tag3"],
-    "language": "bg" or "en",
-    "spotify_url": "https://open.spotify.com/track/REAL_TRACK_ID"
-  }
-]
-
-REMEMBER: 
-- You MUST return EXACTLY 3 songs - no more, no less
-- Only recommend REAL songs that you KNOW exist from your training data
-- Never invent songs
-- Respond with ONLY JSON, no explanations or apologies
-`.trim();
-
+  // 5) Build OpenAI prompt
+  const useCustomRequest = !!(hasCustomRequest && customRequest && customRequest.trim());
+  const systemPrompt = buildSystemPrompt(useCustomRequest, avoidTracks, avoidArtists);
   const userText = buildUserPrompt({
     customRequest,
     hasCustomRequest,
@@ -444,9 +443,10 @@ REMEMBER:
     hasGenre
   });
 
-  console.log("📝 User prompt text:", userText);
+  console.log("📝 System prompt length:", systemPrompt.length);
+  console.log("📝 User prompt:", userText);
 
-  // Build messages array - if custom request exists, make it SUPER prominent
+  // Build messages
   const messages: any[] = [
     {
       role: "system",
@@ -455,47 +455,11 @@ REMEMBER:
   ];
 
   if (useCustomRequest && customRequest) {
-    // For custom requests, send the request FIRST as a separate message
-    // This makes it impossible to ignore
     messages.push({
       role: "user",
-      content: `🚨🚨🚨 CUSTOM REQUEST - THIS IS YOUR PRIMARY TASK 🚨🚨🚨
-
-The user wants: "${customRequest.trim()}"
-
-YOUR JOB:
-- Find REAL songs that match: "${customRequest.trim()}"
-- IGNORE the image completely
-- IGNORE any genre
-- ONLY use this custom request: "${customRequest.trim()}"
-
-Interpret this request:
-- "filmarska pesen" = cinematic/film-like song
-- "dai nqkva mnogo filmarska pesen" = give me a very cinematic/film-like song
-- "nqkoq mnogo mazna chalga" = very greasy, high-energy Bulgarian chalga
-
-Return ONLY a JSON array with EXACTLY 3 REAL songs that match "${customRequest.trim()}". YOU MUST RETURN 3 SONGS.`
-    });
-    
-    // Then send the image (but it should be ignored)
-    messages.push({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: "NOTE: The image below is IRRELEVANT. Use ONLY the custom request above: \"" + customRequest.trim() + "\""
-        },
-        {
-          type: "image_url",
-          image_url: {
-            url: dataUrl,
-            detail: "low" // Use low detail to reduce processing and potential filter triggers
-          }
-        }
-      ]
+      content: userText
     });
   } else {
-    // Normal flow for genre/image-only
     messages.push({
       role: "user",
       content: [
@@ -507,34 +471,57 @@ Return ONLY a JSON array with EXACTLY 3 REAL songs that match "${customRequest.t
           type: "image_url",
           image_url: {
             url: dataUrl,
-            detail: "low" // Use low detail to reduce processing and potential filter triggers
+            detail: "low"
           }
         }
       ]
     });
   }
 
+  // 6) Call OpenAI with structured output
   const payload = {
     model: "gpt-4o",
     messages: messages,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "music_recommendations",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            recommendations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  artist: { type: "string" },
+                  reason: { type: "string" },
+                  mood_tags: {
+                    type: "array",
+                    items: { type: "string" }
+                  },
+                  search_query: { type: "string" }
+                },
+                required: ["title", "artist", "reason", "mood_tags", "search_query"],
+                additionalProperties: false
+              },
+              minItems: 3,
+              maxItems: 3
+            }
+          },
+          required: ["recommendations"],
+          additionalProperties: false
+        }
+      }
+    },
     max_tokens: 800,
-    temperature: 0.9 // Higher temperature for more variety and creativity
+    temperature: 0.6 // Balanced: creativity in content, reliability in structure (0.5-0.7 range)
   };
 
-  console.log("📤 OpenAI payload (without image):", {
-    model: payload.model,
-    messages: payload.messages.map((m) => ({
-      role: m.role,
-      content: typeof m.content === 'string' ? m.content : m.content.map((c: any) => ({
-        type: c.type,
-        text: c.text || '[image]'
-      }))
-    })),
-    max_tokens: payload.max_tokens,
-    temperature: payload.temperature
-  });
+  console.log("📤 Calling OpenAI with structured output");
 
-  // 6) Call OpenAI
   let openaiResp: Response;
   try {
     openaiResp = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -552,7 +539,6 @@ Return ONLY a JSON array with EXACTLY 3 REAL songs that match "${customRequest.t
     }, 502);
   }
 
-  // 7) Handle non-200 responses
   if (!openaiResp.ok) {
     const errBody = await openaiResp.json().catch(() => null);
     console.error("❌ OpenAI API error:", openaiResp.status, errBody);
@@ -562,340 +548,151 @@ Return ONLY a JSON array with EXACTLY 3 REAL songs that match "${customRequest.t
     }, openaiResp.status);
   }
 
-  // 8) Parse OpenAI response and strip fences if needed
-  let songs: any;
-  let raw: string | undefined;
+  // 7) Parse OpenAI response
+  let openaiData: any;
   try {
     const result = await openaiResp.json();
-    console.log("🔍 OpenAI raw result:", JSON.stringify(result, null, 2));
-    
     const message = result.choices?.[0]?.message;
     if (!message) throw new Error("No message in OpenAI response");
 
-    raw = message.content;
-    console.log("📥 Raw OpenAI content length:", raw?.length || 0);
-    console.log("📥 Raw OpenAI content (first 500 chars):", typeof raw === 'string' ? raw.substring(0, 500) : raw);
-    
-    // Check if content is empty or null
-    if (!raw || (typeof raw === 'string' && raw.trim().length === 0)) {
-      throw new Error("OpenAI returned empty content");
-    }
+    const content = message.content;
+    if (!content) throw new Error("OpenAI returned empty content");
 
-    // Check if response starts with apology or explanation (OpenAI refusal)
-    if (typeof raw === "string" && (
-      raw.trim().startsWith("I'm sorry") || 
-      raw.trim().startsWith("I cannot") || 
-      raw.trim().startsWith("Sorry") ||
-      raw.trim().startsWith("I can't assist") ||
-      raw.trim().startsWith("I'm unable") ||
-      raw.trim().toLowerCase().includes("i can't help") ||
-      raw.trim().toLowerCase().includes("i cannot help")
-    )) {
-      console.error("❌ OpenAI refused to process (content filter or policy):", raw.substring(0, 200));
-      // Return a user-friendly error instead of throwing
-      return jsonResponse({
-        error: "Content processing error",
-        message: "We couldn't process this image. Please try a different photo.",
-        code: "OPENAI_REFUSAL"
-      }, 400);
-    }
-
-    // Handle accidental ```json ... ``` wrappers
-    const fenceMatch = typeof raw === "string" && raw.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    if (fenceMatch) {
-      raw = fenceMatch[1];
-      console.log("📝 Extracted JSON from code fence");
-    }
-
-    // Remove any leading/trailing text and extract JSON array
-    if (typeof raw === "string") {
-      raw = raw.trim();
-      
-      // First, try to remove common prefixes/suffixes
-      raw = raw.replace(/^(Here are|I found|Here's|These are|Recommendations:)[\s\S]*?(\[)/i, '[');
-      raw = raw.replace(/(\])[\s\S]*?(\.|$)/i, ']');
-      
-      // Try to find JSON array in the response - use greedy match to get complete array
-      // First, find the start of the array
-      const arrayStart = raw.indexOf('[');
-      if (arrayStart !== -1) {
-        // Find the matching closing bracket by counting brackets
-        let bracketCount = 0;
-        let inString = false;
-        let escapeNext = false;
-        
-        for (let i = arrayStart; i < raw.length; i++) {
-          const char = raw[i];
-          
-          if (escapeNext) {
-            escapeNext = false;
-            continue;
-          }
-          
-          if (char === '\\') {
-            escapeNext = true;
-            continue;
-          }
-          
-          if (char === '"' && !escapeNext) {
-            inString = !inString;
-            continue;
-          }
-          
-          if (!inString) {
-            if (char === '[') {
-              bracketCount++;
-            } else if (char === ']') {
-              bracketCount--;
-              if (bracketCount === 0) {
-                // Found the matching closing bracket
-                raw = raw.substring(arrayStart, i + 1);
-                console.log("📝 Extracted complete JSON array from response");
-                break;
-              }
-            }
-          }
-        }
-      } else {
-        // No array found, try to find any JSON structure
-        const anyJsonMatch = raw.match(/(\[|\{)[\s\S]*(]|\})/);
-        if (anyJsonMatch) {
-          raw = anyJsonMatch[0];
-          console.log("📝 Extracted JSON structure from response");
-        } else {
-          // Remove markdown code blocks if any
-          raw = raw.replace(/^`+|`+$/g, "").trim();
-        }
+    // With structured output, content should be valid JSON
+    // Fallback: if it's a string, try to parse it
+    if (typeof content === 'string') {
+      // Try to extract JSON if wrapped in markdown
+      let jsonStr = content.trim();
+      const jsonMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[1];
       }
+      
+      // Try to find JSON object/array
+      const objMatch = jsonStr.match(/\{[\s\S]*\}/);
+      if (objMatch) {
+        jsonStr = objMatch[0];
+      }
+      
+      openaiData = JSON.parse(jsonStr);
+    } else {
+      openaiData = content;
     }
 
-    // Pre-fix common OpenAI JSON errors BEFORE first parse attempt
-    // Fix missing spotify_url key (most common error)
-    // Pattern: ]spotify.com/track/... (no space, no quotes, no key)
-    raw = raw.replace(/\]spotify\.com\/track\/([a-zA-Z0-9]+)"/g, '],\n    "spotify_url": "https://open.spotify.com/track/$1"');
-    raw = raw.replace(/\]\s+spotify\.com\/track\/([a-zA-Z0-9]+)"/g, '],\n    "spotify_url": "https://open.spotify.com/track/$1"');
-    raw = raw.replace(/\]\s*(https?:\/\/)?(open\.)?spotify\.com\/track\/([a-zA-Z0-9]+)(")?/g, '],\n    "spotify_url": "https://open.spotify.com/track/$3"$4');
-    
-    // Remove trailing commas
-    raw = raw.replace(/,(\s*[}\]])/g, '$1');
+    if (!openaiData.recommendations || !Array.isArray(openaiData.recommendations)) {
+      throw new Error("Invalid response structure: missing recommendations array");
+    }
 
-    // Try to parse JSON with better error handling
-    try {
-      songs = typeof raw === "string" ? JSON.parse(raw) : raw;
-    } catch (parseErr: any) {
-      const errorPos = parseInt(parseErr.message.match(/position (\d+)/)?.[1] || '0');
-      console.error("❌ JSON parse error:", parseErr.message);
-      console.error("❌ Problematic JSON (first 500 chars):", raw.substring(0, 500));
-      console.error("❌ Problematic JSON (around error position " + errorPos + "):", 
-        raw.substring(Math.max(0, errorPos - 100), Math.min(raw.length, errorPos + 100)));
-      console.error("❌ Full raw JSON length:", raw.length);
-      
-      // Try to fix common JSON errors
-      let fixedRaw = raw;
-      
-      // Fix 1: Remove trailing commas before closing brackets/braces
-      fixedRaw = fixedRaw.replace(/,(\s*[}\]])/g, '$1');
-      
-      // Fix 2: Fix missing quotes around keys (but not values)
-      fixedRaw = fixedRaw.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-      
-      // Fix 3: Fix single quotes to double quotes (but be careful with apostrophes in text)
-      // Only replace single quotes that are clearly JSON syntax, not in text content
-      fixedRaw = fixedRaw.replace(/([{,]\s*)'([^']+)'(\s*:)/g, '$1"$2"$3'); // Keys
-      fixedRaw = fixedRaw.replace(/(:\s*)'([^']+)'(\s*[,}])/g, '$1"$2"$3'); // String values
-      
-      // Fix 4: Fix missing spotify_url key (common OpenAI error) - MUST BE FIRST
-      // Pattern: ]spotify.com/track/... (no space, no quotes, no key)
-      // This handles: "mood_tags": ["tag1", "tag2"]spotify.com/track/ID"
-      // Must match: ] followed immediately (no space) by spotify.com/track/ID"
-      fixedRaw = fixedRaw.replace(/\]spotify\.com\/track\/([a-zA-Z0-9]+)"/g, '],\n    "spotify_url": "https://open.spotify.com/track/$1"');
-      
-      // Also handle with space: ] spotify.com/track/ID"
-      fixedRaw = fixedRaw.replace(/\]\s+spotify\.com\/track\/([a-zA-Z0-9]+)"/g, '],\n    "spotify_url": "https://open.spotify.com/track/$1"');
-      
-      // Handle with https:// prefix but missing key: ]https://open.spotify.com/track/ID"
-      fixedRaw = fixedRaw.replace(/\]\s*(https?:\/\/)?(open\.)?spotify\.com\/track\/([a-zA-Z0-9]+)(")?/g, '],\n    "spotify_url": "https://open.spotify.com/track/$3"$4');
-      
-      // Handle if it's missing language field too: ]spotify.com/track/ID"\n  }
-      fixedRaw = fixedRaw.replace(/\]spotify\.com\/track\/([a-zA-Z0-9]+)"\s*\n\s*}/g, '],\n    "language": "en",\n    "spotify_url": "https://open.spotify.com/track/$1"\n  }');
-      
-      console.log("🔧 After Fix 4 (spotify_url fix), JSON preview:", fixedRaw.substring(0, 500));
-      
-      // Fix 5: Fix missing commas between properties
-      fixedRaw = fixedRaw.replace(/"\s*"([^"])/g, '", "$1'); // Missing comma between string properties
-      fixedRaw = fixedRaw.replace(/}\s*{/g, '}, {'); // Missing comma between objects
-      fixedRaw = fixedRaw.replace(/]\s*\[/g, '], ['); // Missing comma between arrays
-      
-      // Fix 6: Fix missing commas before spotify_url or language fields
-      fixedRaw = fixedRaw.replace(/\]\s*"spotify_url"/g, '],\n    "spotify_url"');
-      fixedRaw = fixedRaw.replace(/\]\s*"language"/g, '],\n    "language"');
-      
-      // Fix 7: Fix incomplete spotify_url values (missing quotes or key) - more aggressive
-      fixedRaw = fixedRaw.replace(/(\]|")\s*(https?:\/\/)?(open\.)?spotify\.com\/track\/([a-zA-Z0-9]+)(")?/g, '$1,\n    "spotify_url": "https://open.spotify.com/track/$4"$5');
-      
-      // Fix 6: Remove any control characters that might break JSON
-      fixedRaw = fixedRaw.replace(/[\x00-\x1F\x7F]/g, '');
-      
-      // Try parsing again
-      try {
-        songs = JSON.parse(fixedRaw);
-        console.log("✅ Successfully parsed after fixing common JSON errors");
-      } catch (retryErr: any) {
-        console.error("❌ Retry parse also failed:", retryErr.message);
-        
-        // Last resort: Try to extract and fix individual song objects
-        try {
-          // Extract all objects from the array
-          const objectMatches = fixedRaw.match(/\{[^}]*\}/g);
-          if (objectMatches && objectMatches.length > 0) {
-            const fixedSongs: any[] = [];
-            for (const objStr of objectMatches) {
-              try {
-                // Try to fix this individual object
-                let fixedObj = objStr;
-                fixedObj = fixedObj.replace(/,(\s*[}])/g, '$1'); // Remove trailing commas
-                fixedObj = fixedObj.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'); // Fix keys
-                const parsed = JSON.parse(fixedObj);
-                if (parsed.title && parsed.artist) {
-                  fixedSongs.push(parsed);
-                }
-              } catch {
-                // Skip this object if it can't be parsed
-                continue;
-              }
-            }
-            if (fixedSongs.length > 0) {
-              songs = fixedSongs;
-              console.log("✅ Successfully parsed by extracting individual song objects");
-            } else {
-              throw retryErr;
-            }
-          } else {
-            throw retryErr;
-          }
-        } catch {
-          throw parseErr; // Re-throw original error
-        }
-      }
+    if (openaiData.recommendations.length !== 3) {
+      console.warn(`⚠️ Expected 3 recommendations, got ${openaiData.recommendations.length}`);
     }
-    
-    console.log("✅ Parsed songs:", JSON.stringify(songs, null, 2));
-    
-    // Validate songs have required fields
-    if (!Array.isArray(songs) || songs.length === 0) {
-      throw new Error("Invalid songs array");
-    }
-    
-    // Log validation warnings
-    songs.forEach((song: any, index: number) => {
-      if (!song.title || !song.artist) {
-        console.warn(`⚠️ Song ${index + 1} missing title or artist`);
-      }
-      if (!song.spotify_url || !song.spotify_url.includes('open.spotify.com/track/')) {
-        console.warn(`⚠️ Song ${index + 1} has invalid or missing Spotify URL:`, song.spotify_url);
-      }
-    });
-    
+
+    console.log(`✅ Got ${openaiData.recommendations.length} recommendations from OpenAI`);
   } catch (err) {
     console.error("❌ Failed to parse OpenAI response:", err);
-    
-    // Log the full raw content for debugging (truncated to avoid huge logs)
-    const rawPreview = typeof raw !== 'undefined' ? String(raw).substring(0, 1000) : 'N/A';
-    console.error("❌ Raw OpenAI content (first 1000 chars):", rawPreview);
-    console.error("❌ Error details:", {
-      message: err?.message,
-      stack: err?.stack,
-      rawLength: typeof raw === 'string' ? raw.length : 0
-    });
-    
-    // Try one more time with more aggressive JSON extraction
-    if (typeof raw === "string" && raw.length > 0) {
-      try {
-        // Try multiple extraction strategies
-        const extractionStrategies = [
-          // Strategy 1: Find JSON array with flexible matching
-          () => {
-            const match = raw.match(/\[[\s\S]{0,10000}\]/);
-            if (match) {
-              const parsed = JSON.parse(match[0]);
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            }
-            return null;
-          },
-          // Strategy 2: Find JSON after common prefixes
-          () => {
-            const afterPrefix = raw.replace(/^[^[]*/, '');
-            const match = afterPrefix.match(/\[[\s\S]{0,10000}\]/);
-            if (match) {
-              const parsed = JSON.parse(match[0]);
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            }
-            return null;
-          },
-          // Strategy 3: Find JSON before common suffixes
-          () => {
-            const beforeSuffix = raw.replace(/[^\]]*$/, '');
-            const match = beforeSuffix.match(/\[[\s\S]{0,10000}\]/);
-            if (match) {
-              const parsed = JSON.parse(match[0]);
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            }
-            return null;
-          },
-          // Strategy 4: Try parsing the entire string (in case it's just JSON)
-          () => {
-            try {
-              const parsed = JSON.parse(raw.trim());
-              if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-            } catch {
-              return null;
-            }
-            return null;
-          }
-        ];
-        
-        for (const strategy of extractionStrategies) {
-          try {
-            const extracted = strategy();
-            if (extracted && Array.isArray(extracted) && extracted.length > 0) {
-              console.log("✅ Successfully extracted JSON on retry using strategy");
-              songs = extracted;
-              break;
-            }
-          } catch (strategyErr) {
-            // Continue to next strategy
-            continue;
-          }
-        }
-      } catch (retryErr) {
-        console.error("❌ Retry parsing also failed:", retryErr);
-      }
-    }
-    
-    // If we still don't have songs, return error with more details
-    if (!songs || !Array.isArray(songs) || songs.length === 0) {
-      return jsonResponse({
-        error: "Failed to parse OpenAI response",
-        message: "We couldn't process the music recommendations. Please try again.",
-        details: err?.message ?? String(err),
-        rawPreview: typeof raw === 'string' ? raw.substring(0, 200) : 'No raw content available'
-      }, 500);
-    }
-  }
-
-  // 9) Validate we have at least 3 songs before returning
-  if (!Array.isArray(songs) || songs.length < 3) {
-    console.warn(`⚠️ Only got ${songs?.length || 0} songs, need at least 3`);
     return jsonResponse({
-      error: "No matches found",
-      message: "We couldn't find enough songs matching your request. Please try a different search."
-    }, 404);
+      error: "Failed to parse OpenAI response",
+      message: "We couldn't process the music recommendations. Please try again."
+    }, 500);
   }
 
-  console.log(`✅ Returning ${songs.length} songs`);
+  // 8) Resolve tracks via Spotify
+  const spotifyToken = await getSpotifyToken();
+  if (!spotifyToken) {
+    console.warn("⚠️ No Spotify token, returning OpenAI recommendations without Spotify URLs");
+    return jsonResponse({
+      songs: openaiData.recommendations.map((rec: any) => ({
+        title: rec.title,
+        artist: rec.artist,
+        reason: rec.reason,
+        mood_tags: rec.mood_tags,
+        language: "en",
+        spotify_url: null,
+        album_cover: null
+      }))
+    }, 200);
+  }
 
-  // 10) Return recommendations (exactly 3 songs)
+  const resolvedSongs: any[] = [];
+  const failedSongs: any[] = [];
+
+  for (const rec of openaiData.recommendations) {
+    const track = await findTrackOnSpotify(
+      rec.title,
+      rec.artist,
+      rec.search_query,
+      spotifyToken
+    );
+
+    if (track) {
+      resolvedSongs.push({
+        title: track.name,
+        artist: track.artists[0]?.name || rec.artist,
+        reason: rec.reason,
+        mood_tags: rec.mood_tags,
+        language: "en",
+        spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
+        album_cover: track.album?.images?.[0]?.url
+      });
+    } else {
+      console.warn(`⚠️ Could not find "${rec.title}" by "${rec.artist}" on Spotify`);
+      failedSongs.push(rec);
+    }
+  }
+
+  // 9) Handle missing tracks
+  if (failedSongs.length > 0) {
+    console.warn(`⚠️ ${failedSongs.length} songs could not be found on Spotify:`, 
+      failedSongs.map(s => `"${s.title}" by ${s.artist}`).join(", "));
+    
+    // If we have at least 1 resolved song, continue (we'll handle partial results below)
+    // If no songs found at all, return error
+    if (resolvedSongs.length === 0) {
+      return jsonResponse({
+        error: "No matches found",
+        message: "We couldn't find any songs matching your request on Spotify. Please try a different search."
+      }, 404);
+    }
+  }
+
+  // 10) Check for duplicate artists (safety net)
+  const artistSet = new Set<string>();
+  const deduplicatedSongs: any[] = [];
+  
+  for (const song of resolvedSongs) {
+    const artistKey = song.artist?.toLowerCase().trim() || "";
+    if (!artistSet.has(artistKey)) {
+      artistSet.add(artistKey);
+      deduplicatedSongs.push(song);
+    } else {
+      console.warn(`⚠️ Duplicate artist detected: ${song.artist}, skipping "${song.title}"`);
+    }
+  }
+
+  // 11) Ensure we have exactly 3 songs
+  if (deduplicatedSongs.length < 3) {
+    console.warn(`⚠️ Only got ${deduplicatedSongs.length} songs after deduplication, need 3`);
+    
+    // If we have at least 1 song, return what we have (better UX than error)
+    // In production, you could implement retry logic here to get replacements
+    if (deduplicatedSongs.length > 0) {
+      console.warn("⚠️ Returning partial results - some songs not found on Spotify or had duplicate artists");
+      return jsonResponse({
+        songs: deduplicatedSongs,
+        warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined
+      }, 200);
+    } else {
+      // No songs found at all - return error
+      return jsonResponse({
+        error: "No matches found",
+        message: "We couldn't find any songs matching your request on Spotify. Please try a different search."
+      }, 404);
+    }
+  }
+
+  console.log(`✅ Returning ${deduplicatedSongs.length} resolved songs (all unique artists)`);
+
   return jsonResponse({
-    songs: songs.slice(0, 3) // Ensure exactly 3 songs
+    songs: deduplicatedSongs.slice(0, 3) // Ensure exactly 3
   }, 200);
 });

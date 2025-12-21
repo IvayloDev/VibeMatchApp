@@ -382,3 +382,83 @@ export async function getImageSignedUrl(filePath: string): Promise<string | null
     return null;
   }
 }
+
+/**
+ * Validate a purchase with the server
+ * Calls the validate-purchase edge function
+ */
+export async function validatePurchase(
+  transactionId: string,
+  productId: string
+): Promise<{
+  success: boolean;
+  creditsGranted?: number;
+  newBalance?: number;
+  error?: string;
+}> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      return {
+        success: false,
+        error: 'Not authenticated',
+      };
+    }
+
+    const { data, error } = await supabase.functions.invoke('validate-purchase', {
+      body: {
+        transactionId,
+        productId,
+        platform: 'ios',
+      },
+    });
+
+    if (error) {
+      console.error('Error validating purchase:', error);
+      // Supabase functions.invoke returns error for non-2xx responses
+      // The error might contain the response body
+      let errorMessage = 'Validation failed';
+      
+      // Try to extract error from different possible locations
+      if (error.message) {
+        errorMessage = error.message;
+      } else if ((error as any).context?.message) {
+        errorMessage = (error as any).context.message;
+      } else if ((error as any).message) {
+        errorMessage = (error as any).message;
+      }
+      
+      return {
+        success: false,
+        error: errorMessage,
+      };
+    }
+
+    // Handle response data
+    if (!data) {
+      return { success: false, error: 'No response from server' };
+    }
+
+    // If response has error field, it's an error response
+    if (typeof data === 'object' && 'error' in data && !('success' in data)) {
+      return {
+        success: false,
+        error: (data as any).error || 'Validation failed',
+      };
+    }
+
+    // If response has success field, return it
+    if (typeof data === 'object' && 'success' in data) {
+      return data as any;
+    }
+
+    // Unknown response format
+    return { success: false, error: 'Unexpected response format' };
+  } catch (error: any) {
+    console.error('Error calling validate-purchase:', error);
+    return {
+      success: false,
+      error: error.message || 'Network error',
+    };
+  }
+}

@@ -203,14 +203,17 @@ const ResultsScreen = () => {
           }),
         ]).start();
 
-        // Rotating rings animation
+        // Rotating rings animation - seamless loop
         const createRingAnimation = (scale: Animated.Value, opacity: Animated.Value, delay: number) => {
-          setTimeout(() => {
+          const animateRing = () => {
+            // Reset values
+            scale.setValue(0);
+            opacity.setValue(0);
+            
             Animated.parallel([
-              Animated.spring(scale, {
+              Animated.timing(scale, {
                 toValue: 2.5,
-                tension: 30,
-                friction: 8,
+                duration: 2000,
                 useNativeDriver: true,
               }),
               Animated.sequence([
@@ -221,17 +224,24 @@ const ResultsScreen = () => {
                 }),
                 Animated.timing(opacity, {
                   toValue: 0,
-                  duration: 1000,
+                  duration: 1600,
                   useNativeDriver: true,
                 }),
               ]),
-            ]).start();
+            ]).start(() => {
+              // Loop seamlessly
+              animateRing();
+            });
+          };
+          
+          setTimeout(() => {
+            animateRing();
           }, delay);
         };
 
         createRingAnimation(ring1Scale, ring1Opacity, 0);
-        createRingAnimation(ring2Scale, ring2Opacity, 200);
-        createRingAnimation(ring3Scale, ring3Opacity, 400);
+        createRingAnimation(ring2Scale, ring2Opacity, 666); // Stagger by 1/3 of duration
+        createRingAnimation(ring3Scale, ring3Opacity, 1332); // Stagger by 2/3 of duration
 
         // Particle effects removed to avoid React Native tracking errors
 
@@ -647,12 +657,16 @@ const ResultsScreen = () => {
               />
             </Animated.View>
 
-            {/* Expanding Rings */}
+            {/* Expanding Rings - Seamlessly Looping */}
             <Animated.View
               style={[
                 styles.expandingRing,
                 {
-                  transform: [{ scale: ring1Scale }],
+                  transform: [
+                    { scale: ring1Scale },
+                    { translateX: 0 },
+                    { translateY: 0 },
+                  ],
                   opacity: ring1Opacity,
                 }
               ]}
@@ -661,7 +675,11 @@ const ResultsScreen = () => {
               style={[
                 styles.expandingRing,
                 {
-                  transform: [{ scale: ring2Scale }],
+                  transform: [
+                    { scale: ring2Scale },
+                    { translateX: 0 },
+                    { translateY: 0 },
+                  ],
                   opacity: ring2Opacity,
                 }
               ]}
@@ -670,7 +688,11 @@ const ResultsScreen = () => {
               style={[
                 styles.expandingRing,
                 {
-                  transform: [{ scale: ring3Scale }],
+                  transform: [
+                    { scale: ring3Scale },
+                    { translateX: 0 },
+                    { translateY: 0 },
+                  ],
                   opacity: ring3Opacity,
                 }
               ]}
@@ -691,20 +713,25 @@ const ResultsScreen = () => {
 
             {/* Main Match Text */}
             <Animated.View
-              style={{
-                opacity: matchTextOpacity,
-                transform: [
-                  { scale: matchTextScale },
-                  {
-                    rotate: matchTextRotation.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['-5deg', '5deg'],
-                    }),
-                  },
-                ],
-              }}
+              style={[
+                styles.matchTextContainer,
+                {
+                  opacity: matchTextOpacity,
+                  transform: [
+                    { scale: matchTextScale },
+                    {
+                      rotate: matchTextRotation.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['-5deg', '5deg'],
+                      }),
+                    },
+                  ],
+                },
+              ]}
             >
-              <Text style={styles.matchText}>It's a Match! 🎉</Text>
+              <Text style={styles.matchText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                It's a Match! 🎉
+              </Text>
               <Text style={styles.matchSubtext}>Perfect song found for your vibe</Text>
               <View style={styles.matchEmojiContainer}>
                 <Animated.Text
@@ -901,10 +928,10 @@ const ResultsScreen = () => {
                   <Text style={styles.mainSongTitle} numberOfLines={3}>
                     {songs[0].title}
                   </Text>
-                  <Text style={styles.mainSongArtist} numberOfLines={1}>
+                  <Text style={styles.mainSongArtist} numberOfLines={2}>
                     by {songs[0].artist}
                   </Text>
-                  <Text style={styles.mainSongReason} numberOfLines={3}>
+                  <Text style={styles.mainSongReason} numberOfLines={6}>
                     {songs[0].reason}
                   </Text>
                   {songs[0].spotify_url && (
@@ -947,10 +974,10 @@ const ResultsScreen = () => {
                     <Text style={styles.alternativeTitle} numberOfLines={1}>
                       {song.title}
                     </Text>
-                    <Text style={styles.alternativeArtist} numberOfLines={1}>
+                    <Text style={styles.alternativeArtist} numberOfLines={2}>
                       by {song.artist}
                     </Text>
-                    <Text style={styles.alternativeReason} numberOfLines={2}>
+                    <Text style={styles.alternativeReason} numberOfLines={5}>
                       {song.reason}
                     </Text>
                   </View>
@@ -1038,6 +1065,13 @@ const styles = StyleSheet.create({
     zIndex: 1000,
     overflow: 'hidden',
   },
+  matchTextContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: '90%',
+  },
   matchBackgroundGradient: {
     position: 'absolute',
     top: -100,
@@ -1052,6 +1086,10 @@ const styles = StyleSheet.create({
     borderRadius: 100,
     borderWidth: 3,
     borderColor: Colors.accent.blue,
+    top: '50%',
+    left: '50%',
+    marginLeft: -100,
+    marginTop: -100,
   },
   glowEffect: {
     position: 'absolute',
@@ -1072,6 +1110,8 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 20,
     letterSpacing: 1,
+    includeFontPadding: false,
+    paddingHorizontal: Spacing.sm,
   },
   matchSubtext: {
     ...Typography.body,
@@ -1207,6 +1247,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xl,
     minHeight: 160, // Minimum height, but allow expansion
     marginTop: 80, // Add top margin for floating buttons with safe area
+    alignItems: 'flex-start', // Align items to top to allow text expansion
   },
   imageContainer: {
     width: 160,
@@ -1251,7 +1292,8 @@ const styles = StyleSheet.create({
   mainSongContainer: {
     flex: 1,
     marginLeft: Spacing.lg,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    paddingRight: Spacing.sm,
   },
   mainSongLabel: {
     ...Typography.caption,
@@ -1282,6 +1324,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginBottom: Spacing.md,
+    flexShrink: 1,
   },
   spotifyButton: {
     flexDirection: 'row',
@@ -1318,15 +1361,18 @@ const styles = StyleSheet.create({
   },
   alternativeItem: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     backgroundColor: Colors.cardBackground,
     padding: Spacing.md,
     borderRadius: BorderRadius.md,
     borderLeftWidth: 3,
     borderLeftColor: Colors.accent.yellow,
+    minHeight: 0, // Allow items to expand based on content
   },
   alternativeInfo: {
     flex: 1,
+    paddingRight: Spacing.sm,
+    minWidth: 0, // Allow text to shrink and wrap properly
   },
   alternativeTitle: {
     ...Typography.body,
@@ -1344,12 +1390,14 @@ const styles = StyleSheet.create({
     color: Colors.textTertiary,
     fontSize: 11,
     fontStyle: 'italic',
-    lineHeight: 14,
+    lineHeight: 16,
+    flexShrink: 1,
   },
   smallSpotifyButton: {
     backgroundColor: Colors.accent.green + '30',
     padding: Spacing.sm,
     borderRadius: BorderRadius.round,
+    marginTop: Spacing.xs, // Align with top of text content
   },
 
   // Full-Screen Image Modal Styles

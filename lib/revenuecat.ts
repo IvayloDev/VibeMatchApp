@@ -225,6 +225,22 @@ async function loadPurchasesModule(retries = 3): Promise<boolean> {
 // RevenueCat API Key
 const REVENUECAT_API_KEY = 'appl_FbkedPZAsBZxjJGeQjILDpPuWfZ';
 
+/**
+ * RevenueCat Configuration for Production/Apple Review
+ * 
+ * CURRENTLY ENABLED: RevenueCat is active in both development and production.
+ * This is the correct setting for Apple App Review and production use.
+ * 
+ * IMPORTANT: For this to work, your RevenueCat Offering must use App Store products,
+ * NOT Test Store products. The iOS SDK can only fetch real App Store products.
+ * 
+ * To configure:
+ * 1. Go to RevenueCat Dashboard → Offerings → "default"
+ * 2. Edit each package and link to App Store products (PalTech App Store)
+ * 3. Ensure App Store products are created and active in App Store Connect
+ */
+const SKIP_REVENUECAT_IN_DEV = __DEV__ && false; // Production-ready: RevenueCat enabled
+
 // Product identifiers - must match RevenueCat dashboard
 export const PRODUCT_IDS = {
   CREDITS_5: 'tunematch_credits_5',
@@ -250,6 +266,24 @@ export function getCreditsForProduct(productId: string): number {
 
 let isConfigured = false;
 let isInitializing = false;
+let currentAppUserId: string | null = null; // Track the currently identified user
+
+/**
+ * Cache for offerings to avoid repeated calls when empty.
+ * 
+ * The RevenueCat native SDK logs errors when offerings are empty/not configured.
+ * By caching empty results, we avoid repeatedly calling getOfferings() and triggering
+ * these errors. The cache expires after 60 seconds to allow for configuration changes.
+ * 
+ * Note: Native SDK errors will still appear on the first call, but subsequent calls
+ * within the cache duration will return early without triggering SDK errors.
+ */
+let offeringsCache: {
+  packages: PurchasesPackage[] | null;
+  timestamp: number;
+  isEmpty: boolean; // Track if we've determined offerings are empty
+} | null = null;
+const OFFERINGS_CACHE_DURATION = 60000; // Cache for 60 seconds
 
 /**
  * Check if RevenueCat is available and ready
@@ -314,6 +348,13 @@ async function waitForNativeBridge(maxWaitMs = 5000): Promise<boolean> {
  * Call this once when the app starts
  */
 export async function initRevenueCat(userId?: string): Promise<void> {
+  // Skip RevenueCat entirely in development if configured
+  if (SKIP_REVENUECAT_IN_DEV) {
+    console.log('[RevenueCat] ℹ️ Skipping initialization - SKIP_REVENUECAT_IN_DEV is enabled');
+    console.log('[RevenueCat] 💡 The app will use mock packages. Set SKIP_REVENUECAT_IN_DEV to false to test real purchases.');
+    return;
+  }
+
   try {
     // Re-check Expo Go status (in case it wasn't detected initially)
     const currentlyExpoGo = checkIfExpoGo();
@@ -419,12 +460,24 @@ export async function initRevenueCat(userId?: string): Promise<void> {
           appUserID: userId || undefined,
         });
 
-        // Set log level if available
-        if (__DEV__ && LOG_LEVEL && Purchases.setLogLevel) {
+        // Track the user ID if provided during configuration
+        if (userId) {
+          currentAppUserId = userId;
+        }
+
+        // Set log level BEFORE any SDK operations to minimize noise
+        // Note: ERROR logs about "no products registered" are expected during development
+        // because Test Store products in RevenueCat don't work with the iOS SDK.
+        // The iOS SDK only works with real App Store products.
+        // These errors can be safely ignored - the app falls back to mock packages.
+        if (LOG_LEVEL && Purchases.setLogLevel) {
           try {
-            Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+            // In development, use ERROR level to reduce noise (only critical errors)
+            // In production, use WARN level
+            const logLevel = __DEV__ ? LOG_LEVEL.ERROR : LOG_LEVEL.WARN;
+            Purchases.setLogLevel(logLevel);
           } catch (e) {
-            // Ignore
+            // Ignore log level errors
           }
         }
 
@@ -496,10 +549,39 @@ export async function identifyUser(userId: string): Promise<CustomerInfo | null>
     return null;
   }
 
+  // Skip if already identified with the same user ID
+  if (currentAppUserId === userId) {
+    if (__DEV__) {
+      console.log('[RevenueCat] ℹ️ User already identified, skipping logIn call');
+    }
+    // Return current customer info instead
+    try {
+      return await Purchases.getCustomerInfo();
+    } catch (error) {
+      // If getCustomerInfo fails, try logIn anyway
+      console.warn('[RevenueCat] Could not get customer info, attempting logIn');
+    }
+  }
+
   try {
     const { customerInfo } = await Purchases.logIn(userId);
+    currentAppUserId = userId; // Track the identified user
     return customerInfo;
-  } catch (error) {
+  } catch (error: any) {
+    const errorMessage = error?.message || String(error);
+    
+    // If the error is about same user ID, that's fine - just get customer info
+    if (errorMessage.includes('same as the one already cached') || 
+        errorMessage.includes('same appUserID')) {
+      currentAppUserId = userId; // Track as identified
+      try {
+        return await Purchases.getCustomerInfo();
+      } catch (getInfoError) {
+        console.warn('[RevenueCat] Could not get customer info after logIn warning');
+        return null;
+      }
+    }
+    
     console.error('[RevenueCat] Error identifying user:', error);
     return null;
   }
@@ -515,9 +597,11 @@ export async function logOutUser(): Promise<CustomerInfo | null> {
 
   try {
     const customerInfo = await Purchases.logOut();
+    currentAppUserId = null; // Clear tracked user ID
     return customerInfo;
   } catch (error) {
     console.error('[RevenueCat] Error logging out:', error);
+    currentAppUserId = null; // Clear tracked user ID even on error
     return null;
   }
 }
@@ -540,18 +624,84 @@ export async function getCustomerInfo(): Promise<CustomerInfo | null> {
 
 
 /**
+ * Clear the offerings cache (useful after configuring offerings in RevenueCat dashboard)
+ */
+export function clearOfferingsCache(): void {
+  offeringsCache = null;
+}
+
+/**
  * Get the current offering (products available for purchase)
  */
 export async function getCurrentOffering(): Promise<PurchasesOffering | null> {
+  // Skip RevenueCat entirely in development if configured
+  if (SKIP_REVENUECAT_IN_DEV) {
+    return null;
+  }
+
   if (!isRevenueCatAvailable() || !isConfigured) {
     return null;
   }
 
+  // Check cache first - if we know offerings are empty, avoid calling the SDK
+  const now = Date.now();
+  if (offeringsCache && (now - offeringsCache.timestamp) < OFFERINGS_CACHE_DURATION) {
+    if (offeringsCache.isEmpty) {
+      return null;
+    }
+  }
+
   try {
     const offerings = await Purchases.getOfferings();
+    
+    // Update cache based on result
+    if (!offerings.current || offerings.current.availablePackages.length === 0) {
+      offeringsCache = {
+        packages: [],
+        timestamp: now,
+        isEmpty: true,
+      };
+    } else {
+      offeringsCache = {
+        packages: offerings.current.availablePackages,
+        timestamp: now,
+        isEmpty: false,
+      };
+    }
+    
     return offerings.current;
-  } catch (error) {
-    console.error('[RevenueCat] Error fetching offerings:', error);
+  } catch (error: any) {
+    const errorMessage = error?.message || String(error);
+    
+    // Check if this is the "no products registered" error - this is expected during development
+    if (errorMessage.includes('no products registered') || 
+        errorMessage.includes('no products') ||
+        errorMessage.includes('offerings empty') ||
+        errorMessage.includes('has no packages configured')) {
+      // Cache empty result to avoid repeated calls
+      offeringsCache = {
+        packages: [],
+        timestamp: now,
+        isEmpty: true,
+      };
+      
+      // This is expected if offerings aren't configured - log as info in dev, silent in production
+      if (__DEV__) {
+        console.log('[RevenueCat] ℹ️ Offerings not configured yet. This is normal during development.');
+      }
+      return null;
+    }
+    
+    // For other errors, log as warning
+    console.warn('[RevenueCat] ⚠️ Error fetching current offering:', errorMessage);
+    
+    // Cache empty result for a shorter duration on errors
+    offeringsCache = {
+      packages: [],
+      timestamp: now,
+      isEmpty: true,
+    };
+    
     return null;
   }
 }
@@ -560,6 +710,12 @@ export async function getCurrentOffering(): Promise<PurchasesOffering | null> {
  * Get available packages from the current offering
  */
 export async function getAvailablePackages(): Promise<PurchasesPackage[]> {
+  // Skip RevenueCat entirely in development if configured
+  if (SKIP_REVENUECAT_IN_DEV) {
+    // Return empty - PaymentScreen will use mock packages
+    return [];
+  }
+
   // Try to initialize if not configured yet
   if (!isConfigured) {
     try {
@@ -574,6 +730,19 @@ export async function getAvailablePackages(): Promise<PurchasesPackage[]> {
   if (!isConfigured) {
     console.warn('[RevenueCat] Not configured, returning empty packages');
     return [];
+  }
+
+  // Check cache first to avoid repeated calls when offerings are empty
+  const now = Date.now();
+  if (offeringsCache && (now - offeringsCache.timestamp) < OFFERINGS_CACHE_DURATION) {
+    // If we've cached that offerings are empty, return early to avoid triggering SDK errors
+    if (offeringsCache.isEmpty) {
+      return [];
+    }
+    // If we have cached packages, return them
+    if (offeringsCache.packages && offeringsCache.packages.length > 0) {
+      return offeringsCache.packages;
+    }
   }
 
   // Double-check that Purchases is available (can be object or function)
@@ -608,6 +777,12 @@ export async function getAvailablePackages(): Promise<PurchasesPackage[]> {
     const offerings = await Purchases.getOfferings();
     
     if (offerings.current && offerings.current.availablePackages.length > 0) {
+      // Cache successful result
+      offeringsCache = {
+        packages: offerings.current.availablePackages,
+        timestamp: now,
+        isEmpty: false,
+      };
       return offerings.current.availablePackages;
     }
     
@@ -617,25 +792,72 @@ export async function getAvailablePackages(): Promise<PurchasesPackage[]> {
         packageCount: offerings.current.availablePackages.length,
       });
       console.warn('[RevenueCat] 💡 Check RevenueCat Dashboard: Products must be added to an Offering');
+      // Cache empty result
+      offeringsCache = {
+        packages: [],
+        timestamp: now,
+        isEmpty: true,
+      };
     } else {
-      console.warn('[RevenueCat] ⚠️ No current offering found');
-      console.warn('[RevenueCat] 💡 Check RevenueCat Dashboard: You need to create an Offering and mark it as "Current"');
+      // This is expected if offerings aren't configured yet - not an error
+      if (__DEV__) {
+        console.log('[RevenueCat] ℹ️ No current offering found (this is normal if offerings aren\'t configured in RevenueCat dashboard)');
+      }
+      // Cache empty result to avoid repeated calls
+      offeringsCache = {
+        packages: [],
+        timestamp: now,
+        isEmpty: true,
+      };
     }
     
     return [];
   } catch (error: any) {
-    console.error('[RevenueCat] Error fetching packages:', error?.message || error);
+    const errorMessage = error?.message || String(error);
+    
+    // Check if this is the "no products registered" error - this is expected during development
+    if (errorMessage.includes('no products registered') || 
+        errorMessage.includes('no products') ||
+        errorMessage.includes('offerings empty') ||
+        errorMessage.includes('has no packages configured')) {
+      // Cache empty result to avoid repeated calls that trigger these errors
+      offeringsCache = {
+        packages: [],
+        timestamp: now,
+        isEmpty: true,
+      };
+      
+      // This is expected if offerings aren't configured - log as info in dev, silent in production
+      if (__DEV__) {
+        console.log('[RevenueCat] ℹ️ Offerings not configured yet. This is normal during development.');
+        console.log('[RevenueCat] 💡 To configure: Add products to an Offering in RevenueCat Dashboard and mark it as "Current"');
+      }
+      return [];
+    }
+    
+    // For other errors, log as warning (not error) since we gracefully fall back
+    console.warn('[RevenueCat] ⚠️ Error fetching packages (falling back to mock data):', errorMessage);
+    
+    // Cache empty result for a shorter duration on errors (in case it's temporary)
+    offeringsCache = {
+      packages: [],
+      timestamp: now,
+      isEmpty: true,
+    };
+    
     return [];
   }
 }
 
 /**
  * Purchase a package (consumable credits)
+ * Returns transaction info for server-side validation
  */
 export async function purchasePackage(pkg: PurchasesPackage): Promise<{
   success: boolean;
   customerInfo?: CustomerInfo;
-  creditsGranted?: number;
+  transactionId?: string;
+  productId?: string;
   error?: string;
   userCancelled?: boolean;
 }> {
@@ -649,15 +871,38 @@ export async function purchasePackage(pkg: PurchasesPackage): Promise<{
   try {
     const { customerInfo } = await Purchases.purchasePackage(pkg);
     
-    // Get credits for this product
-    const creditsGranted = getCreditsForProduct(pkg.product.identifier);
+    const productId = pkg.product.identifier;
     
-    console.log('[RevenueCat] Purchase successful, credits granted:', creditsGranted);
+    // Extract transaction ID from RevenueCat customerInfo
+    // For consumables, check nonSubscriptions array
+    let transactionId: string | undefined;
+    
+    if (customerInfo?.nonSubscriptions && customerInfo.nonSubscriptions.length > 0) {
+      // Find the purchase for this specific product
+      const productPurchase = customerInfo.nonSubscriptions.find(
+        (purchase: any) => purchase.productIdentifier === productId
+      );
+      if (productPurchase?.transactionIdentifier) {
+        transactionId = productPurchase.transactionIdentifier;
+      }
+    }
+    
+    // Fallback: Use original purchase date + product ID as unique identifier
+    if (!transactionId) {
+      const timestamp = customerInfo?.originalPurchaseDate 
+        ? new Date(customerInfo.originalPurchaseDate).getTime()
+        : Date.now();
+      transactionId = `rc_${timestamp}_${productId}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    console.log('[RevenueCat] Purchase successful, transaction ID:', transactionId);
+    console.log('[RevenueCat] CustomerInfo:', JSON.stringify(customerInfo, null, 2));
     
     return {
       success: true,
       customerInfo,
-      creditsGranted,
+      transactionId,
+      productId,
     };
   } catch (error: any) {
     // Check if user cancelled
