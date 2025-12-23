@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
+import { mergeLocalCreditsToAccount } from './credits';
 
 type AuthContextType = {
   user: User | null;
@@ -73,6 +74,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           console.log('Token refreshed successfully');
         } else if (event === 'SIGNED_OUT') {
           console.log('User signed out');
+        } else if (event === 'SIGNED_IN' && session?.user) {
+          // Apple Guideline 5.1.1: Merge local credits when user signs in
+          // This enables cross-device access for credits purchased without registration
+          console.log('User signed in, checking for local credits to merge...');
+          try {
+            const { merged, creditsMerged } = await mergeLocalCreditsToAccount();
+            if (merged && creditsMerged > 0) {
+              console.log(`✅ Merged ${creditsMerged} local credits to account`);
+              // Notify user that their credits have been synced
+              Alert.alert(
+                '✨ Credits Synced!',
+                `Your ${creditsMerged} credits have been added to your account. You can now access them from any device!`,
+                [{ text: 'Great!' }]
+              );
+            }
+          } catch (error) {
+            console.error('Error merging local credits:', error);
+          }
         }
         
         setSession(session);

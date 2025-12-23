@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "17",
+      "buildNumber": "21",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
@@ -24,8 +24,9 @@
       "runtimeVersion": "1.0.0"
     },
     "android": {
+      "icon": "./assets/icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -33,7 +34,7 @@
       "runtimeVersion": {
         "policy": "appVersion"
       },
-      "versionCode": 2
+      "versionCode": 4
     },
     "web": {
       "favicon": "./assets/favicon.png"

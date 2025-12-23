@@ -11,7 +11,7 @@ import {
   purchasePackage,
   getCreditsForProduct,
 } from '../../lib/revenuecat';
-import { getUserCredits } from '../../lib/credits';
+import { getUserCredits, getLocalCredits, addLocalCredits, storeLocalPurchase } from '../../lib/credits';
 import { validatePurchase } from '../../lib/supabase';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
@@ -85,12 +85,15 @@ const PaymentScreen = () => {
     try {
       setLoading(true);
       
-      // Load user credits (only if authenticated)
+      // Load user credits - account credits if authenticated, local credits if not
+      // Apple Guideline 5.1.1: Allow purchases without registration
       if (isAuthenticated) {
         const credits = await getUserCredits();
         setCurrentCredits(credits);
       } else {
-        setCurrentCredits(0);
+        // Load local credits for non-authenticated users
+        const localCredits = await getLocalCredits();
+        setCurrentCredits(localCredits);
       }
 
       // Load available packages from RevenueCat
@@ -158,23 +161,6 @@ const PaymentScreen = () => {
   const handlePurchase = async (pkg: DisplayPackage) => {
     triggerHaptic('medium');
     
-    // Check if user is authenticated before allowing purchase
-    // Apple guideline 5.1.1 - Allow browsing without sign-in, but explain why account is needed
-    if (!isAuthenticated) {
-      Alert.alert(
-        'Account Required',
-        'Please sign in or create an account to purchase credits. Your credits will be saved to your account so you can access them from any device.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { 
-            text: 'Sign In', 
-            onPress: navigateToSignIn
-          }
-        ]
-      );
-      return;
-    }
-    
     // If using mock data (RevenueCat not available), show error
     // NEVER grant credits without actual payment validation
     if (pkg.isMock) {
@@ -204,24 +190,57 @@ const PaymentScreen = () => {
       const result = await purchasePackage(actualPackage);
       
       if (result.success && result.transactionId && result.productId) {
-        // CRITICAL: Validate purchase server-side (Apple requirement)
-        // This ensures credits are only granted after server validation
-        const validation = await validatePurchase(result.transactionId, result.productId);
+        const creditsAmount = getCreditsForProduct(result.productId) || 0;
         
-        if (validation.success && validation.creditsGranted) {
+        if (isAuthenticated) {
+          // User is authenticated - validate server-side and add to account
+          const validation = await validatePurchase(result.transactionId, result.productId);
+          
+          if (validation.success && validation.creditsGranted) {
+            triggerHaptic('success');
+            setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
+            Alert.alert(
+              '🎉 Purchase Successful!',
+              `You received ${validation.creditsGranted} credits!\n\nYour new balance: ${validation.newBalance || currentCredits + validation.creditsGranted} credits`,
+              [{ text: 'Awesome!', onPress: () => navigation.goBack() }]
+            );
+          } else {
+            triggerHaptic('error');
+            Alert.alert(
+              'Purchase Validated',
+              'Your purchase was successful, but there was an issue granting credits. Please contact support if credits are not added within a few minutes.',
+              [{ text: 'OK', onPress: () => navigation.goBack() }]
+            );
+          }
+        } else {
+          // Apple Guideline 5.1.1: Allow purchases WITHOUT registration
+          // Store credits locally on device
+          await addLocalCredits(creditsAmount);
+          await storeLocalPurchase(result.transactionId, result.productId, creditsAmount);
+          
+          const newLocalCredits = currentCredits + creditsAmount;
+          setCurrentCredits(newLocalCredits);
+          
           triggerHaptic('success');
-          setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
+          
+          // Offer OPTIONAL registration for cross-device access
           Alert.alert(
             '🎉 Purchase Successful!',
-            `You received ${validation.creditsGranted} credits!\n\nYour new balance: ${validation.newBalance || currentCredits + validation.creditsGranted} credits`,
-            [{ text: 'Awesome!', onPress: () => navigation.goBack() }]
-          );
-        } else {
-          triggerHaptic('error');
-          Alert.alert(
-            'Purchase Validated',
-            'Your purchase was successful, but there was an issue granting credits. Please contact support if credits are not added within a few minutes.',
-            [{ text: 'OK', onPress: () => navigation.goBack() }]
+            `You received ${creditsAmount} credits!\n\nYour balance: ${newLocalCredits} credits\n\nWant to access your credits from any device? Sign up for free to enable cross-device sync.`,
+            [
+              { 
+                text: 'Maybe Later', 
+                style: 'cancel',
+                onPress: () => navigation.goBack()
+              },
+              { 
+                text: 'Sign Up (Free)', 
+                onPress: () => {
+                  navigation.goBack();
+                  setTimeout(() => navigateToSignIn(), 100);
+                }
+              }
+            ]
           );
         }
       } else if (!result.userCancelled) {
@@ -281,16 +300,10 @@ const PaymentScreen = () => {
                 size={40} 
                 color={Colors.accent.blue} 
               />
-              {isAuthenticated ? (
-                <>
-                  <Text style={styles.creditsValue}>{currentCredits}</Text>
-                  <Text style={styles.creditsLabel}>Credits Available</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.creditsValueSmall}>Sign in to track credits</Text>
-                  <Text style={styles.creditsLabel}>Browse packages below</Text>
-                </>
+              <Text style={styles.creditsValue}>{currentCredits}</Text>
+              <Text style={styles.creditsLabel}>Credits Available</Text>
+              {!isAuthenticated && currentCredits > 0 && (
+                <Text style={styles.creditsHint}>Sign up to sync across devices</Text>
               )}
             </View>
           </LinearGradient>
@@ -439,13 +452,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
     letterSpacing: -1,
   },
-  creditsValueSmall: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginTop: Spacing.sm,
-    textAlign: 'center',
-  },
   creditsLabel: {
     fontSize: 13,
     color: Colors.textSecondary,
@@ -453,6 +459,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  creditsHint: {
+    fontSize: 11,
+    color: Colors.accent.blue,
+    marginTop: 6,
+    fontWeight: '500',
   },
 
   // Packages List - Compact Vertical

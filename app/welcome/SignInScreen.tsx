@@ -27,22 +27,32 @@ const SignInScreen = () => {
 
   const handleSignIn = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
       Alert.alert('Sign In Error', error.message);
+    } else if (data?.user) {
+      // Navigate to main app on successful sign-in
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
     }
-    // Navigation is now handled automatically by AuthContext
   };
 
   const handleGoogleSignIn = async () => {
     setSocialLoading('google');
     try {
       const result = await signInWithGoogle();
-      if (!result.success && result.error) {
+      if (result.success) {
+        // Navigate to main app on successful sign-in
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      } else if (result.error) {
         Alert.alert('Google Sign-In Error', result.error);
       }
-      // Navigation is handled automatically by AuthContext on success
     } catch (error) {
       console.error('Google sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
@@ -54,10 +64,15 @@ const SignInScreen = () => {
     setSocialLoading('apple');
     try {
       const result = await signInWithApple();
-      if (!result.success && result.error) {
+      if (result.success) {
+        // Navigate to main app on successful sign-in
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      } else if (result.error) {
         Alert.alert('Apple Sign-In Error', result.error);
       }
-      // Navigation is handled automatically by AuthContext on success
     } catch (error) {
       console.error('Apple sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
@@ -184,6 +199,13 @@ const SignInScreen = () => {
 
             <TouchableOpacity onPress={() => navigation.navigate('SignUp')} style={styles.linkContainer}>
               <Text style={styles.linkText}>Don't have an account? Sign Up</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              onPress={() => navigation.navigate('MainTabs')} 
+              style={[styles.linkContainer, { marginTop: Spacing.xl }]}
+            >
+              <Text style={styles.continueWithoutAccountText}>Skip for now</Text>
             </TouchableOpacity>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -366,8 +388,14 @@ const styles = StyleSheet.create({
     ...Typography.body,
     color: Colors.accent.blue,
     textAlign: 'center',
-    fontWeight: '600',
-    fontSize: 16,
+  },
+  continueWithoutAccountText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    fontSize: 13,
+    opacity: 0.6,
+    textDecorationLine: 'underline',
   },
 });
 

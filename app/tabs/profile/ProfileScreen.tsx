@@ -21,6 +21,7 @@ import { triggerHaptic } from '../../../lib/utils/haptics';
 type RootStackParamList = {
   Payment: undefined;
   Welcome: undefined;
+  SignUp: undefined;
 };
 
 const ProfileScreen = () => {
@@ -179,7 +180,7 @@ const ProfileScreen = () => {
                   style={styles.avatarGradient}
                 >
                   <Text style={styles.avatarText}>
-                    {getInitials(user?.email || '')}
+                    {user ? getInitials(user.email || '') : 'GU'}
                   </Text>
                 </LinearGradient>
               </View>
@@ -187,8 +188,13 @@ const ProfileScreen = () => {
               {/* User Info */}
               <View style={styles.userInfo}>
                 <Text style={styles.userEmail} numberOfLines={1}>
-                  {user?.email || 'user@example.com'}
+                  {user?.email || 'Guest User'}
                 </Text>
+                {!user && (
+                  <Text style={styles.guestHint}>
+                    Sign up to sync your credits across devices
+                  </Text>
+                )}
               </View>
             </View>
           </FloatingCard>
@@ -252,27 +258,45 @@ const ProfileScreen = () => {
 
       {/* Account Actions - Fixed at Bottom */}
       <View style={styles.actionsContainer}>
-        <TouchableOpacity
-          style={styles.smallActionButton}
-          onPress={() => {
-            triggerHaptic('light');
-            handleSignOut();
-          }}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.smallActionText}>Sign Out</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.smallActionButton, styles.smallDangerButton]}
-          onPress={() => {
-            triggerHaptic('light');
-            handleDeleteProfile();
-          }}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.smallActionText, styles.smallDangerText]}>Delete Account</Text>
-        </TouchableOpacity>
+        {user ? (
+          // Authenticated user - show Sign Out and Delete Account
+          <>
+            <TouchableOpacity
+              style={styles.smallActionButton}
+              onPress={() => {
+                triggerHaptic('light');
+                handleSignOut();
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.smallActionText}>Sign Out</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={[styles.smallActionButton, styles.smallDangerButton]}
+              onPress={() => {
+                triggerHaptic('light');
+                handleDeleteProfile();
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.smallActionText, styles.smallDangerText]}>Delete Account</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          // Guest user - show Create Profile button
+          <View style={styles.guestActionsWrapper}>
+            <ModernButton
+              title="✨ Create Profile"
+              onPress={() => {
+                triggerHaptic('medium');
+                navigation.navigate('SignUp');
+              }}
+              variant="primary"
+              style={styles.createProfileButton}
+            />
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -347,6 +371,12 @@ const styles = StyleSheet.create({
     ...Typography.body,
     fontSize: 15,
     fontWeight: '500',
+  },
+  guestHint: {
+    ...Typography.caption,
+    fontSize: 12,
+    color: Colors.textSecondary,
+    marginTop: Spacing.xs,
   },
   creditsCard: {
     marginHorizontal: Layout.screenPadding,
@@ -436,6 +466,15 @@ const styles = StyleSheet.create({
   },
   smallDangerText: {
     color: Colors.error,
+  },
+  guestActionsWrapper: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createProfileButton: {
+    width: '80%',
+    maxWidth: 280,
   },
 });
 

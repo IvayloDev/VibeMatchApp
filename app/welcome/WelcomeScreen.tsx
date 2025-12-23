@@ -12,6 +12,7 @@ type RootStackParamList = {
   Welcome: undefined;
   SignUp: undefined;
   SignIn: undefined;
+  MainTabs: undefined;
 };
 
 const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy/';
@@ -76,10 +77,24 @@ const WelcomeScreen = () => {
         {/* Bottom section */}
         <View style={styles.bottomSection}>
           <ModernButton
-            title="Continue"
+            title="Sign In"
             onPress={() => navigation.navigate('SignIn')}
-            style={styles.continueButton}
+            style={styles.signInButton}
           />
+          
+          <ModernButton
+            title="Create Account"
+            onPress={() => navigation.navigate('SignUp')}
+            style={styles.createAccountButton}
+            variant="secondary"
+          />
+          
+          <Text 
+            style={styles.skipText}
+            onPress={() => navigation.navigate('MainTabs')}
+          >
+            Continue as guest
+          </Text>
           
           <Text style={styles.termsText}>
             By using VibeMatch, you agree to our{'\n'}
@@ -159,9 +174,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: Spacing.xl,
   },
-  continueButton: {
+  signInButton: {
+    width: '100%',
+    marginBottom: Spacing.md,
+  },
+  createAccountButton: {
     width: '100%',
     marginBottom: Spacing.lg,
+  },
+  skipText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontSize: 14,
+    marginBottom: Spacing.lg,
+    textDecorationLine: 'underline',
+    opacity: 0.7,
   },
   termsText: {
     ...Typography.caption,

@@ -554,7 +554,7 @@ const ResultsScreen = () => {
                 fetchError,
                 itemUserId: existingItem?.user_id,
                 currentUserId: session.user.id,
-                userIdsMatch: existingItem?.user_id === session.user.id
+                userIdsMatch: existingItem?.user_id === session.user.id 
               });
 
               if (fetchError || !existingItem) {

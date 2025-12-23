@@ -91,26 +91,21 @@ function AppContent() {
           gestureDirection: 'horizontal',
         }}
       >
-        {user ? (
-          // User is authenticated - show main app
-          <>
-            <Stack.Screen 
-              name="MainTabs" 
-              component={MainTabs}
-              options={{
-                gestureEnabled: false,
-                headerShown: false,
-              }}
-            />
-          </>
-        ) : (
-          // User is not authenticated - show auth screens
-          <>
-            <Stack.Screen name="Welcome" component={WelcomeScreen} />
-            <Stack.Screen name="SignUp" component={SignUpScreen} />
-            <Stack.Screen name="SignIn" component={SignInScreen} />
-          </>
-        )}
+        {/* Welcome and auth screens - shown first */}
+        <Stack.Screen name="Welcome" component={WelcomeScreen} />
+        <Stack.Screen name="SignUp" component={SignUpScreen} />
+        <Stack.Screen name="SignIn" component={SignInScreen} />
+        
+        {/* Main app - accessible without authentication (Apple guideline 5.1.1) */}
+        <Stack.Screen 
+          name="MainTabs" 
+          component={MainTabs}
+          options={{
+            gestureEnabled: false,
+            headerShown: false,
+          }}
+        />
+        
         {/* Payment screen accessible regardless of auth state (Apple guideline 5.1.1) */}
         <Stack.Screen name="Payment" component={PaymentScreen} />
       </Stack.Navigator>

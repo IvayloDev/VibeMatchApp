@@ -27,22 +27,32 @@ const SignUpScreen = () => {
 
   const handleSignUp = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({ email, password });
     setLoading(false);
     if (error) {
       Alert.alert('Sign Up Error', error.message);
+    } else if (data?.user) {
+      // Navigate to main app on successful sign-up
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
     }
-    // Navigation is now handled automatically by AuthContext on success
   };
 
   const handleGoogleSignUp = async () => {
     setSocialLoading('google');
     try {
       const result = await signInWithGoogle();
-      if (!result.success && result.error) {
+      if (result.success) {
+        // Navigate to main app on successful sign-up
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      } else if (result.error) {
         Alert.alert('Google Sign-Up Error', result.error);
       }
-      // Navigation is handled automatically by AuthContext on success
     } catch (error) {
       console.error('Google sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
@@ -54,10 +64,15 @@ const SignUpScreen = () => {
     setSocialLoading('apple');
     try {
       const result = await signInWithApple();
-      if (!result.success && result.error) {
+      if (result.success) {
+        // Navigate to main app on successful sign-up
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      } else if (result.error) {
         Alert.alert('Apple Sign-Up Error', result.error);
       }
-      // Navigation is handled automatically by AuthContext on success
     } catch (error) {
       console.error('Apple sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');

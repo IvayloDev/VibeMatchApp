@@ -1,4 +1,5 @@
 import { supabase, isRefreshTokenError, handleAuthError, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface CreditPackage {
   id: string;
@@ -20,20 +21,188 @@ export const creditProductIds = creditPackages.map((pkg) => pkg.productId);
 export const FREE_CREDITS_ON_SIGNUP = 3;
 export const FIRST_ANALYSIS_FREE = true;
 
-// Get user's current credits
+// Local storage key for credits (Apple 5.1.1 compliance - allow purchases without registration)
+const LOCAL_CREDITS_KEY = '@tunematch_local_credits';
+const LOCAL_PURCHASES_KEY = '@tunematch_local_purchases';
+
+// ============================================
+// LOCAL CREDITS (for non-authenticated users)
+// Apple Guideline 5.1.1 compliance
+// ============================================
+
+/**
+ * Get credits stored locally on device (for non-authenticated users)
+ */
+export async function getLocalCredits(): Promise<number> {
+  try {
+    const stored = await AsyncStorage.getItem(LOCAL_CREDITS_KEY);
+    return stored ? parseInt(stored, 10) : 0;
+  } catch (error) {
+    console.error('Error getting local credits:', error);
+    return 0;
+  }
+}
+
+/**
+ * Set credits stored locally on device
+ */
+export async function setLocalCredits(credits: number): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(LOCAL_CREDITS_KEY, credits.toString());
+    console.log(`💳 Local credits set to: ${credits}`);
+    return true;
+  } catch (error) {
+    console.error('Error setting local credits:', error);
+    return false;
+  }
+}
+
+/**
+ * Add credits locally (for non-authenticated purchases)
+ */
+export async function addLocalCredits(amount: number): Promise<boolean> {
+  try {
+    const current = await getLocalCredits();
+    const newTotal = current + amount;
+    await AsyncStorage.setItem(LOCAL_CREDITS_KEY, newTotal.toString());
+    console.log(`💳 Local credits: ${current} + ${amount} = ${newTotal}`);
+    return true;
+  } catch (error) {
+    console.error('Error adding local credits:', error);
+    return false;
+  }
+}
+
+/**
+ * Deduct credits locally
+ */
+export async function deductLocalCredits(amount: number = 1): Promise<boolean> {
+  try {
+    const current = await getLocalCredits();
+    if (current < amount) {
+      console.warn(`⚠️ Not enough local credits: have ${current}, need ${amount}`);
+      return false;
+    }
+    const newTotal = current - amount;
+    await AsyncStorage.setItem(LOCAL_CREDITS_KEY, newTotal.toString());
+    console.log(`💳 Local credits deducted: ${current} - ${amount} = ${newTotal}`);
+    return true;
+  } catch (error) {
+    console.error('Error deducting local credits:', error);
+    return false;
+  }
+}
+
+/**
+ * Store a local purchase record (for later sync if user registers)
+ */
+export async function storeLocalPurchase(transactionId: string, productId: string, credits: number): Promise<void> {
+  try {
+    const stored = await AsyncStorage.getItem(LOCAL_PURCHASES_KEY);
+    const purchases = stored ? JSON.parse(stored) : [];
+    purchases.push({
+      transactionId,
+      productId,
+      credits,
+      timestamp: new Date().toISOString(),
+    });
+    await AsyncStorage.setItem(LOCAL_PURCHASES_KEY, JSON.stringify(purchases));
+    console.log(`📦 Stored local purchase: ${productId} (${credits} credits)`);
+  } catch (error) {
+    console.error('Error storing local purchase:', error);
+  }
+}
+
+/**
+ * Get all local purchases (for display or sync)
+ */
+export async function getLocalPurchases(): Promise<Array<{transactionId: string, productId: string, credits: number, timestamp: string}>> {
+  try {
+    const stored = await AsyncStorage.getItem(LOCAL_PURCHASES_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('Error getting local purchases:', error);
+    return [];
+  }
+}
+
+/**
+ * Merge local credits into user account when they register/sign in
+ * This enables cross-device access as mentioned in Apple's guidelines
+ */
+export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, creditsMerged: number }> {
+  try {
+    const localCredits = await getLocalCredits();
+    const localPurchases = await getLocalPurchases();
+    
+    if (localCredits === 0 && localPurchases.length === 0) {
+      return { merged: false, creditsMerged: 0 };
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return { merged: false, creditsMerged: 0 };
+    }
+
+    // Get current account credits
+    const accountCredits = await getUserCredits();
+    const totalCredits = accountCredits + localCredits;
+
+    // Update account with merged credits
+    const success = await updateUserCredits(totalCredits);
+    
+    if (success) {
+      // Clear local storage after successful merge
+      await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
+      await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
+      console.log(`✅ Merged ${localCredits} local credits to account. New total: ${totalCredits}`);
+      return { merged: true, creditsMerged: localCredits };
+    }
+
+    return { merged: false, creditsMerged: 0 };
+  } catch (error) {
+    console.error('Error merging local credits:', error);
+    return { merged: false, creditsMerged: 0 };
+  }
+}
+
+/**
+ * Clear local credits (after merge or logout)
+ */
+export async function clearLocalCredits(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
+    await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
+    console.log('🧹 Local credits cleared');
+  } catch (error) {
+    console.error('Error clearing local credits:', error);
+  }
+}
+
+// Get user's current credits (supports both authenticated and non-authenticated users)
+// Apple Guideline 5.1.1: Credits work without registration
 export async function getUserCredits(): Promise<number> {
   try {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError) {
-      console.error('Auth error getting user:', userError);
+      // AuthSessionMissingError is expected for logged out / guest users - don't log as error
+      const isSessionMissing = userError.name === 'AuthSessionMissingError' || 
+                               userError.message?.includes('Auth session missing');
+      if (!isSessionMissing) {
+        console.error('Auth error getting user:', userError);
+      }
       // If user doesn't exist in JWT, clear the session
       if (isRefreshTokenError(userError) || userError.message?.includes('JWT does not exist')) {
         console.log('Invalid user session detected, clearing...');
         await handleAuthError(userError);
       }
-      return 0;
+      // Fall back to local credits for non-authenticated users
+      return await getLocalCredits();
     }
-    if (!user) return 0;
+    if (!user) {
+      // Non-authenticated: return local credits
+      return await getLocalCredits();
+    }
 
     const { data, error } = await supabase
       .from('user_profiles')
@@ -86,7 +255,12 @@ export async function updateUserCredits(newCredits: number): Promise<boolean> {
   try {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError) {
-      console.error('Auth error getting user for credit update:', userError);
+      // AuthSessionMissingError is expected for logged out / guest users - don't log as error
+      const isSessionMissing = userError.name === 'AuthSessionMissingError' || 
+                               userError.message?.includes('Auth session missing');
+      if (!isSessionMissing) {
+        console.error('Auth error getting user for credit update:', userError);
+      }
       if (isRefreshTokenError(userError)) {
         await handleAuthError(userError);
       }
@@ -188,9 +362,20 @@ export async function updateUserCredits(newCredits: number): Promise<boolean> {
   }
 }
 
-// Deduct credits for analysis
+// Deduct credits for analysis (supports both authenticated and non-authenticated users)
+// Apple Guideline 5.1.1: Credits work without registration
 export async function deductCredits(amount: number = 1): Promise<boolean> {
   try {
+    // Check if user is authenticated
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      // Non-authenticated: use local credits
+      console.log(`💳 Deducting ${amount} credits from local storage`);
+      return await deductLocalCredits(amount);
+    }
+    
+    // Authenticated: use account credits
     const currentCredits = await getUserCredits();
     console.log(`💳 Current credits before deduction: ${currentCredits}, deducting: ${amount}`);
     

@@ -79,25 +79,42 @@
 ---
 
 ### 4. **Guideline 5.1.1 - Registration Requirement**
-**Status:** ✅ CODE FIXED - Users can browse without sign-in
+**Status:** ✅ FULLY FIXED - Purchases work WITHOUT registration
 
-**What We Fixed:**
-- ✅ Payment screen accessible without authentication
-- ✅ Users can browse packages without signing in
-- ✅ Sign-in only required when actually purchasing
+**What Apple Required:**
+> "Apps cannot require user registration prior to allowing access to app content and features that are not associated specifically to the user."
+> "You may explain to the user that registering will enable them to access the purchased content from any of their supported devices."
 
-**However:** Apple reviewer may have tested old build. Make sure:
-- New build (13) is submitted
-- Review notes explain: "Users can browse IAP products without registration. Registration is only required at purchase time to save credits to their account for cross-device access."
+**What We Implemented:**
+- ✅ Users can PURCHASE credits WITHOUT registration
+- ✅ Credits stored locally on device for non-authenticated users
+- ✅ After purchase, OPTIONAL registration offered for cross-device sync
+- ✅ When user registers, local credits automatically merge to account
+- ✅ User is notified when credits are synced to account
+
+**How It Works:**
+1. User can browse and purchase WITHOUT signing in
+2. Credits are stored locally on device (AsyncStorage)
+3. After purchase, user sees: "Want to access your credits from any device? Sign up for free to enable cross-device sync."
+4. User can tap "Maybe Later" or "Sign Up (Free)"
+5. If user signs up later, local credits automatically merge to their account
+6. User gets notification: "Your X credits have been added to your account!"
 
 **Action in App Store Connect:**
 1. Go to **App Review Information** section
 2. Add this note:
    ```
-   IMPORTANT: Users can browse and view all in-app purchase products without 
-   requiring registration. Registration is only requested when the user attempts 
-   to complete a purchase, and we clearly explain that registration enables 
-   cross-device access to purchased credits. This complies with Guideline 5.1.1.
+   GUIDELINE 5.1.1 COMPLIANCE:
+   
+   Users can now purchase credits WITHOUT registration:
+   1. Credits are stored locally on device for non-registered users
+   2. Registration is OPTIONAL and offered after purchase
+   3. We explain that registration enables cross-device access
+   4. User can choose "Maybe Later" to continue without registering
+   5. If user registers later, their local credits automatically sync to their account
+   
+   This complies with Guideline 5.1.1 - registration is optional and only 
+   offered to extend access to additional devices.
    ```
 
 ---
