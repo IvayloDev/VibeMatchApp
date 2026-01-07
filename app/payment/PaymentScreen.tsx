@@ -12,7 +12,8 @@ import {
   getCreditsForProduct,
 } from '../../lib/revenuecat';
 import { getUserCredits, getLocalCredits, addLocalCredits, storeLocalPurchase } from '../../lib/credits';
-import { validatePurchase } from '../../lib/supabase';
+import { validatePurchaseWithRetry } from '../../lib/supabase';
+import { storePendingValidation, removePendingValidation } from '../../lib/credits';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
@@ -161,14 +162,18 @@ const PaymentScreen = () => {
   const handlePurchase = async (pkg: DisplayPackage) => {
     triggerHaptic('medium');
     
-    // If using mock data (RevenueCat not available), show error
+    // If using mock data (RevenueCat not available), show helpful error
     // NEVER grant credits without actual payment validation
     if (pkg.isMock) {
       triggerHaptic('error');
+      
+      // Check if this is a BlueStacks/billing unavailable issue
+      const isBillingUnavailable = false; // Could check error state here if needed
+      
       Alert.alert(
-        __DEV__ ? 'Development Mode' : 'Store Unavailable',
+        __DEV__ ? 'Cannot Test Purchases' : 'Store Unavailable',
         __DEV__ 
-          ? 'RevenueCat is disabled in development mode. To test purchases:\n\n1. Set SKIP_REVENUECAT_IN_DEV to false in revenuecat.ts\n2. Configure App Store products in RevenueCat\n3. Use a sandbox tester account'
+          ? 'Real purchases are not available on this device/emulator.\n\nPossible reasons:\n• BlueStacks doesn\'t support Google Play Billing\n• Products not configured in RevenueCat Offerings\n• Using unsupported emulator\n\n✅ To test real purchases:\n• Use a real Android device, OR\n• Use Android Studio emulator with Google Play services\n\nNote: RevenueCat is configured correctly, but billing services are unavailable.'
           : 'In-app purchases are temporarily unavailable. Please try again later.',
         [{ text: 'OK' }]
       );
@@ -194,9 +199,13 @@ const PaymentScreen = () => {
         
         if (isAuthenticated) {
           // User is authenticated - validate server-side and add to account
-          const validation = await validatePurchase(result.transactionId, result.productId);
+          // Use retry logic to handle transient network/server errors
+          const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
           
           if (validation.success && validation.creditsGranted) {
+            // Remove from pending if it was there
+            await removePendingValidation(result.transactionId);
+            
             triggerHaptic('success');
             setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
             Alert.alert(
@@ -205,12 +214,49 @@ const PaymentScreen = () => {
               [{ text: 'Awesome!', onPress: () => navigation.goBack() }]
             );
           } else {
-            triggerHaptic('error');
-            Alert.alert(
-              'Purchase Validated',
-              'Your purchase was successful, but there was an issue granting credits. Please contact support if credits are not added within a few minutes.',
-              [{ text: 'OK', onPress: () => navigation.goBack() }]
-            );
+            // Validation failed even after retries
+            // Store as pending validation so it can be retried later
+            await storePendingValidation(result.transactionId, result.productId, creditsAmount);
+            
+            triggerHaptic('warning');
+            
+            // Check if it was already processed (duplicate)
+            if (validation.error?.includes('already') || validation.error?.includes('duplicate')) {
+              Alert.alert(
+                'Purchase Already Processed',
+                'This purchase has already been processed. Your credits should be available. If not, please contact support.',
+                [
+                  { text: 'Check Credits', onPress: () => loadData() },
+                  { text: 'OK', onPress: () => navigation.goBack() }
+                ]
+              );
+            } else {
+              Alert.alert(
+                'Purchase Successful - Validation Pending',
+                `Your purchase was successful and you were charged. However, we couldn't immediately validate the purchase due to: ${validation.error || 'network error'}.\n\nYour credits will be added automatically when validation completes. You can also try again later.\n\nTransaction ID: ${result.transactionId.substring(0, 20)}...`,
+                [
+                  { 
+                    text: 'Retry Now', 
+                    onPress: async () => {
+                      setLoading(true);
+                      const retryValidation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
+                      if (retryValidation.success && retryValidation.creditsGranted) {
+                        await removePendingValidation(result.transactionId);
+                        await loadData();
+                        triggerHaptic('success');
+                        Alert.alert('Success!', `Credits added! Your balance: ${retryValidation.newBalance} credits`);
+                        navigation.goBack();
+                      } else {
+                        triggerHaptic('error');
+                        Alert.alert('Still Pending', 'Validation is still pending. Your credits will be added automatically. Please check back later or contact support.');
+                      }
+                      setLoading(false);
+                    }
+                  },
+                  { text: 'OK', style: 'cancel', onPress: () => navigation.goBack() }
+                ]
+              );
+            }
           }
         } else {
           // Apple Guideline 5.1.1: Allow purchases WITHOUT registration

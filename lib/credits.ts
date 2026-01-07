@@ -24,6 +24,7 @@ export const FIRST_ANALYSIS_FREE = true;
 // Local storage key for credits (Apple 5.1.1 compliance - allow purchases without registration)
 const LOCAL_CREDITS_KEY = '@tunematch_local_credits';
 const LOCAL_PURCHASES_KEY = '@tunematch_local_purchases';
+const PENDING_VALIDATIONS_KEY = '@tunematch_pending_validations';
 
 // ============================================
 // LOCAL CREDITS (for non-authenticated users)
@@ -123,6 +124,87 @@ export async function getLocalPurchases(): Promise<Array<{transactionId: string,
   } catch (error) {
     console.error('Error getting local purchases:', error);
     return [];
+  }
+}
+
+/**
+ * Store a pending validation (purchase succeeded but validation failed)
+ * This allows retrying validation later
+ */
+export async function storePendingValidation(transactionId: string, productId: string, credits: number): Promise<void> {
+  try {
+    const stored = await AsyncStorage.getItem(PENDING_VALIDATIONS_KEY);
+    const pending = stored ? JSON.parse(stored) : [];
+    
+    // Check if this transaction is already in pending list
+    const exists = pending.some((p: any) => p.transactionId === transactionId);
+    if (exists) {
+      console.log(`⚠️ Pending validation already exists for transaction: ${transactionId}`);
+      return;
+    }
+    
+    pending.push({
+      transactionId,
+      productId,
+      credits,
+      timestamp: new Date().toISOString(),
+      retryCount: 0,
+    });
+    
+    await AsyncStorage.setItem(PENDING_VALIDATIONS_KEY, JSON.stringify(pending));
+    console.log(`📋 Stored pending validation: ${productId} (${credits} credits) - Transaction: ${transactionId}`);
+  } catch (error) {
+    console.error('Error storing pending validation:', error);
+  }
+}
+
+/**
+ * Get all pending validations
+ */
+export async function getPendingValidations(): Promise<Array<{transactionId: string, productId: string, credits: number, timestamp: string, retryCount: number}>> {
+  try {
+    const stored = await AsyncStorage.getItem(PENDING_VALIDATIONS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch (error) {
+    console.error('Error getting pending validations:', error);
+    return [];
+  }
+}
+
+/**
+ * Remove a pending validation (after successful validation)
+ */
+export async function removePendingValidation(transactionId: string): Promise<void> {
+  try {
+    const stored = await AsyncStorage.getItem(PENDING_VALIDATIONS_KEY);
+    if (!stored) return;
+    
+    const pending = JSON.parse(stored);
+    const filtered = pending.filter((p: any) => p.transactionId !== transactionId);
+    await AsyncStorage.setItem(PENDING_VALIDATIONS_KEY, JSON.stringify(filtered));
+    console.log(`✅ Removed pending validation for transaction: ${transactionId}`);
+  } catch (error) {
+    console.error('Error removing pending validation:', error);
+  }
+}
+
+/**
+ * Update retry count for a pending validation
+ */
+export async function updatePendingValidationRetry(transactionId: string): Promise<void> {
+  try {
+    const stored = await AsyncStorage.getItem(PENDING_VALIDATIONS_KEY);
+    if (!stored) return;
+    
+    const pending = JSON.parse(stored);
+    const updated = pending.map((p: any) => 
+      p.transactionId === transactionId 
+        ? { ...p, retryCount: (p.retryCount || 0) + 1, lastRetry: new Date().toISOString() }
+        : p
+    );
+    await AsyncStorage.setItem(PENDING_VALIDATIONS_KEY, JSON.stringify(updated));
+  } catch (error) {
+    console.error('Error updating pending validation retry:', error);
   }
 }
 

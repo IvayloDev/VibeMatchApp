@@ -290,7 +290,7 @@ const RecommendationTypeScreen = () => {
                     Surprise Me
                   </Text>
                   <Text style={styles.surpriseSubtext}>
-                    Let AI choose the perfect genre for you
+                    Let AI choose the perfect genre for you{'\n'}(Requires credits - in-app purchase)
                   </Text>
                 </View>
                 {type === 'surprise' && (

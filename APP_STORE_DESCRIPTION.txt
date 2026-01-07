@@ -1,0 +1,24 @@
+VibeMatch - Turn Photos into Playlists
+
+VibeMatch uses AI to understand the mood of your photos and match them with songs that fit your vibe. Whether it's a sunset, a selfie, or your weekend adventure, VibeMatch transforms every picture into the perfect soundtrack.
+
+*AI matching features require in-app purchase of credits. Credits can be purchased starting at €0.99.
+
+✨ Features:
+• AI-powered photo-to-music matching* (requires credits via in-app purchase)
+• Genre-based filtering
+• Custom request mode* (requires credits)
+• Discover music that matches your mood and moments
+• Save your favorite matches to history
+
+💰 Credits & Pricing:
+Each photo analysis requires 1 credit. Credits are available through in-app purchases in packages starting at €0.99. Purchase credits to unlock AI-powered song recommendations.
+
+Perfect for:
+🎵 Discovering new music based on your photos
+📸 Creating playlists from your memories
+🎨 Finding songs that match your mood
+✨ Exploring personalized music recommendations
+
+*Requires in-app purchase of credits
+

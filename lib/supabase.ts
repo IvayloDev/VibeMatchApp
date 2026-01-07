@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as AppleAuthentication from 'expo-apple-authentication';
+import { Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
@@ -57,6 +57,19 @@ supabase.auth.onAuthStateChange((event, session) => {
 // Apple Sign-In
 export async function signInWithApple(): Promise<{ success: boolean; error?: string }> {
   try {
+    // Only available on iOS
+    if (Platform.OS !== 'ios') {
+      return { success: false, error: 'Apple Sign-In is only available on iOS' };
+    }
+
+    // Lazy load the module only on iOS to avoid Android crashes
+    let AppleAuthentication: any;
+    try {
+      AppleAuthentication = require('expo-apple-authentication');
+    } catch (error) {
+      return { success: false, error: 'Apple Sign-In is not available on this device' };
+    }
+
     // Check if Apple Authentication is available
     const isAvailable = await AppleAuthentication.isAvailableAsync();
     if (!isAvailable) {
@@ -395,6 +408,7 @@ export async function validatePurchase(
   creditsGranted?: number;
   newBalance?: number;
   error?: string;
+  alreadyProcessed?: boolean;
 }> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
@@ -409,7 +423,7 @@ export async function validatePurchase(
       body: {
         transactionId,
         productId,
-        platform: 'ios',
+        platform: Platform.OS,
       },
     });
 
@@ -461,4 +475,68 @@ export async function validatePurchase(
       error: error.message || 'Network error',
     };
   }
+}
+
+/**
+ * Validate purchase with retry logic
+ * Retries failed validations up to 3 times with exponential backoff
+ * This helps handle transient network errors or server issues
+ */
+export async function validatePurchaseWithRetry(
+  transactionId: string,
+  productId: string,
+  maxRetries: number = 3
+): Promise<{
+  success: boolean;
+  creditsGranted?: number;
+  newBalance?: number;
+  error?: string;
+  retriesAttempted?: number;
+}> {
+  let lastError: string | undefined;
+  let retriesAttempted = 0;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) {
+      // Exponential backoff: 1s, 2s, 4s
+      const delayMs = Math.pow(2, attempt - 1) * 1000;
+      console.log(`⏳ Retrying purchase validation (attempt ${attempt + 1}/${maxRetries}) after ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      retriesAttempted++;
+    }
+
+    const result = await validatePurchase(transactionId, productId);
+
+    // If successful or already processed, return immediately
+    if (result.success || result.alreadyProcessed) {
+      if (attempt > 0) {
+        console.log(`✅ Purchase validation succeeded after ${attempt} retries`);
+      }
+      return {
+        ...result,
+        retriesAttempted: attempt,
+      };
+    }
+
+    // Store error for final return
+    lastError = result.error || 'Validation failed';
+
+    // Don't retry on authentication errors or invalid product IDs (these won't fix themselves)
+    if (result.error?.includes('Not authenticated') || 
+        result.error?.includes('Invalid product') ||
+        result.error?.includes('Unauthorized')) {
+      console.log(`❌ Non-retryable error: ${result.error}`);
+      break;
+    }
+
+    console.log(`⚠️ Purchase validation failed (attempt ${attempt + 1}/${maxRetries}): ${result.error}`);
+  }
+
+  // All retries exhausted
+  console.error(`❌ Purchase validation failed after ${maxRetries} attempts: ${lastError}`);
+  return {
+    success: false,
+    error: lastError || 'Validation failed after retries',
+    retriesAttempted,
+  };
 }

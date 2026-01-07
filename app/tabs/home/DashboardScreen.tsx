@@ -280,6 +280,7 @@ const DashboardScreen = () => {
                 <Text style={styles.featureTitle}>Mood Matching</Text>
                 <Text style={styles.featureSubtitle}>
                   Upload a photo and let AI find songs that match your current vibe perfectly
+                  {'\n'}*Requires in-app purchase of credits
                 </Text>
 
                 <View style={styles.featureStats}>

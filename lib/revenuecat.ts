@@ -4,6 +4,7 @@ import type {
   CustomerInfo,
   PurchasesOffering,
 } from 'react-native-purchases';
+import { Platform } from 'react-native';
 
 // Check if running in Expo Go by looking for expo-dev-client
 // This MUST be checked before any module imports
@@ -222,8 +223,15 @@ async function loadPurchasesModule(retries = 3): Promise<boolean> {
   return false;
 }
 
-// RevenueCat API Key
-const REVENUECAT_API_KEY = 'appl_FbkedPZAsBZxjJGeQjILDpPuWfZ';
+// RevenueCat API Keys - Platform specific
+// Get these from RevenueCat Dashboard → API Keys
+const REVENUECAT_API_KEY_IOS = 'appl_FbkedPZAsBZxjJGeQjILDpPuWfZ';
+const REVENUECAT_API_KEY_ANDROID = 'goog_xfDWGsTRQIIlkHlNaaThRjEechf';
+
+// Use the appropriate key based on platform
+const REVENUECAT_API_KEY = Platform.OS === 'ios' 
+  ? REVENUECAT_API_KEY_IOS 
+  : REVENUECAT_API_KEY_ANDROID;
 
 /**
  * RevenueCat Configuration for Production/Apple Review
@@ -239,7 +247,9 @@ const REVENUECAT_API_KEY = 'appl_FbkedPZAsBZxjJGeQjILDpPuWfZ';
  * 2. Edit each package and link to App Store products (PalTech App Store)
  * 3. Ensure App Store products are created and active in App Store Connect
  */
-const SKIP_REVENUECAT_IN_DEV = __DEV__ && false; // Production-ready: RevenueCat enabled
+// Enable RevenueCat for real environment testing
+// Set to false to test real purchases in development
+const SKIP_REVENUECAT_IN_DEV = false; // Enabled for real environment testing
 
 // Product identifiers - must match RevenueCat dashboard
 export const PRODUCT_IDS = {
@@ -454,11 +464,21 @@ export async function initRevenueCat(userId?: string): Promise<void> {
           continue;
         }
 
+        // Validate API key before configuring
+        if (!REVENUECAT_API_KEY || REVENUECAT_API_KEY.includes('YOUR_') || REVENUECAT_API_KEY.includes('_HERE')) {
+          console.error('[RevenueCat] ❌ Invalid API key detected:', REVENUECAT_API_KEY);
+          console.error('[RevenueCat] 💡 Please add your Android API key (goog_...) to lib/revenuecat.ts');
+          console.error('[RevenueCat] 📍 Find it in RevenueCat Dashboard → Project Settings → API Keys');
+          throw new Error('Invalid RevenueCat API key - please add your Android API key');
+        }
+
         // Try to configure
         Purchases.configure({
           apiKey: REVENUECAT_API_KEY,
           appUserID: userId || undefined,
         });
+        
+        console.log('[RevenueCat] ✅ Configured successfully with platform:', Platform.OS);
 
         // Track the user ID if provided during configuration
         if (userId) {
