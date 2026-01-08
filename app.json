@@ -2,7 +2,7 @@
   "expo": {
     "name": "TuneMatch",
     "slug": "tunematch",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "22",
+      "buildNumber": "25",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
@@ -29,10 +29,10 @@
         "foregroundImage": "./assets/icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true, 
+      "edgeToEdgeEnabled": true,
       "package": "com.paltech.tunematch",
       "runtimeVersion": "1.0.0",
-      "versionCode": 7
+      "versionCode": 13
     },
     "web": {
       "favicon": "./assets/favicon.png"

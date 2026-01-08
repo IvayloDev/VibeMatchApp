@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, Dimensions } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Animated, Dimensions, Pressable } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -166,38 +166,49 @@ const DashboardScreen = () => {
               {loading ? (
                 <SkeletonCreditDisplay />
               ) : (
-                <Animatable.View 
-                  animation="pulse" 
-                  iterationCount="infinite" 
-                  duration={2000}
-                  style={styles.creditsCard}
+                <Pressable
+                  onPress={() => {
+                    triggerHaptic('light');
+                    navigation.navigate('Payment');
+                  }}
+                  style={({ pressed }) => [
+                    styles.creditsCard,
+                    pressed && styles.creditsCardPressed
+                  ]}
                 >
-                  <BlurView intensity={60} tint="dark" style={styles.creditsBlur}>
-                    <LinearGradient
-                      colors={[Colors.accent.green + '30', Colors.accent.blue + '20']}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.creditsGradient}
-                    >
-                      <View style={styles.creditsContent}>
-                        <MaterialCommunityIcons 
-                          name="diamond-stone" 
-                          size={20} 
-                          color={Colors.accent.green} 
-                          style={styles.creditsIcon}
-                        />
-                        <View style={styles.creditsTextContainer}>
-                          <AnimatedCounter 
-                            value={credits} 
-                            duration={800}
-                            style={styles.creditsValue}
+                  <Animatable.View 
+                    animation="pulse" 
+                    iterationCount="infinite" 
+                    duration={2000}
+                    style={styles.creditsCardInner}
+                  >
+                    <BlurView intensity={60} tint="dark" style={styles.creditsBlur}>
+                      <LinearGradient
+                        colors={[Colors.accent.green + '30', Colors.accent.blue + '20']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.creditsGradient}
+                      >
+                        <View style={styles.creditsContent}>
+                          <MaterialCommunityIcons 
+                            name="diamond-stone" 
+                            size={20} 
+                            color={Colors.accent.green} 
+                            style={styles.creditsIcon}
                           />
-                          <Text style={styles.creditsLabel}>Credits</Text>
+                          <View style={styles.creditsTextContainer}>
+                            <AnimatedCounter 
+                              value={credits} 
+                              duration={800}
+                              style={styles.creditsValue}
+                            />
+                            <Text style={styles.creditsLabel}>Credits</Text>
+                          </View>
                         </View>
-                      </View>
-                    </LinearGradient>
-                  </BlurView>
-                </Animatable.View>
+                      </LinearGradient>
+                    </BlurView>
+                  </Animatable.View>
+                </Pressable>
               )}
             </View>
 
@@ -368,6 +379,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   creditsCard: {
+    borderRadius: BorderRadius.xl,
+    overflow: 'hidden',
+  },
+  creditsCardPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.98 }],
+  },
+  creditsCardInner: {
     borderRadius: BorderRadius.xl,
     overflow: 'hidden',
     ...Shadows.prominent,

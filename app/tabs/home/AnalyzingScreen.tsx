@@ -297,12 +297,25 @@ const AnalyzingScreen = () => {
           hasGenre: payload.hasGenre,
         });
         
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) {
-          throw new Error('Authentication error. Please sign in again.');
+        // Get session and access token for API call
+        let accessToken: string | undefined;
+        let currentUserId: string | undefined;
+        
+        try {
+          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+          if (sessionError) {
+            console.warn('⚠️ Session error (continuing without auth):', sessionError.message);
+          } else if (session?.access_token) {
+            accessToken = session.access_token;
+            currentUserId = session.user?.id;
+            console.log('✅ Session retrieved, access token available');
+          } else {
+            console.log('ℹ️ No session available (guest user)');
+          }
+        } catch (error) {
+          console.warn('⚠️ Error getting session (continuing without auth):', error);
         }
-        const accessToken = session?.access_token;
-        const currentUserId = session?.user?.id;
+        
         setProgress(30);
 
         // Stage 3: Call API (30-85%)
@@ -325,13 +338,22 @@ const AnalyzingScreen = () => {
           }
         }, 150); // Faster update interval (reduced from 200)
 
+        // Build headers - always include Authorization if we have a token
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        
+        if (accessToken) {
+          headers['Authorization'] = `Bearer ${accessToken}`;
+          console.log('📤 [API Request] Including Authorization header');
+        } else {
+          console.log('📤 [API Request] No Authorization header (guest user)');
+        }
+
         console.log('📤 [API Request] Making fetch request to:', 'https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs');
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(accessToken && { 'Authorization': `Bearer ${accessToken}` }),
-          },
+          headers,
           body: JSON.stringify(payload),
         });
         

@@ -211,13 +211,33 @@ export async function updatePendingValidationRetry(transactionId: string): Promi
 /**
  * Merge local credits into user account when they register/sign in
  * This enables cross-device access as mentioned in Apple's guidelines
+ * NOTE: Guest free credits (1 credit) are NOT merged - only purchased credits are merged
  */
 export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, creditsMerged: number }> {
   try {
     const localCredits = await getLocalCredits();
     const localPurchases = await getLocalPurchases();
     
-    if (localCredits === 0 && localPurchases.length === 0) {
+    // Check if guest free credits were granted (we should NOT merge these)
+    const { hasGuestFreeCreditsBeenGranted } = await import('./utils/freeCredits');
+    const hadGuestFreeCredits = await hasGuestFreeCreditsBeenGranted();
+    
+    // Calculate credits to merge: exclude the guest free credit (1 credit) if it was granted
+    let creditsToMerge = localCredits;
+    if (hadGuestFreeCredits && localCredits >= 1) {
+      // Subtract the guest free credit - only merge purchased credits
+      creditsToMerge = localCredits - 1;
+      console.log(`ℹ️ Guest free credit (1) excluded from merge. Merging ${creditsToMerge} purchased credits instead of ${localCredits} total.`);
+    }
+    
+    if (creditsToMerge === 0 && localPurchases.length === 0) {
+      // No purchased credits to merge (only guest free credit or nothing)
+      if (hadGuestFreeCredits && localCredits > 0) {
+        // Clear local credits since we're not merging the guest free credit
+        await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
+        await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
+        console.log(`ℹ️ Guest free credit not merged (registered users get 3 credits, not 1+3)`);
+      }
       return { merged: false, creditsMerged: 0 };
     }
 
@@ -228,17 +248,17 @@ export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, c
 
     // Get current account credits
     const accountCredits = await getUserCredits();
-    const totalCredits = accountCredits + localCredits;
+    const totalCredits = accountCredits + creditsToMerge;
 
-    // Update account with merged credits
+    // Update account with merged credits (only purchased credits, not guest free credit)
     const success = await updateUserCredits(totalCredits);
     
     if (success) {
       // Clear local storage after successful merge
       await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
       await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-      console.log(`✅ Merged ${localCredits} local credits to account. New total: ${totalCredits}`);
-      return { merged: true, creditsMerged: localCredits };
+      console.log(`✅ Merged ${creditsToMerge} purchased credits to account (excluded ${localCredits - creditsToMerge} guest free credit). New total: ${totalCredits}`);
+      return { merged: true, creditsMerged: creditsToMerge };
     }
 
     return { merged: false, creditsMerged: 0 };
@@ -295,21 +315,21 @@ export async function getUserCredits(): Promise<number> {
     if (error) {
       if (error.code === 'PGRST116') {
         // No rows returned - user doesn't have a profile yet
-        console.log(`📝 No profile found for user ${user.id}, creating one with ${FREE_CREDITS_ON_SIGNUP} credits`);
-        // Create profile with default credits
+        // Create profile with 0 credits - free credits are granted separately via freeCredits utility
+        console.log(`📝 No profile found for user ${user.id}, creating one with 0 credits (free credits granted separately)`);
         const { error: insertError } = await supabase
           .from('user_profiles')
           .insert({
             user_id: user.id,
-            credits: FREE_CREDITS_ON_SIGNUP
+            credits: 0
           });
         
         if (insertError) {
           console.error('Error creating user profile:', insertError);
-          return FREE_CREDITS_ON_SIGNUP;
+          return 0;
         }
         
-        return FREE_CREDITS_ON_SIGNUP;
+        return 0;
       }
       console.error('❌ Error fetching credits:', error);
       console.error('Error details:', JSON.stringify(error, null, 2));
@@ -317,18 +337,18 @@ export async function getUserCredits(): Promise<number> {
     }
 
     if (!data) {
-      console.warn(`⚠️ No data returned for user ${user.id}, defaulting to ${FREE_CREDITS_ON_SIGNUP} credits`);
-      return FREE_CREDITS_ON_SIGNUP;
+      console.warn(`⚠️ No data returned for user ${user.id}, defaulting to 0 credits`);
+      return 0;
     }
 
     console.log(`💳 Fetched credits for user ${user.id}: ${data.credits} (last updated: ${data.updated_at})`);
-    return data.credits ?? FREE_CREDITS_ON_SIGNUP;
+    return data.credits ?? 0;
   } catch (error) {
-    console.error('Error getting user credits:', error);
+      console.error('Error getting user credits:', error);
     if (isRefreshTokenError(error)) {
       await handleAuthError(error);
     }
-    return FREE_CREDITS_ON_SIGNUP;
+    return 0;
   }
 }
 

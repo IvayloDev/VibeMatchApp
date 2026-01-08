@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
@@ -22,6 +22,7 @@ type RootStackParamList = {
   Payment: undefined;
   Welcome: undefined;
   SignUp: undefined;
+  MainTabs: undefined;
 };
 
 const ProfileScreen = () => {
@@ -74,6 +75,14 @@ const ProfileScreen = () => {
           onPress: async () => {
             triggerHaptic('medium');
             await signOut();
+            
+            // Navigate to Welcome screen after sign out
+            navigation.dispatch(
+              CommonActions.reset({
+                index: 0,
+                routes: [{ name: 'Welcome' }],
+              })
+            );
           }
         }
       ]
@@ -125,6 +134,14 @@ const ProfileScreen = () => {
                 console.log('Delete successful, signing out...');
                 // Sign out to clear session and trigger navigation to welcome
                 await signOut();
+                
+                // Navigate to Welcome screen after account deletion
+                navigation.dispatch(
+                  CommonActions.reset({
+                    index: 0,
+                    routes: [{ name: 'Welcome' }],
+                  })
+                );
               } else {
                 console.log('Delete failed:', result.error || 'Unknown error');
                 Alert.alert('Error', 'Failed to delete profile. Please try again.');

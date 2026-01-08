@@ -3,6 +3,7 @@ import { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
 import { mergeLocalCreditsToAccount } from './credits';
+import { grantRegisteredFreeCredits } from './utils/freeCredits';
 
 type AuthContextType = {
   user: User | null;
@@ -75,6 +76,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         } else if (event === 'SIGNED_OUT') {
           console.log('User signed out');
         } else if (event === 'SIGNED_IN' && session?.user) {
+          const userId = session.user.id;
+          
+          // Grant free credits to new registered users (one-time only)
+          try {
+            const creditsGranted = await grantRegisteredFreeCredits(userId);
+            if (creditsGranted) {
+              console.log('✅ Registered free credits granted to new user');
+            }
+          } catch (error) {
+            console.error('Error granting registered free credits:', error);
+          }
+          
           // Apple Guideline 5.1.1: Merge local credits when user signs in
           // This enables cross-device access for credits purchased without registration
           console.log('User signed in, checking for local credits to merge...');

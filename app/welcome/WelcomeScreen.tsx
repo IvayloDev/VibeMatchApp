@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,6 +6,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Typography, Spacing, Layout } from '../../lib/designSystem';
 import { FloatingCard } from '../../lib/components/FloatingCard';
 import { ModernButton } from '../../lib/components/ModernButton';
+import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
+import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { triggerHaptic } from '../../lib/utils/haptics';
 
 // Define the navigation stack param list
 type RootStackParamList = {
@@ -20,6 +23,7 @@ const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { width } = Dimensions.get('window');
+  const [showGuestModal, setShowGuestModal] = useState(false);
   
   const handlePrivacyPolicyPress = async () => {
     try {
@@ -32,6 +36,31 @@ const WelcomeScreen = () => {
     } catch (error) {
       console.error('Error opening privacy policy:', error);
     }
+  };
+
+  const handleContinueAsGuest = async () => {
+    triggerHaptic('light');
+    setShowGuestModal(true);
+  };
+
+  const handleGuestModalContinue = async () => {
+    triggerHaptic('medium');
+    setShowGuestModal(false);
+    
+    // Grant free credits to guest user
+    const granted = await grantGuestFreeCredits();
+    if (granted) {
+      console.log('✅ Guest free credits granted');
+    }
+    
+    // Navigate to main app
+    navigation.navigate('MainTabs');
+  };
+
+  const handleGuestModalSignUp = () => {
+    triggerHaptic('light');
+    setShowGuestModal(false);
+    navigation.navigate('SignUp');
   };
   
   return (
@@ -91,7 +120,7 @@ const WelcomeScreen = () => {
           
           <Text 
             style={styles.skipText}
-            onPress={() => navigation.navigate('MainTabs')}
+            onPress={handleContinueAsGuest}
           >
             Continue as guest
           </Text>
@@ -105,6 +134,12 @@ const WelcomeScreen = () => {
           </Text>
         </View>
       </View>
+
+      <GuestCreditsModal
+        visible={showGuestModal}
+        onContinue={handleGuestModalContinue}
+        onSignUp={handleGuestModalSignUp}
+      />
     </SafeAreaView>
   );
 };

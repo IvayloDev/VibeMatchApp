@@ -419,11 +419,15 @@ export async function validatePurchase(
       };
     }
 
+    // Explicitly pass the Authorization header for iOS compatibility
     const { data, error } = await supabase.functions.invoke('validate-purchase', {
       body: {
         transactionId,
         productId,
         platform: Platform.OS,
+      },
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
       },
     });
 

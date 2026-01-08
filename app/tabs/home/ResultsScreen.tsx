@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, Linking, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Image, Linking, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator, ScrollView } from 'react-native';
 import { Text, Card } from 'react-native-paper';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
@@ -871,16 +871,21 @@ const ResultsScreen = () => {
                <Text style={styles.continueButtonText}>See Results</Text>
                <MaterialCommunityIcons name="arrow-right" size={20} color={Colors.textPrimary} />
              </TouchableOpacity>
-           </Animated.View>
-         )}
+          </Animated.View>
+        )}
 
-        {/* Animated Content */}
-        <Animated.View 
-          style={[
-            styles.contentContainer,
-            { opacity: contentOpacity }
-          ]}
+        <ScrollView 
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
         >
+          {/* Animated Content */}
+          <Animated.View 
+            style={[
+              styles.contentContainer,
+              { opacity: contentOpacity }
+            ]}
+          >
           {/* Top Section: Image + Main Song */}
           <View style={styles.topSection}>
             {/* Animated Image with Cool Border */}
@@ -995,6 +1000,7 @@ const ResultsScreen = () => {
             </View>
           </Animated.View>
         </Animated.View>
+        </ScrollView>
       </View>
 
       {/* Full-Screen Image Modal */}
@@ -1050,6 +1056,13 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingBottom: Spacing.xl,
   },
   
   // Animation styles

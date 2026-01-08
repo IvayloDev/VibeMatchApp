@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView, Dimensions } from 'react-native';
 import { TextInput, Button, Text } from 'react-native-paper';
 import { useNavigation } from '@react-navigation/native';
@@ -7,6 +7,9 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout } from '../../lib/designSystem';
+import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
+import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { triggerHaptic } from '../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -24,6 +27,7 @@ const SignInScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [loading, setLoading] = React.useState(false);
   const [socialLoading, setSocialLoading] = React.useState<'google' | 'apple' | null>(null);
+  const [showGuestModal, setShowGuestModal] = useState(false);
 
   const handleSignIn = async () => {
     setLoading(true);
@@ -202,7 +206,10 @@ const SignInScreen = () => {
             </TouchableOpacity>
             
             <TouchableOpacity 
-              onPress={() => navigation.navigate('MainTabs')} 
+              onPress={() => {
+                triggerHaptic('light');
+                setShowGuestModal(true);
+              }} 
               style={[styles.linkContainer, { marginTop: Spacing.xl }]}
             >
               <Text style={styles.continueWithoutAccountText}>Skip for now</Text>
@@ -210,6 +217,28 @@ const SignInScreen = () => {
           </ScrollView>
         </KeyboardAvoidingView>
       </LinearGradient>
+
+      <GuestCreditsModal
+        visible={showGuestModal}
+        onContinue={async () => {
+          triggerHaptic('medium');
+          setShowGuestModal(false);
+          
+          // Grant free credits to guest user
+          const granted = await grantGuestFreeCredits();
+          if (granted) {
+            console.log('✅ Guest free credits granted');
+          }
+          
+          // Navigate to main app
+          navigation.navigate('MainTabs');
+        }}
+        onSignUp={() => {
+          triggerHaptic('light');
+          setShowGuestModal(false);
+          navigation.navigate('SignUp');
+        }}
+      />
     </View>
   );
 };

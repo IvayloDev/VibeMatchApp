@@ -1,7 +1,7 @@
 
 [functions.recommend-songs]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 import_map = "./functions/recommend-songs/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx

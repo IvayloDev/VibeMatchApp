@@ -322,13 +322,45 @@ Recommend 3 songs that match this request. Prefer unexpected-but-accurate picks 
 serve(async (req) => {
   console.log("🔔 Invocation start");
 
+  // 0) Try to get user from Authorization header (if present)
+  let userId: string | undefined;
+  const authHeader = req.headers.get('Authorization');
+  
+  if (authHeader) {
+    try {
+      const supabaseClient = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+        {
+          global: {
+            headers: {
+              Authorization: authHeader,
+            },
+          },
+        }
+      );
+      
+      const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+      if (!userError && user) {
+        userId = user.id;
+        console.log("✅ Authenticated user:", userId);
+      } else {
+        console.log("ℹ️ No user from auth header (guest user)");
+      }
+    } catch (err) {
+      console.warn("⚠️ Error getting user from auth header:", err);
+      // Continue as guest user
+    }
+  } else {
+    console.log("ℹ️ No Authorization header (guest user)");
+  }
+
   // 1) Parse incoming JSON
   let imageUrl: string;
   let genre: string | undefined;
   let customRequest: string | undefined;
   let hasCustomRequest: boolean;
   let hasGenre: boolean;
-  let userId: string | undefined;
   let avoidTracks: string[] = [];
   let avoidArtists: string[] = [];
 
@@ -339,7 +371,10 @@ serve(async (req) => {
     customRequest = body.customRequest;
     hasCustomRequest = body.hasCustomRequest ?? !!(customRequest && customRequest.trim());
     hasGenre = body.hasGenre ?? !!(genre && genre !== "N/A" && !hasCustomRequest);
-    userId = body.userId;
+    // Only use userId from body if we didn't get it from auth header
+    if (!userId) {
+      userId = body.userId;
+    }
     avoidTracks = body.avoidTracks || [];
     avoidArtists = body.avoidArtists || [];
 
@@ -521,15 +556,24 @@ serve(async (req) => {
   };
 
   console.log("📤 Calling OpenAI with structured output");
+  console.log("📤 OpenAI API Key present:", !!openaiKey, "Length:", openaiKey?.length || 0);
 
   let openaiResp: Response;
   try {
+    const headers = {
+      "Authorization": `Bearer ${openaiKey}`,
+      "Content-Type": "application/json"
+    };
+    
+    console.log("📤 Request headers:", {
+      hasAuthorization: !!headers["Authorization"],
+      authorizationPrefix: headers["Authorization"]?.substring(0, 20) + "...",
+      contentType: headers["Content-Type"]
+    });
+    
     openaiResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${openaiKey}`,
-        "Content-Type": "application/json"
-      },
+      headers: headers,
       body: JSON.stringify(payload)
     });
   } catch (err) {
@@ -542,6 +586,13 @@ serve(async (req) => {
   if (!openaiResp.ok) {
     const errBody = await openaiResp.json().catch(() => null);
     console.error("❌ OpenAI API error:", openaiResp.status, errBody);
+    console.error("❌ Response headers:", Object.fromEntries(openaiResp.headers.entries()));
+    
+    // Check for specific missing header error
+    if (errBody?.error?.message?.includes("header") || errBody?.error?.message?.includes("authorization")) {
+      console.error("❌ Missing or invalid Authorization header detected");
+    }
+    
     return jsonResponse({
       error: "OpenAI request failed",
       details: errBody
