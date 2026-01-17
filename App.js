@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Provider as PaperProvider, MD3DarkTheme } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -45,6 +45,7 @@ const PaperTheme = {
 
 function AppContent() {
   const { user, loading } = useAuth();
+  const navigationRef = React.useRef(null);
 
   // Track previous user ID to detect logout
   const prevUserIdRef = React.useRef(null);
@@ -76,13 +77,37 @@ function AppContent() {
     setupRevenueCat();
   }, [user?.id]);
 
+  // Navigate to MainTabs if user is logged in when auth state loads
+  React.useEffect(() => {
+    if (!loading && user && navigationRef.current) {
+      // User is logged in, navigate to MainTabs
+      navigationRef.current.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
+    }
+  }, [loading, user]);
+
   if (loading) {
     return <LoadingScreen />;
   }
 
   return (
-    <NavigationContainer theme={NavigationTheme}>
+    <NavigationContainer 
+      ref={navigationRef}
+      theme={NavigationTheme}
+      onReady={() => {
+        // When navigation is ready, check if user is logged in and navigate
+        if (user && navigationRef.current) {
+          navigationRef.current.reset({
+            index: 0,
+            routes: [{ name: 'MainTabs' }],
+          });
+        }
+      }}
+    >
       <Stack.Navigator 
+        initialRouteName={user ? 'MainTabs' : 'Welcome'}
         screenOptions={{ 
           headerShown: false,
           animation: 'slide_from_right',

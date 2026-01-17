@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Dimensions, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { ModernButton } from '../../lib/components/ModernButton';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
 import { triggerHaptic } from '../../lib/utils/haptics';
+import { useAuth } from '../../lib/AuthContext';
 
 // Define the navigation stack param list
 type RootStackParamList = {
@@ -22,8 +23,19 @@ const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { user, loading } = useAuth();
   const { width } = Dimensions.get('window');
   const [showGuestModal, setShowGuestModal] = useState(false);
+
+  // Redirect to MainTabs if user is already logged in
+  useEffect(() => {
+    if (!loading && user) {
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
+    }
+  }, [user, loading, navigation]);
   
   const handlePrivacyPolicyPress = async () => {
     try {
