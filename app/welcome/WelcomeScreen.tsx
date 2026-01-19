@@ -1,15 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Dimensions, Linking } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Dimensions, Linking, TouchableOpacity, Animated } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { Colors, Typography, Spacing, Layout } from '../../lib/designSystem';
-import { FloatingCard } from '../../lib/components/FloatingCard';
-import { ModernButton } from '../../lib/components/ModernButton';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
+import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 
 // Define the navigation stack param list
 type RootStackParamList = {
@@ -21,11 +21,83 @@ type RootStackParamList = {
 
 const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy/';
 
+const { width, height } = Dimensions.get('window');
+
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, loading } = useAuth();
-  const { width } = Dimensions.get('window');
   const [showGuestModal, setShowGuestModal] = useState(false);
+
+  // Animation values for wave effect
+  const card1Anim = useRef(new Animated.Value(0)).current;
+  const card2Anim = useRef(new Animated.Value(0)).current;
+  const card3Anim = useRef(new Animated.Value(0)).current;
+
+  // Wave animation - cards move up and down in sequence
+  useEffect(() => {
+    const createWaveAnimation = () => {
+      // Create animations with different delays for wave effect
+      const animation1 = Animated.loop(
+        Animated.sequence([
+          Animated.timing(card1Anim, {
+            toValue: 1,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(card1Anim, {
+            toValue: 0,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      const animation2 = Animated.loop(
+        Animated.sequence([
+          Animated.delay(400), // Start 400ms after card1
+          Animated.timing(card2Anim, {
+            toValue: 1,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(card2Anim, {
+            toValue: 0,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      const animation3 = Animated.loop(
+        Animated.sequence([
+          Animated.delay(800), // Start 800ms after card1
+          Animated.timing(card3Anim, {
+            toValue: 1,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(card3Anim, {
+            toValue: 0,
+            duration: 2000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      // Start all animations
+      animation1.start();
+      animation2.start();
+      animation3.start();
+
+      return () => {
+        animation1.stop();
+        animation2.stop();
+        animation3.stop();
+      };
+    };
+
+    createWaveAnimation();
+  }, []);
 
   // Redirect to MainTabs if user is already logged in
   useEffect(() => {
@@ -76,174 +148,360 @@ const WelcomeScreen = () => {
   };
   
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        {/* Floating cards section inspired by the design */}
-        <View style={styles.cardsContainer}>
-          <FloatingCard style={StyleSheet.flatten([styles.floatingCard, styles.card1])}>
-            <Text style={styles.cardEmoji}>🎵</Text>
-            <Text style={styles.cardTitle}>Discover</Text>
-            <Text style={styles.cardSubtitle}>Your Vibe</Text>
-          </FloatingCard>
+    <View style={styles.container}>
+      {/* Background Blur Effects */}
+      <View style={styles.backgroundBlur1} />
+      <View style={styles.backgroundBlur2} />
+      
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.content}>
+          {/* Feature Cards Section */}
+          <View style={styles.cardsContainer}>
+            {/* Card 1: Discover */}
+            <Animated.View 
+              style={[
+                styles.featureCard, 
+                styles.card1,
+                {
+                  transform: [
+                    { rotate: '-8deg' },
+                    { 
+                      translateY: card1Anim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [-10, -25], // Moves from -10 to -25 (up)
+                      })
+                    }
+                  ],
+                }
+              ]}
+            >
+              <View style={styles.cardGlow} />
+              <MaterialCommunityIcons 
+                name="music-note-outline" 
+                size={32} 
+                color="#FF3B30" 
+                style={styles.cardIcon}
+              />
+              <Text style={styles.cardTitle}>Discover</Text>
+              <Text style={styles.cardSubtitle}>Your Vibe</Text>
+            </Animated.View>
+            
+            {/* Card 2: Match */}
+            <Animated.View 
+              style={[
+                styles.featureCard, 
+                styles.card2,
+                {
+                  transform: [
+                    { 
+                      translateY: card2Anim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [10, -5], // Moves from 10 to -5 (up)
+                      })
+                    }
+                  ],
+                  zIndex: 1,
+                }
+              ]}
+            >
+              <View style={styles.cardGlow} />
+              <MaterialCommunityIcons 
+                name="star-outline" 
+                size={32} 
+                color="#FF3B30" 
+                style={styles.cardIcon}
+              />
+              <Text style={styles.cardTitle}>Match</Text>
+              <Text style={styles.cardSubtitle}>Perfect Songs</Text>
+            </Animated.View>
+            
+            {/* Card 3: Analyze */}
+            <Animated.View 
+              style={[
+                styles.featureCard, 
+                styles.card3,
+                {
+                  transform: [
+                    { rotate: '8deg' },
+                    { 
+                      translateY: card3Anim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [-10, -25], // Moves from -10 to -25 (up)
+                      })
+                    }
+                  ],
+                }
+              ]}
+            >
+              <View style={styles.cardGlow} />
+              <MaterialCommunityIcons 
+                name="target" 
+                size={32} 
+                color="#FF3B30" 
+                style={styles.cardIcon}
+              />
+              <Text style={styles.cardTitle}>Analyze</Text>
+              <Text style={styles.cardSubtitle}>Your Mood</Text>
+            </Animated.View>
+          </View>
           
-          <FloatingCard style={StyleSheet.flatten([styles.floatingCard, styles.card2])}>
-            <Text style={styles.cardEmoji}>💫</Text>
-            <Text style={styles.cardTitle}>Match</Text>
-            <Text style={styles.cardSubtitle}>Perfect Songs</Text>
-          </FloatingCard>
-          
-          <FloatingCard style={StyleSheet.flatten([styles.floatingCard, styles.card3])}>
-            <Text style={styles.cardEmoji}>🎯</Text>
-            <Text style={styles.cardTitle}>Analyze</Text>
-            <Text style={styles.cardSubtitle}>Your Mood</Text>
-          </FloatingCard>
-        </View>
-        
-        {/* Main title section inspired by "They are People, Places..." */}
-        <View style={styles.titleSection}>
-          <Text style={styles.mainTitle}>
-            They are{' '}
-            <Text style={[styles.mainTitle, { color: Colors.accent.red }]}>Songs</Text>,
-          </Text>
-          <Text style={styles.mainTitle}>
-            <Text style={[styles.mainTitle, { color: Colors.accent.blue }]}>Moods</Text>,{' '}
-            <Text style={[styles.mainTitle, { color: Colors.accent.yellow }]}>Vibes</Text>,
-          </Text>
-          <Text style={styles.mainTitle}>
-            &{' '}
-            <Text style={[styles.mainTitle, { color: Colors.accent.coral }]}>Memories</Text>.
-          </Text>
-        </View>
-        
-        {/* Bottom section */}
-        <View style={styles.bottomSection}>
-          <ModernButton
-            title="Sign In"
-            onPress={() => navigation.navigate('SignIn')}
-            style={styles.signInButton}
-          />
-          
-          <ModernButton
-            title="Create Account"
-            onPress={() => navigation.navigate('SignUp')}
-            style={styles.createAccountButton}
-            variant="secondary"
-          />
-          
-          <Text 
-            style={styles.skipText}
-            onPress={handleContinueAsGuest}
-          >
-            Continue as guest
-          </Text>
-          
-          <Text style={styles.termsText}>
-            By using VibeMatch, you agree to our{'\n'}
-            <Text style={styles.linkText}>Terms of Service</Text> and{' '}
-            <Text style={styles.linkText} onPress={handlePrivacyPolicyPress}>
-              Privacy Policy
+          {/* Main Title Section */}
+          <View style={styles.titleSection}>
+            <Text style={styles.mainTitle}>
+              They are{' '}
+              <Text style={styles.highlightedText}>Songs</Text>,
             </Text>
-          </Text>
+            <Text style={styles.mainTitle}>
+              <Text style={styles.highlightedText}>Moods</Text>,{' '}
+              <Text style={styles.highlightedText}>Vibes</Text>,
+            </Text>
+            <Text style={styles.mainTitle}>
+              &{' '}
+              <Text style={styles.highlightedText}>Memories</Text>.
+            </Text>
+          </View>
+          
+          {/* Action Buttons Section */}
+          <View style={styles.bottomSection}>
+            {/* Sign In Button - White */}
+            <TouchableOpacity
+              style={styles.signInButton}
+              onPress={() => {
+                triggerHaptic('light');
+                navigation.navigate('SignIn');
+              }}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.signInButtonText}>Sign In</Text>
+            </TouchableOpacity>
+            
+            {/* Create Account Button - Dark Grey */}
+            <TouchableOpacity
+              style={styles.createAccountButton}
+              onPress={() => {
+                triggerHaptic('light');
+                navigation.navigate('SignUp');
+              }}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.createAccountButtonText}>Create Account</Text>
+            </TouchableOpacity>
+            
+            {/* Continue as Guest Link */}
+            <TouchableOpacity
+              onPress={handleContinueAsGuest}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.guestText}>Continue as guest</Text>
+            </TouchableOpacity>
+            
+            {/* Legal Disclaimer */}
+            <View style={styles.legalSection}>
+              <Text style={styles.legalText}>
+                By using VibeMatch, you agree to our{' '}
+              </Text>
+              <View style={styles.legalLinks}>
+                <TouchableOpacity onPress={handlePrivacyPolicyPress} activeOpacity={0.7}>
+                  <Text style={styles.legalLink}>Terms of Service</Text>
+                </TouchableOpacity>
+                <Text style={styles.legalText}> and </Text>
+                <TouchableOpacity onPress={handlePrivacyPolicyPress} activeOpacity={0.7}>
+                  <Text style={styles.legalLink}>Privacy Policy</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
         </View>
-      </View>
+      </SafeAreaView>
 
       <GuestCreditsModal
         visible={showGuestModal}
         onContinue={handleGuestModalContinue}
         onSignUp={handleGuestModalSignUp}
       />
-    </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: Colors.background,
+  container: {
+    flex: 1,
+    backgroundColor: '#221019', // Matching app background
   },
-  content: { 
-    flex: 1, 
+  safeArea: {
+    flex: 1,
+  },
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#f4258c20',
+    borderRadius: 9999,
+    opacity: 0.3,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#8b5cf620',
+    borderRadius: 9999,
+    opacity: 0.3,
+  },
+  content: {
+    flex: 1,
     paddingHorizontal: Layout.screenPadding,
     paddingTop: Spacing.xl,
+    paddingBottom: Spacing.lg,
   },
   cardsContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    position: 'relative',
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    paddingTop: Spacing.xxl,
   },
-  floatingCard: {
-    position: 'absolute',
-    width: 120,
-    height: 120,
+  featureCard: {
+    width: (width - Layout.screenPadding * 2 - Spacing.sm * 2) / 3,
+    aspectRatio: 0.85,
+    backgroundColor: 'rgba(28, 28, 30, 0.6)',
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1.5,
+    borderColor: '#FF3B3040', // Red-orange glow
     alignItems: 'center',
     justifyContent: 'center',
+    padding: Spacing.md,
+    position: 'relative',
+    overflow: 'hidden',
+    // Subtle rotation for overlapping effect
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  cardGlow: {
+    position: 'absolute',
+    top: -2,
+    left: -2,
+    right: -2,
+    bottom: -2,
+    borderRadius: BorderRadius.xl,
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    opacity: 0.3,
   },
   card1: {
-    top: -20,
-    left: 20,
-    transform: [{ rotate: '-15deg' }],
+    // Transform is now handled by Animated.View
   },
   card2: {
-    top: 40,
-    right: 30,
-    transform: [{ rotate: '10deg' }],
+    // Transform is now handled by Animated.View
   },
   card3: {
-    bottom: 20,
-    left: 40,
-    transform: [{ rotate: '5deg' }],
+    // Transform is now handled by Animated.View
   },
-  cardEmoji: {
-    fontSize: 32,
+  cardIcon: {
     marginBottom: Spacing.sm,
   },
   cardTitle: {
-    ...Typography.heading3,
-    fontSize: 16,
-    marginBottom: 2,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 4,
+    textAlign: 'center',
   },
   cardSubtitle: {
-    ...Typography.caption,
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.7)',
     textAlign: 'center',
   },
   titleSection: {
     paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.xxxl,
+    marginBottom: Spacing.xxl,
+    alignItems: 'center',
   },
   mainTitle: {
-    ...Typography.display,
+    fontSize: 32,
+    fontWeight: '700',
+    color: '#FFFFFF',
     textAlign: 'center',
-    marginBottom: Spacing.xs,
+    lineHeight: 42,
+    letterSpacing: -0.5,
+  },
+  highlightedText: {
+    color: '#FF3B30', // Red-orange highlight
   },
   bottomSection: {
     alignItems: 'center',
-    paddingBottom: Spacing.xl,
+    paddingBottom: Spacing.lg,
   },
   signInButton: {
     width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: BorderRadius.xl,
+    paddingVertical: Spacing.md + 4,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: Spacing.md,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  signInButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
   },
   createAccountButton: {
     width: '100%',
+    backgroundColor: '#1C1C1E',
+    borderRadius: BorderRadius.xl,
+    paddingVertical: Spacing.md + 4,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: Spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  skipText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
+  createAccountButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  guestText: {
     fontSize: 14,
-    marginBottom: Spacing.lg,
-    textDecorationLine: 'underline',
-    opacity: 0.7,
+    fontWeight: '500',
+    color: '#FFFFFF',
+    marginBottom: Spacing.xl,
   },
-  termsText: {
-    ...Typography.caption,
+  legalSection: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+  },
+  legalText: {
+    fontSize: 11,
+    fontWeight: '400',
+    color: 'rgba(255, 255, 255, 0.7)',
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 16,
   },
-  linkText: {
-    color: Colors.accent.blue,
+  legalLinks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  legalLink: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#FF3B30',
     textDecorationLine: 'underline',
   },
 });

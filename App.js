@@ -139,6 +139,16 @@ function AppContent() {
 }
 
 export default function App() {
+  // Disable React Native inspector overlays on mount
+  React.useEffect(() => {
+    if (typeof global !== 'undefined') {
+      // Ensure inspector is disabled
+      if (global.__RCTProfileIsProfiling !== undefined) {
+        global.__RCTProfileIsProfiling = false;
+      }
+    }
+  }, []);
+
   return (
     <SafeAreaProvider>
       <StatusBar style="light" backgroundColor={Colors.background} />

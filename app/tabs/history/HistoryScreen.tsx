@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, RefreshControl, Animated } from 'react-native';
+import { View, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, RefreshControl, Animated, Dimensions } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
@@ -14,6 +14,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { FloatingCard } from '../../../lib/components/FloatingCard';
 import { triggerHaptic } from '../../../lib/utils/haptics';
+
+const { width, height } = Dimensions.get('window');
 
 type TabParamList = {
   Home: undefined;
@@ -158,19 +160,19 @@ const HistoryScreen = () => {
             style={styles.loadingIconContainer}
           >
             <LinearGradient
-              colors={[Colors.accent.blue + '30', Colors.accent.coral + '20']}
+              colors={['#FF3B3030', '#FF2D5520']}
               style={styles.loadingIconGradient}
             >
               <MaterialCommunityIcons 
                 name="music-note" 
                 size={48} 
-                color={Colors.accent.blue} 
+                color="#FF3B30" 
               />
             </LinearGradient>
           </Animatable.View>
           <ActivityIndicator 
             size="large" 
-            color={Colors.accent.blue} 
+            color="#FF3B30" 
             style={styles.loadingSpinner}
           />
           <Text style={styles.loadingText}>Loading your history...</Text>
@@ -188,13 +190,13 @@ const HistoryScreen = () => {
         style={styles.emptyIconContainer}
       >
         <LinearGradient
-          colors={[Colors.accent.blue + '30', Colors.accent.coral + '20']}
+          colors={['#FF3B3030', '#FF2D5520']}
           style={styles.emptyIconGradient}
         >
           <MaterialCommunityIcons 
             name="music-note-outline" 
             size={64} 
-            color={Colors.accent.blue} 
+            color="#FF3B30" 
           />
         </LinearGradient>
       </Animatable.View>
@@ -223,7 +225,7 @@ const HistoryScreen = () => {
           <FloatingCard style={styles.card}>
             {/* Gradient Accent */}
             <LinearGradient
-              colors={[Colors.accent.blue + '15', Colors.accent.coral + '10', 'transparent']}
+              colors={['#FF3B3015', '#FF2D5510', 'transparent']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.cardGradient}
@@ -292,6 +294,9 @@ const HistoryScreen = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Background Blur Effects */}
+      <View style={styles.backgroundBlur1} />
+      <View style={styles.backgroundBlur2} />
       <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
         <Text style={styles.headerTitle}>History</Text>
         <Text style={styles.headerSubtitle}>
@@ -311,8 +316,8 @@ const HistoryScreen = () => {
             <RefreshControl 
               refreshing={refreshing} 
               onRefresh={onRefresh}
-              tintColor={Colors.accent.blue}
-              colors={[Colors.accent.blue]}
+              tintColor="#FF3B30"
+              colors={['#FF3B30']}
             />
           }
           showsVerticalScrollIndicator={false}
@@ -326,7 +331,7 @@ const HistoryScreen = () => {
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
-    backgroundColor: Colors.background,
+    backgroundColor: '#221019', // Matching DashboardScreen background
   },
   header: {
     paddingHorizontal: Layout.screenPadding,
@@ -448,7 +453,7 @@ const styles = StyleSheet.create({
   },
   songsBadgeText: {
     ...Typography.caption,
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     fontSize: 10,
     fontWeight: '600',
   },
@@ -466,7 +471,7 @@ const styles = StyleSheet.create({
   },
   songNumber: {
     ...Typography.caption,
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     fontSize: 11,
     fontWeight: '700',
     width: 16,
@@ -493,7 +498,7 @@ const styles = StyleSheet.create({
   },
   moreSongsText: {
     ...Typography.caption,
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     fontSize: 10,
     fontStyle: 'italic',
     marginTop: 2,
@@ -535,6 +540,28 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     textAlign: 'center',
     lineHeight: 22,
+  },
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
   },
   footer: {
     height: Spacing.xl,

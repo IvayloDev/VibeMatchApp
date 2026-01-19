@@ -83,46 +83,50 @@ const MainTabs = () => {
             backgroundColor: 'transparent',
             borderTopWidth: 0,
             elevation: 0,
-            height: Platform.OS === 'ios' ? 90 : 70,
-            paddingBottom: Platform.OS === 'ios' ? 20 : 8,
-            paddingTop: Spacing.sm,
-            paddingHorizontal: Spacing.md,
+            height: Platform.OS === 'ios' ? 90 : 80,
+            paddingBottom: Platform.OS === 'ios' ? 24 : 12,
+            paddingTop: Spacing.xs,
+            paddingHorizontal: Spacing.lg,
           },
           tabBarBackground: () => (
-            <View style={{ flex: 1, borderRadius: BorderRadius.xl, overflow: 'hidden', marginHorizontal: Spacing.md }}>
-              <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
-              <LinearGradient
-                colors={[Colors.cardBackground + 'F0', Colors.cardBackground + 'E0']}
-                style={StyleSheet.absoluteFill}
-              />
+            <View style={{ 
+              flex: 1, 
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              overflow: 'hidden', 
+              marginHorizontal: 0,
+              backgroundColor: '#1C1C1E',
+            }}>
+              <BlurView intensity={100} tint="dark" style={StyleSheet.absoluteFill} />
               <View style={{
                 position: 'absolute',
                 top: 0,
                 left: 0,
                 right: 0,
                 height: 1,
-                backgroundColor: Colors.border + '40',
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
               }} />
             </View>
           ),
-          tabBarActiveTintColor: Colors.accent.blue,
-          tabBarInactiveTintColor: Colors.textSecondary,
+          tabBarActiveTintColor: '#FF3B30', // Red color for active tab
+          tabBarInactiveTintColor: 'rgba(148, 163, 184, 0.6)', // Grey for inactive tabs
           tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '600',
-            marginTop: 2,
-            letterSpacing: 0.3,
+            fontSize: 10,
+            fontWeight: '700',
+            marginTop: 4,
+            letterSpacing: 1,
+            textTransform: 'uppercase',
           },
           tabBarIcon: ({ color, focused }) => {
             let iconName: string;
-            let iconSize = 26;
+            let iconSize = 28;
 
             if (route.name === 'Home') {
-              iconName = focused ? 'compass' : 'compass-outline';
+              iconName = 'compass';
             } else if (route.name === 'History') {
-              iconName = focused ? 'clock-time-four' : 'clock-outline';
+              iconName = 'clock-outline';
             } else if (route.name === 'Profile') {
-              iconName = focused ? 'account-circle' : 'account-circle-outline';
+              iconName = 'account-circle-outline';
             } else {
               iconName = 'circle';
             }
@@ -130,11 +134,17 @@ const MainTabs = () => {
             return (
               <View
                 style={{
-                  transform: [{ scale: focused ? 1.15 : 1 }],
+                  transform: [{ scale: focused ? 1.1 : 1 }],
+                  ...(focused && {
+                    shadowColor: '#FF3B30',
+                    shadowOffset: { width: 0, height: 0 },
+                    shadowOpacity: 0.8,
+                    shadowRadius: 12,
+                  }),
                 }}
               >
                 <MaterialCommunityIcons 
-                  name={iconName} 
+                  name={iconName as any} 
                   size={iconSize} 
                   color={color}
                 />
@@ -188,7 +198,7 @@ const MainTabs = () => {
         name="History" 
         component={HistoryStackNavigator}
         options={{
-          tabBarLabel: 'History',
+          tabBarLabel: 'Vault',
         }}
         listeners={({ navigation }) => ({
           tabPress: (e) => {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, Alert, ScrollView } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Dimensions } from 'react-native';
 import { Text, Button, IconButton, ActivityIndicator } from 'react-native-paper';
 import { useNavigation, CommonActions } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,6 +17,8 @@ import { storePendingValidation, removePendingValidation } from '../../lib/credi
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
+
+const { width, height } = Dimensions.get('window');
 
 // Package display configuration
 const PACKAGE_CONFIG: Record<string, {
@@ -311,7 +313,10 @@ const PaymentScreen = () => {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#221019' }}>
+      {/* Background Blur Effects */}
+      <View style={styles.backgroundBlur1} />
+      <View style={styles.backgroundBlur2} />
       {/* Header */}
       <View style={styles.header}>
         <IconButton 
@@ -335,7 +340,7 @@ const PaymentScreen = () => {
         {/* Hero Section - Current Credits */}
         <View style={styles.heroSection}>
           <LinearGradient
-            colors={[Colors.accent.blue + '20', Colors.accent.blue + '10', 'transparent']}
+            colors={['#FF3B3020', '#FF3B3010', 'transparent']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.heroGradient}
@@ -344,7 +349,7 @@ const PaymentScreen = () => {
               <MaterialCommunityIcons 
                 name="diamond-stone" 
                 size={40} 
-                color={Colors.accent.blue} 
+                color="#FF3B30" 
               />
               <Text style={styles.creditsValue}>{currentCredits}</Text>
               <Text style={styles.creditsLabel}>Credits Available</Text>
@@ -358,7 +363,7 @@ const PaymentScreen = () => {
         {/* Packages List */}
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={Colors.accent.blue} />
+            <ActivityIndicator size="large" color="#FF3B30" />
             <Text style={styles.loadingText}>Loading packages...</Text>
           </View>
         ) : (
@@ -379,7 +384,7 @@ const PaymentScreen = () => {
                   {isMostPopular && (
                     <View style={styles.popularRibbon}>
                       <LinearGradient
-                        colors={[Colors.accent.blue, Colors.accent.blue + 'DD']}
+                        colors={['#FF3B30', '#FF3B30DD']}
                         style={styles.ribbonGradient}
                       >
                         <MaterialCommunityIcons name="star" size={12} color="#FFF" />
@@ -442,7 +447,7 @@ const PaymentScreen = () => {
 
         {/* Compact Info Section */}
         <View style={styles.infoSection}>
-          <MaterialCommunityIcons name="check-circle" size={14} color={Colors.accent.blue} />
+          <MaterialCommunityIcons name="check-circle" size={14} color="#FF3B30" />
           <Text style={styles.infoText}>1 credit = 1 analysis • In-app purchase only • Credits never expire</Text>
         </View>
       </ScrollView>
@@ -508,7 +513,7 @@ const styles = StyleSheet.create({
   },
   creditsHint: {
     fontSize: 11,
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     marginTop: 6,
     fontWeight: '500',
   },
@@ -530,7 +535,7 @@ const styles = StyleSheet.create({
   },
   popularPackageCard: {
     borderWidth: 2,
-    borderColor: Colors.accent.blue,
+    borderColor: '#FF3B30',
     ...Shadows.prominent,
   },
   popularRibbon: {
@@ -616,7 +621,7 @@ const styles = StyleSheet.create({
   price: {
     fontSize: 18,
     fontWeight: '700',
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     letterSpacing: -0.3,
     marginBottom: 4,
   },
@@ -624,13 +629,13 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
     height: 32,
     borderWidth: 0,
-    borderColor: Colors.accent.blue,
+    borderColor: '#FF3B30',
     minWidth: 85,
-    backgroundColor: Colors.accent.blue,
+    backgroundColor: '#FF3B30',
   },
   popularButton: {
-    backgroundColor: Colors.accent.blue,
-    borderColor: Colors.accent.blue,
+    backgroundColor: '#FF3B30',
+    borderColor: '#FF3B30',
   },
   purchaseButtonContent: {
     height: 32,
@@ -677,6 +682,28 @@ const styles = StyleSheet.create({
     marginTop: Spacing.sm,
     color: Colors.textSecondary,
     fontSize: 12,
+  },
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
   },
 });
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, Dimensions, Pressable } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -13,40 +13,33 @@ import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { useAuth } from '../../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
-import { FloatingCard } from '../../../lib/components/FloatingCard';
-import { ModernButton } from '../../../lib/components/ModernButton';
-import { SkeletonCreditDisplay } from '../../../lib/components/SkeletonLoader';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
+
+// Colors from HTML reference - matching AnalyzingScreen
+const DesignColors = {
+  primary: '#f4258c',
+  accentPurple: '#8b5cf6',
+  accentTeal: '#2dd4bf',
+  backgroundDark: '#221019', // Matching AnalyzingScreen
+  backgroundLight: '#f8f5f7',
+};
 
 type RootStackParamList = {
   RecommendationType: { image: string };
   Payment: undefined;
-  // ...other routes
 };
 
 const DashboardScreen = () => {
   const { user } = useAuth();
-  
-  // Extract username from email (part before @) and capitalize it
-  const getUserName = () => {
-    if (!user?.email) return 'User';
-    const emailPart = user.email.split('@')[0];
-    // Capitalize first letter and handle common separators
-    return emailPart
-      .split(/[._-]/)
-      .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-      .join(' ') || 'User';
-  };
-  
-  const userName = getUserName();
   const [credits, setCredits] = useState(0);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const buttonScale = useRef(new Animated.Value(1)).current;
 
   const loadUserCredits = async () => {
     try {
@@ -59,7 +52,6 @@ const DashboardScreen = () => {
     }
   };
 
-  // Load credits on mount
   useEffect(() => {
     loadUserCredits();
     
@@ -79,7 +71,6 @@ const DashboardScreen = () => {
     ]).start();
   }, []);
 
-  // Refresh credits when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
       loadUserCredits();
@@ -88,7 +79,6 @@ const DashboardScreen = () => {
 
   const pickImage = async () => {
     triggerHaptic('light');
-    // Check if user has enough credits before allowing image selection
     if (credits < 1) {
       triggerHaptic('warning');
       Alert.alert(
@@ -116,7 +106,6 @@ const DashboardScreen = () => {
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const uri = result.assets[0].uri;
-      // Resize and compress the image before using it
       const manipResult = await ImageManipulator.manipulateAsync(
         uri,
         [{ resize: { width: 800 } }],
@@ -126,438 +115,442 @@ const DashboardScreen = () => {
     }
   };
 
+  const handleButtonPress = () => {
+    if (credits < 1) {
+      navigation.navigate('Payment');
+    } else {
+      pickImage();
+    }
+  };
+
+  const handleButtonPressIn = () => {
+    Animated.spring(buttonScale, {
+      toValue: 0.95,
+      useNativeDriver: true,
+      friction: 3,
+      tension: 300,
+    }).start();
+  };
+
+  const handleButtonPressOut = () => {
+    Animated.spring(buttonScale, {
+      toValue: 1,
+      useNativeDriver: true,
+      friction: 3,
+      tension: 300,
+    }).start();
+  };
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Hero Section with Gradient Background */}
-        <Animated.View 
-          style={[
-            styles.heroSection,
-            {
-              opacity: fadeAnim,
-              transform: [{ scale: scaleAnim }],
-            },
-          ]}
+    <View style={styles.container}>
+      {/* Background Blur Effects */}
+      <View style={styles.backgroundBlur1} />
+      <View style={styles.backgroundBlur2} />
+      
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ScrollView 
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
         >
-          <LinearGradient
-            colors={[Colors.accent.blue + '20', Colors.accent.coral + '10', 'transparent']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-          
-          {/* Header with Credits */}
-          <View style={styles.header}>
-            <View style={styles.headerTop}>
-              <View style={styles.userNameContainer}>
-                <View style={styles.greetingRow}>
-                  <Text style={styles.greeting}>Welcome back</Text>
-                  <Text style={styles.wave}>👋</Text>
-                </View>
-                <Text style={styles.userName} numberOfLines={1} ellipsizeMode="tail">
-                  {userName}
-                </Text>
+          {/* Header */}
+          <Animated.View 
+            style={[
+              styles.header,
+              {
+                opacity: fadeAnim,
+              },
+            ]}
+          >
+            <View style={styles.headerContent}>
+              {/* Left: Person Icon */}
+              <View style={styles.iconContainer}>
+                <MaterialCommunityIcons name="account-circle" size={24} color="#FFFFFF" />
               </View>
               
-              {loading ? (
-                <SkeletonCreditDisplay />
-              ) : (
+              {/* Center: VibeMatch Title */}
+              <View style={styles.titleContainer}>
+                <Text style={styles.appTitle}>VibeMatch</Text>
+                <View style={styles.titleUnderline} />
+              </View>
+              
+              {/* Right: Credits Badge */}
+              {!loading && (
                 <Pressable
                   onPress={() => {
                     triggerHaptic('light');
                     navigation.navigate('Payment');
                   }}
-                  style={({ pressed }) => [
-                    styles.creditsCard,
-                    pressed && styles.creditsCardPressed
-                  ]}
+                  style={styles.creditsBadge}
                 >
-                  <Animatable.View 
-                    animation="pulse" 
-                    iterationCount="infinite" 
-                    duration={2000}
-                    style={styles.creditsCardInner}
-                  >
-                    <BlurView intensity={60} tint="dark" style={styles.creditsBlur}>
-                      <LinearGradient
-                        colors={[Colors.accent.green + '30', Colors.accent.blue + '20']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.creditsGradient}
-                      >
-                        <View style={styles.creditsContent}>
-                          <MaterialCommunityIcons 
-                            name="diamond-stone" 
-                            size={20} 
-                            color={Colors.accent.green} 
-                            style={styles.creditsIcon}
-                          />
-                          <View style={styles.creditsTextContainer}>
-                            <AnimatedCounter 
-                              value={credits} 
-                              duration={800}
-                              style={styles.creditsValue}
-                            />
-                            <Text style={styles.creditsLabel}>Credits</Text>
-                          </View>
-                        </View>
-                      </LinearGradient>
-                    </BlurView>
-                  </Animatable.View>
+                  <View style={styles.creditsTextContainer}>
+                    <AnimatedCounter value={credits} duration={800} textStyle={styles.creditsValue} />
+                    <Text style={styles.creditsText}> CREDITS</Text>
+                  </View>
                 </Pressable>
               )}
             </View>
+          </Animated.View>
 
-            {/* Low Credits Alert */}
-            {credits < 1 && !loading && (
-              <Animatable.View 
-                animation="fadeInDown" 
-                duration={500}
-                style={styles.alertCard}
-              >
-                <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-                <View style={styles.alertContent}>
-                  <MaterialCommunityIcons 
-                    name="alert-circle" 
-                    size={20} 
-                    color={Colors.accent.yellow} 
-                  />
-                  <Text style={styles.alertText}>
-                    Low credits - Get more to continue analyzing
-                  </Text>
-                </View>
-              </Animatable.View>
-            )}
-          </View>
-        </Animated.View>
-
-        {/* Main Feature Card */}
-        <Animated.View 
-          style={[
-            styles.featureSection,
-            {
-              opacity: fadeAnim,
-            },
-          ]}
-        >
-          <Text style={styles.sectionTitle}>Discover Your Vibe</Text>
-          <Text style={styles.sectionSubtitle}>
-            Find songs that perfectly match your mood
-          </Text>
-
-          <Animatable.View 
-            animation="fadeInUp" 
-            duration={800}
-            delay={200}
-            style={styles.mainCardContainer}
+          {/* Main Heading */}
+          <Animated.View 
+            style={[
+              styles.headingContainer,
+              {
+                opacity: fadeAnim,
+              },
+            ]}
           >
-            <FloatingCard style={styles.mainFeatureCard}>
-              {/* Gradient Border Effect */}
-              <LinearGradient
-                colors={[Colors.accent.blue + '40', Colors.accent.coral + '30', 'transparent']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.cardGradient}
-              />
-              
-              {/* Cost Badge */}
-              <View style={styles.costBadge}>
-                <LinearGradient
-                  colors={[Colors.accent.green, Colors.accent.blue]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.badgeGradient}
-                >
-                  <MaterialCommunityIcons name="music-note" size={14} color={Colors.textPrimary} />
-                  <Text style={styles.badgeText}>1 Credit = 3 Songs</Text>
-                </LinearGradient>
-              </View>
+            <Text style={styles.mainHeading}>
+              Turn your world into <Text style={styles.gradientText}>rhythm.</Text>
+            </Text>
+            <Text style={styles.subtitle}>AI-powered playlists inspired by your view</Text>
+          </Animated.View>
 
-              {/* Feature Content */}
-              <View style={styles.featureContent}>
-                <Animatable.View 
-                  animation="pulse" 
-                  iterationCount="infinite" 
+          {/* Upload Card */}
+          <Animated.View 
+            style={[
+              styles.uploadCardContainer,
+              {
+                opacity: fadeAnim,
+                transform: [{ scale: scaleAnim }],
+              },
+            ]}
+          >
+            <Pressable
+              onPress={handleButtonPress}
+              style={({ pressed }) => [
+                styles.uploadCard,
+                pressed && styles.uploadCardPressed,
+              ]}
+            >
+              <BlurView intensity={80} tint="dark" style={StyleSheet.absoluteFill} />
+              <View style={styles.uploadCardContent}>
+                {/* Icon Circle */}
+                <Animatable.View
+                  animation="pulse"
+                  iterationCount="infinite"
                   duration={3000}
-                  style={styles.emojiContainer}
+                  style={styles.iconCircle}
                 >
-                  <Text style={styles.featureEmoji}>📸</Text>
+                  <LinearGradient
+                    colors={[DesignColors.primary, DesignColors.accentPurple]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.iconCircleGradient}
+                  >
+                    <MaterialCommunityIcons name="image-plus" size={48} color="#FFFFFF" />
+                  </LinearGradient>
                 </Animatable.View>
-                
-                <Text style={styles.featureTitle}>Mood Matching</Text>
-                <Text style={styles.featureSubtitle}>
-                  Upload a photo and let AI find songs that match your current vibe perfectly
-                  {'\n'}*Requires in-app purchase of credits
+
+                {/* Card Text */}
+                <Text style={styles.uploadTitle}>Upload Your Vibe</Text>
+                <Text style={styles.uploadDescription}>
+                  Select a photo from your gallery to let AI analyze the mood
                 </Text>
 
-                <View style={styles.featureStats}>
-                  <View style={styles.statItem}>
-                    <MaterialCommunityIcons name="lightning-bolt" size={18} color={Colors.accent.yellow} />
-                    <Text style={styles.statText}>Instant Results</Text>
-                  </View>
-                  <View style={styles.statItem}>
-                    <MaterialCommunityIcons name="music-circle" size={18} color={Colors.accent.blue} />
-                    <Text style={styles.statText}>3 Songs</Text>
-                  </View>
-                  <View style={styles.statItem}>
-                    <MaterialCommunityIcons name="star" size={18} color={Colors.accent.coral} />
-                    <Text style={styles.statText}>Curated</Text>
-                  </View>
-                </View>
+                {/* CTA Button */}
+                <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+                  <TouchableOpacity
+                    onPress={handleButtonPress}
+                    onPressIn={handleButtonPressIn}
+                    onPressOut={handleButtonPressOut}
+                    style={styles.ctaButton}
+                    activeOpacity={0.9}
+                  >
+                    <LinearGradient
+                      colors={[DesignColors.primary, DesignColors.accentPurple]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.ctaButtonGradient}
+                    >
+                      <Text style={styles.ctaButtonText}>OPEN GALLERY</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </Animated.View>
               </View>
-              
-              <ModernButton
-                title={credits < 1 ? "Get Credits" : "Start Analyzing"}
-                onPress={credits < 1 ? () => navigation.navigate('Payment') : pickImage}
-                variant={credits < 1 ? "secondary" : "primary"}
-                style={styles.analyzeButton}
-              />
-            </FloatingCard>
-          </Animatable.View>
-        </Animated.View>
+            </Pressable>
+          </Animated.View>
 
-        {/* Bottom Spacing */}
-        <View style={styles.bottomSpacing} />
-      </ScrollView>
-    </SafeAreaView>
+          {/* Progress Indicator */}
+          <Animated.View 
+            style={[
+              styles.progressContainer,
+              {
+                opacity: fadeAnim,
+              },
+            ]}
+          >
+            <View style={styles.progressRow}>
+              <View style={styles.progressStep}>
+                <View style={styles.progressIcon}>
+                  <MaterialCommunityIcons name="image" size={16} color={DesignColors.primary} />
+                </View>
+                <Text style={styles.progressLabel}>UPLOAD</Text>
+              </View>
+              <View style={styles.progressLine} />
+              <View style={styles.progressStep}>
+                <View style={styles.progressIcon}>
+                  <MaterialCommunityIcons name="brain" size={16} color={DesignColors.primary} />
+                </View>
+                <Text style={styles.progressLabel}>ANALYZE</Text>
+              </View>
+              <View style={styles.progressLine} />
+              <View style={styles.progressStep}>
+                <View style={styles.progressIcon}>
+                  <MaterialCommunityIcons name="music" size={16} color={DesignColors.accentPurple} />
+                </View>
+                <Text style={styles.progressLabel}>SYNC</Text>
+              </View>
+            </View>
+          </Animated.View>
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: Colors.background,
+  container: {
+    flex: 1,
+    backgroundColor: DesignColors.backgroundDark,
+    position: 'relative',
+  },
+  safeArea: {
+    flex: 1,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: Spacing.xl,
+    paddingBottom: 100, // Space for bottom tab bar
   },
-  heroSection: {
-    paddingHorizontal: Layout.screenPadding,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    position: 'relative',
-    overflow: 'hidden',
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: DesignColors.primary + '20',
+    borderRadius: 9999,
+    opacity: 0.3,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: DesignColors.accentPurple + '20',
+    borderRadius: 9999,
+    opacity: 0.3,
   },
   header: {
-    zIndex: 1,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+    zIndex: 10,
   },
-  headerTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: Spacing.md,
-  },
-  userNameContainer: {
-    flex: 1,
-    minWidth: 0,
-    marginRight: Spacing.md,
-  },
-  greetingRow: {
+  headerContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: 2,
+    justifyContent: 'space-between',
   },
-  greeting: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-    fontSize: 13,
+  iconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backdropFilter: 'blur(40px)',
   },
-  userName: {
-    ...Typography.heading2,
-    fontSize: 20,
-    fontWeight: '600',
+  titleContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  wave: {
-    fontSize: 16,
+  appTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
-  creditsCard: {
-    borderRadius: BorderRadius.xl,
+  titleUnderline: {
+    height: 4,
+    width: 32,
+    backgroundColor: DesignColors.primary,
+    borderRadius: 2,
+    marginTop: 4,
+  },
+  creditsBadge: {
+    backgroundColor: DesignColors.primary + '20',
+    borderWidth: 1,
+    borderColor: DesignColors.primary + '30',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 9999,
+  },
+  creditsTextContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  creditsText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: DesignColors.primary,
+    letterSpacing: 1,
+  },
+  creditsValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: DesignColors.primary,
+  },
+  headingContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.md,
+    zIndex: 10,
+  },
+  mainHeading: {
+    fontSize: 36,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    lineHeight: 40,
+    letterSpacing: -0.5,
+  },
+  gradientText: {
+    color: DesignColors.primary, // Using primary red/pink color
+  },
+  subtitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  uploadCardContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+    zIndex: 10,
+  },
+  uploadCard: {
+    borderRadius: BorderRadius.lg,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     overflow: 'hidden',
+    minHeight: 280,
   },
-  creditsCardPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
+  uploadCardPressed: {
+    borderColor: DesignColors.primary + '50',
   },
-  creditsCardInner: {
-    borderRadius: BorderRadius.xl,
+  uploadCardContent: {
+    padding: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.md,
+  },
+  iconCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
     overflow: 'hidden',
     ...Shadows.prominent,
   },
-  creditsBlur: {
-    borderRadius: BorderRadius.xl,
-    overflow: 'hidden',
-  },
-  creditsGradient: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.xl,
-  },
-  creditsContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  creditsIcon: {
-    marginRight: 4,
-  },
-  creditsTextContainer: {
-    alignItems: 'flex-start',
-  },
-  creditsValue: {
-    ...Typography.heading3,
-    color: Colors.accent.green,
-    fontWeight: '700',
-    fontSize: 20,
-    lineHeight: 22,
-  },
-  creditsLabel: {
-    ...Typography.caption,
-    fontSize: 11,
-    color: Colors.textSecondary,
-    marginTop: -2,
-  },
-  alertCard: {
-    borderRadius: BorderRadius.md,
-    overflow: 'hidden',
-    marginTop: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.accent.yellow + '40',
-  },
-  alertContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.sm,
-    gap: Spacing.xs,
-  },
-  alertText: {
-    ...Typography.caption,
-    color: Colors.accent.yellow,
-    flex: 1,
-    fontSize: 13,
-  },
-  featureSection: {
-    paddingHorizontal: Layout.screenPadding,
-    marginTop: Spacing.md,
-  },
-  sectionTitle: {
-    ...Typography.heading1,
-    fontSize: 28,
-    fontWeight: '700',
-    marginBottom: Spacing.xs,
-    textAlign: 'center',
-  },
-  sectionSubtitle: {
-    ...Typography.body,
-    textAlign: 'center',
-    marginBottom: Spacing.xl,
-    color: Colors.textSecondary,
-  },
-  mainCardContainer: {
-    marginBottom: Spacing.lg,
-  },
-  mainFeatureCard: {
-    alignItems: 'center',
-    position: 'relative',
-    paddingTop: Spacing.xl + Spacing.md,
-    paddingBottom: Spacing.xl,
-    paddingHorizontal: Spacing.lg,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  cardGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-    opacity: 0.6,
-  },
-  costBadge: {
-    position: 'absolute',
-    top: Spacing.md,
-    right: Spacing.md,
-    borderRadius: BorderRadius.round,
-    overflow: 'hidden',
-    ...Shadows.card,
-  },
-  badgeGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    gap: Spacing.xs,
-  },
-  badgeText: {
-    ...Typography.caption,
-    color: Colors.textPrimary,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  featureContent: {
-    alignItems: 'center',
+  iconCircleGradient: {
     width: '100%',
-    zIndex: 1,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: DesignColors.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 8,
   },
-  emojiContainer: {
-    marginBottom: Spacing.md,
-  },
-  featureEmoji: {
-    fontSize: 64,
-  },
-  featureTitle: {
-    ...Typography.heading2,
+  uploadTitle: {
     fontSize: 24,
     fontWeight: '700',
-    marginBottom: Spacing.sm,
+    color: '#FFFFFF',
     textAlign: 'center',
+    letterSpacing: -0.5,
   },
-  featureSubtitle: {
-    ...Typography.body,
+  uploadDescription: {
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#9CA3AF',
     textAlign: 'center',
-    marginBottom: Spacing.lg,
-    color: Colors.textSecondary,
-    lineHeight: 22,
-    paddingHorizontal: Spacing.sm,
+    lineHeight: 20,
+    maxWidth: 240,
   },
-  featureStats: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: '100%',
-    marginBottom: Spacing.xl,
-    paddingHorizontal: Spacing.md,
-    gap: Spacing.md,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    backgroundColor: Colors.cardBackgroundSecondary + '80',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    borderRadius: BorderRadius.md,
-  },
-  statText: {
-    ...Typography.caption,
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-  },
-  analyzeButton: {
-    width: '100%',
+  ctaButton: {
+    minWidth: 200,
+    height: 56,
+    borderRadius: 9999,
+    overflow: 'hidden',
     marginTop: Spacing.md,
+    ...Shadows.card,
   },
-  bottomSpacing: {
-    height: Spacing.xxl,
+  ctaButtonGradient: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  ctaButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  progressContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    zIndex: 10,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: 320,
+    alignSelf: 'center',
+  },
+  progressStep: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  progressIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  progressLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#6B7280',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+  },
+  progressLine: {
+    height: 1,
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginBottom: 24,
   },
 });
 

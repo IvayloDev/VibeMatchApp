@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image } from 'react-native';
 import { Text } from 'react-native-paper';
 import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -12,11 +12,10 @@ import { getUserCredits } from '../../../lib/credits';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
-import { FloatingCard } from '../../../lib/components/FloatingCard';
-import { ModernButton } from '../../../lib/components/ModernButton';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
-import { SkeletonLoader } from '../../../lib/components/SkeletonLoader';
 import { triggerHaptic } from '../../../lib/utils/haptics';
+
+const { width, height } = Dimensions.get('window');
 
 type RootStackParamList = {
   Payment: undefined;
@@ -156,173 +155,168 @@ const ProfileScreen = () => {
     );
   };
 
-  const getInitials = (email: string) => {
-    if (!email) return 'U';
-    const parts = email.split('@')[0];
-    return parts.substring(0, 2).toUpperCase();
+  const getUserName = () => {
+    if (user?.user_metadata?.full_name) return user.user_metadata.full_name;
+    if (user?.email) {
+      const emailName = user.email.split('@')[0];
+      return emailName.charAt(0).toUpperCase() + emailName.slice(1);
+    }
+    return 'Guest User';
+  };
+
+
+  const getAvatarUrl = () => {
+    return user?.user_metadata?.avatar_url || user?.user_metadata?.picture || null;
+  };
+
+  const getInitials = (name: string) => {
+    if (!name) return 'U';
+    const parts = name.split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Background Blur Effects */}
+      <View style={styles.backgroundBlur1} />
+      <View style={styles.backgroundBlur2} />
+      
       <ScrollView 
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Header */}
         <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
           <Text style={styles.headerTitle}>Profile</Text>
         </Animated.View>
 
-        {/* User Info Card */}
+        {/* User Profile Section */}
         <Animatable.View 
           animation="fadeInUp" 
           duration={600}
           delay={100}
+          style={styles.userSection}
         >
-          <FloatingCard style={styles.userCard}>
-            <LinearGradient
-              colors={[Colors.accent.blue + '20', Colors.accent.coral + '15', 'transparent']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.cardGradient}
-            />
-            
-            <View style={styles.userCardContent}>
-              {/* Avatar */}
-              <View style={styles.avatarContainer}>
-                <LinearGradient
-                  colors={[Colors.accent.blue, Colors.accent.coral]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.avatarGradient}
-                >
-                  <Text style={styles.avatarText}>
-                    {user ? getInitials(user.email || '') : 'GU'}
+          <View style={styles.userProfileRow}>
+            {/* Avatar with Edit Button */}
+            <View style={styles.avatarContainer}>
+              {getAvatarUrl() ? (
+                <Image 
+                  source={{ uri: getAvatarUrl() }} 
+                  style={styles.avatarImage}
+                />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Text style={styles.avatarInitials}>
+                    {getInitials(getUserName())}
                   </Text>
-                </LinearGradient>
-              </View>
-
-              {/* User Info */}
-              <View style={styles.userInfo}>
-                <Text style={styles.userEmail} numberOfLines={1}>
-                  {user?.email || 'Guest User'}
-                </Text>
-                {!user && (
-                  <Text style={styles.guestHint}>
-                    Sign up to sync your credits across devices
-                  </Text>
-                )}
-              </View>
+                </View>
+              )}
+              <TouchableOpacity 
+                style={styles.editAvatarButton}
+                onPress={() => {
+                  triggerHaptic('light');
+                  // TODO: Implement avatar edit
+                }}
+              >
+                <MaterialCommunityIcons name="pencil" size={10} color="#FFFFFF" />
+              </TouchableOpacity>
             </View>
-          </FloatingCard>
+
+            {/* User Info */}
+            <View style={styles.userInfo}>
+              <Text style={styles.userName}>{getUserName()}</Text>
+            </View>
+          </View>
         </Animatable.View>
 
-        {/* Credits Card */}
+        {/* Credit Balance Card */}
         <Animatable.View 
           animation="fadeInUp" 
           duration={600}
           delay={200}
+          style={styles.creditCardContainer}
         >
-          <FloatingCard style={styles.creditsCard}>
-            <LinearGradient
-              colors={[Colors.accent.green + '20', Colors.accent.blue + '15']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.cardGradient}
-            />
+          <LinearGradient
+            colors={['#FF3B30', '#FF2D55']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.creditCard}
+          >
+            {/* Decorative circle */}
+            <View style={styles.creditCardDecoration} />
             
-            <View style={styles.creditsCardContent}>
-              <View style={styles.creditsHeader}>
-                <View style={styles.creditsIconContainer}>
-                  <MaterialCommunityIcons 
-                    name="diamond-stone" 
-                    size={24} 
-                    color={Colors.accent.green} 
-                  />
-                </View>
-                <View style={styles.creditsInfo}>
-                  <Text style={styles.creditsLabel}>Available Credits</Text>
-                  {loading ? (
-                    <SkeletonLoader>
+            <View style={styles.creditCardContent}>
+              <View style={styles.creditCardHeader}>
+                <View style={styles.creditCardText}>
+                  <Text style={styles.creditBalanceLabel}>Credit Balance</Text>
+                  <View style={styles.creditBalanceValue}>
+                    {loading ? (
                       <View style={styles.skeletonCredits} />
-                    </SkeletonLoader>
-                  ) : (
-                    <AnimatedCounter 
-                      value={credits} 
-                      duration={800}
-                      style={styles.creditsValue}
-                    />
-                  )}
+                    ) : (
+                      <AnimatedCounter 
+                        value={credits} 
+                        duration={800}
+                        style={styles.creditNumber}
+                      />
+                    )}
+                  </View>
+                </View>
+                <View style={styles.creditCardIcon}>
+                  <MaterialCommunityIcons name="auto-fix" size={28} color="#FFFFFF" />
                 </View>
               </View>
 
-              <ModernButton
-                title="💳 Get More Credits"
+              <TouchableOpacity
+                style={styles.topUpButton}
                 onPress={() => {
-                  triggerHaptic('light');
+                  triggerHaptic('medium');
                   navigation.navigate('Payment');
                 }}
-                variant="primary"
-                style={styles.buyButton}
-              />
+                activeOpacity={0.9}
+              >
+                <MaterialCommunityIcons name="plus-circle" size={16} color="#FF3B30" />
+                <Text style={styles.topUpButtonText}>Top Up Balance</Text>
+              </TouchableOpacity>
             </View>
-          </FloatingCard>
+          </LinearGradient>
         </Animatable.View>
+
+        {/* Sign Out Button */}
+        <TouchableOpacity
+          style={styles.signOutButton}
+          onPress={handleSignOut}
+          activeOpacity={0.8}
+        >
+          <MaterialCommunityIcons name="logout" size={20} color="#FF3B30" />
+          <Text style={styles.signOutButtonText}>Sign Out</Text>
+        </TouchableOpacity>
+
+        {/* Delete Profile Button */}
+        <TouchableOpacity
+          style={styles.deleteProfileButton}
+          onPress={handleDeleteProfile}
+          activeOpacity={0.8}
+        >
+          <MaterialCommunityIcons name="delete" size={20} color="#FF453A" />
+          <Text style={styles.deleteProfileButtonText}>Delete Profile</Text>
+        </TouchableOpacity>
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
       </ScrollView>
-
-      {/* Account Actions - Fixed at Bottom */}
-      <View style={styles.actionsContainer}>
-        {user ? (
-          // Authenticated user - show Sign Out and Delete Account
-          <>
-            <TouchableOpacity
-              style={styles.smallActionButton}
-              onPress={() => {
-                triggerHaptic('light');
-                handleSignOut();
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.smallActionText}>Sign Out</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={[styles.smallActionButton, styles.smallDangerButton]}
-              onPress={() => {
-                triggerHaptic('light');
-                handleDeleteProfile();
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.smallActionText, styles.smallDangerText]}>Delete Account</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          // Guest user - show Create Profile button
-          <View style={styles.guestActionsWrapper}>
-            <ModernButton
-              title="✨ Create Profile"
-              onPress={() => {
-                triggerHaptic('medium');
-                navigation.navigate('SignUp');
-              }}
-              variant="primary"
-              style={styles.createProfileButton}
-            />
-          </View>
-        )}
-      </View>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   container: { 
-    flex: 1, 
-    backgroundColor: Colors.background,
+    flex: 1,
+    backgroundColor: '#221019', // Matching DashboardScreen background
   },
   scrollView: {
     flex: 1,
@@ -331,167 +325,219 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.xl,
   },
   header: {
-    paddingHorizontal: Layout.screenPadding,
-    paddingTop: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
     paddingBottom: Spacing.md,
   },
   headerTitle: {
-    ...Typography.heading1,
     fontSize: 32,
     fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
   },
-  userCard: {
-    marginHorizontal: Layout.screenPadding,
-    marginBottom: Spacing.md,
-    padding: Spacing.lg,
-    position: 'relative',
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: Colors.border,
+  userSection: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
   },
-  cardGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  userCardContent: {
+  userProfileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    zIndex: 1,
+    paddingHorizontal: Spacing.xs,
   },
   avatarContainer: {
-    width: 64,
-    height: 64,
-    borderRadius: BorderRadius.round,
-    overflow: 'hidden',
-    ...Shadows.prominent,
+    position: 'relative',
+    marginRight: Spacing.md,
   },
-  avatarGradient: {
-    width: '100%',
-    height: '100%',
+  avatarImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 2,
+    borderColor: '#FF3B30',
+  },
+  avatarPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 2,
+    borderColor: '#FF3B30',
+    backgroundColor: '#1C1C1E',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    ...Typography.heading2,
-    fontSize: 24,
+  avatarInitials: {
+    fontSize: 28,
     fontWeight: '700',
-    color: Colors.textPrimary,
+    color: '#FFFFFF',
+  },
+  editAvatarButton: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FF3B30',
+    borderWidth: 2,
+    borderColor: '#221019',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   userInfo: {
     flex: 1,
-    marginLeft: Spacing.md,
   },
-  userEmail: {
-    ...Typography.body,
-    fontSize: 15,
-    fontWeight: '500',
+  userName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
-  guestHint: {
-    ...Typography.caption,
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: Spacing.xs,
+  creditCardContainer: {
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.xl,
   },
-  creditsCard: {
-    marginHorizontal: Layout.screenPadding,
-    marginBottom: Spacing.md,
+  creditCard: {
+    borderRadius: 24,
     padding: Spacing.lg,
     position: 'relative',
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: Colors.border,
+    ...Shadows.prominent,
+    shadowColor: '#FF3B30',
+    shadowOpacity: 0.3,
   },
-  creditsCardContent: {
+  creditCardDecoration: {
+    position: 'absolute',
+    right: -40,
+    top: -40,
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  creditCardContent: {
+    position: 'relative',
     zIndex: 1,
   },
-  creditsHeader: {
+  creditCardHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
     marginBottom: Spacing.lg,
   },
-  creditsIconContainer: {
+  creditCardText: {
+    flex: 1,
+    minWidth: 0, // Allow flex to shrink
+    marginRight: Spacing.md, // Add spacing before icon
+  },
+  creditBalanceLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.8)',
+    textTransform: 'uppercase',
+    letterSpacing: 2,
+    marginBottom: 4,
+  },
+  creditBalanceValue: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'wrap', // Allow wrapping if needed
+  },
+  creditNumber: {
+    fontSize: 48,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    lineHeight: 56, // Ensure proper line height
+    minWidth: 60, // Minimum width for number display
+  },
+  creditCardIcon: {
     width: 48,
     height: 48,
-    borderRadius: BorderRadius.md,
-    backgroundColor: Colors.accent.green + '20',
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.md,
+    flexShrink: 0, // Don't shrink the icon
   },
-  creditsInfo: {
-    flex: 1,
+  topUpButton: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
-  creditsLabel: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-    fontSize: 14,
-    marginBottom: Spacing.xs,
-  },
-  creditsValue: {
-    ...Typography.heading1,
-    fontSize: 36,
+  topUpButtonText: {
+    fontSize: 16,
     fontWeight: '700',
-    color: Colors.accent.green,
+    color: '#FF3B30',
+  },
+  signOutButton: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.md,
+    backgroundColor: 'rgba(255, 59, 48, 0.1)',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.2)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  signOutButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FF3B30',
+  },
+  deleteProfileButton: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.xl,
+    paddingVertical: Spacing.md,
+    backgroundColor: 'rgba(255, 69, 58, 0.1)',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.2)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  deleteProfileButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FF453A',
+  },
+  bottomSpacing: {
+    height: 20,
   },
   skeletonCredits: {
     height: 36,
     width: 80,
     borderRadius: BorderRadius.sm,
-    backgroundColor: Colors.cardBackgroundSecondary,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
   },
-  buyButton: {
-    width: '100%',
-  },
-  bottomSpacing: {
-    height: 100, // Space for bottom action buttons
-  },
-  actionsContainer: {
+  backgroundBlur1: {
     position: 'absolute',
-    bottom: 90, // Above tab bar (iOS tab bar is ~90px)
-    left: 0,
-    right: 0,
-    paddingHorizontal: Layout.screenPadding,
-    paddingBottom: Spacing.sm,
-    paddingTop: Spacing.sm,
-    backgroundColor: Colors.background,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border + '40',
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    zIndex: 10,
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
   },
-  smallActionButton: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 1,
-    minHeight: 44,
-  },
-  smallDangerButton: {
-    opacity: 1,
-  },
-  smallActionText: {
-    ...Typography.body,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    fontWeight: '600',
-  },
-  smallDangerText: {
-    color: Colors.error,
-  },
-  guestActionsWrapper: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  createProfileButton: {
-    width: '80%',
-    maxWidth: 280,
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
   },
 });
 

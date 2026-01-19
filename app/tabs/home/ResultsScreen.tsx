@@ -13,6 +13,8 @@ import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 
+const { width, height } = Dimensions.get('window');
+
 type Song = {
   title: string;
   artist: string;
@@ -74,13 +76,16 @@ const ResultsScreen = () => {
   // Removed particle animations to avoid React Native tracking errors
   // Using simpler visual effects instead
   
-  // Simplified emoji animations - individual refs to avoid tracking errors
-  const emoji1Scale = useRef(new Animated.Value(0)).current;
-  const emoji1Rotation = useRef(new Animated.Value(0)).current;
-  const emoji2Scale = useRef(new Animated.Value(0)).current;
-  const emoji2Rotation = useRef(new Animated.Value(0)).current;
-  const emoji3Scale = useRef(new Animated.Value(0)).current;
-  const emoji3Rotation = useRef(new Animated.Value(0)).current;
+  // Confetti animation
+  const confettiScale = useRef(new Animated.Value(0)).current;
+  const confettiRotation = useRef(new Animated.Value(0)).current;
+  // Song card animation
+  const songCardOpacity = useRef(new Animated.Value(0)).current;
+  const songCardTranslateY = useRef(new Animated.Value(50)).current;
+  const songCardScale = useRef(new Animated.Value(0.9)).current;
+  // Play button animation
+  const playButtonScale = useRef(new Animated.Value(0)).current;
+  const playButtonOpacity = useRef(new Animated.Value(0)).current;
   const backgroundPulse = useRef(new Animated.Value(0)).current;
   const overlayOpacity = useRef(new Animated.Value(showAnimation ? 1 : 0)).current;
   const imageScale = useRef(new Animated.Value(showAnimation ? 1.5 : 1)).current;
@@ -295,54 +300,109 @@ const ResultsScreen = () => {
           ])
         ).start();
 
-        // Animate emojis with bounce - using individual refs to avoid tracking errors
-        const animateEmoji = (scale: Animated.Value, rotation: Animated.Value, delay: number) => {
+        // Animate confetti emoji
+        setTimeout(() => {
+          Animated.parallel([
+            Animated.spring(confettiScale, {
+              toValue: 1,
+              tension: 80,
+              friction: 6,
+              useNativeDriver: true,
+            }),
+            Animated.sequence([
+              Animated.timing(confettiRotation, {
+                toValue: 1,
+                duration: 400,
+                useNativeDriver: true,
+              }),
+              Animated.timing(confettiRotation, {
+                toValue: -1,
+                duration: 400,
+                useNativeDriver: true,
+              }),
+              Animated.timing(confettiRotation, {
+                toValue: 0,
+                duration: 400,
+                useNativeDriver: true,
+              }),
+            ]),
+          ]).start();
+
+          // Continuous bounce animation for confetti
+          Animated.loop(
+            Animated.sequence([
+              Animated.timing(confettiScale, {
+                toValue: 1.15,
+                duration: 600,
+                useNativeDriver: true,
+              }),
+              Animated.timing(confettiScale, {
+                toValue: 1,
+                duration: 600,
+                useNativeDriver: true,
+              }),
+            ])
+          ).start();
+        }, 800);
+
+        // Animate song card (after text appears)
+        setTimeout(() => {
+          Animated.parallel([
+            Animated.timing(songCardOpacity, {
+              toValue: 1,
+              duration: 600,
+              useNativeDriver: true,
+            }),
+            Animated.spring(songCardTranslateY, {
+              toValue: 0,
+              tension: 60,
+              friction: 7,
+              useNativeDriver: true,
+            }),
+            Animated.spring(songCardScale, {
+              toValue: 1,
+              tension: 60,
+              friction: 7,
+              useNativeDriver: true,
+            }),
+          ]).start();
+
+          // Animate play button (after card appears)
           setTimeout(() => {
             Animated.parallel([
-              Animated.spring(scale, {
+              Animated.spring(playButtonScale, {
                 toValue: 1,
                 tension: 100,
                 friction: 6,
                 useNativeDriver: true,
               }),
-              Animated.sequence([
-                Animated.timing(rotation, {
-                  toValue: 1,
-                  duration: 300,
-                  useNativeDriver: true,
-                }),
-                Animated.timing(rotation, {
-                  toValue: 0,
-                  duration: 300,
-                  useNativeDriver: true,
-                }),
-              ]),
+              Animated.timing(playButtonOpacity, {
+                toValue: 1,
+                duration: 400,
+                useNativeDriver: true,
+              }),
             ]).start();
 
-            // Continuous bounce animation
+            // Pulse animation for play button
             Animated.loop(
               Animated.sequence([
-                Animated.timing(scale, {
-                  toValue: 1.2,
+                Animated.timing(playButtonScale, {
+                  toValue: 1.1,
                   duration: 800,
                   useNativeDriver: true,
                 }),
-                Animated.timing(scale, {
+                Animated.timing(playButtonScale, {
                   toValue: 1,
                   duration: 800,
                   useNativeDriver: true,
                 }),
               ])
             ).start();
-          }, delay);
-        };
-
-        animateEmoji(emoji1Scale, emoji1Rotation, 800);
-        animateEmoji(emoji2Scale, emoji2Rotation, 950);
-        animateEmoji(emoji3Scale, emoji3Rotation, 1100);
+          }, 300);
+        }, 1200);
       }, 500);
 
-      // Step 3: Hide match text, fade out overlay, and animate image to position (after 3 seconds)
+      // Step 3: Hide match text, fade out overlay, and animate image to position (after 4.5 seconds - more time to see the song card)
       setTimeout(() => {
         Animated.parallel([
           // Hide match text and effects
@@ -377,7 +437,7 @@ const ResultsScreen = () => {
           // Remove overlay from DOM after fade-out completes
           setShowAnimation(false);
         });
-      }, 3500);
+      }, 5000); // Extended to 5 seconds to show song card longer
 
       // Step 4: Show content with staggered animations (after image settles)
       setTimeout(() => {
@@ -627,6 +687,9 @@ const ResultsScreen = () => {
       </View>
       
       <View style={styles.container}>
+        {/* Background Blur Effects */}
+        <View style={styles.backgroundBlur1} />
+        <View style={styles.backgroundBlur2} />
         {/* "It's a Match!" Overlay with Enhanced Effects */}
         {showAnimation && (
           <Animated.View 
@@ -650,12 +713,16 @@ const ResultsScreen = () => {
               ]}
             >
               <LinearGradient
-                colors={[Colors.accent.blue + '20', Colors.accent.coral + '15', Colors.accent.yellow + '10', 'transparent']}
+                colors={['#FF3B3020', '#FF2D5515', '#FFD93D10', 'transparent']}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={StyleSheet.absoluteFill}
               />
             </Animated.View>
+
+            {/* Glowing Red-Orange Curved Lines */}
+            <View style={styles.curvedLine1} />
+            <View style={styles.curvedLine2} />
 
             {/* Expanding Rings - Seamlessly Looping */}
             <Animated.View
@@ -730,66 +797,96 @@ const ResultsScreen = () => {
               ]}
             >
               <Text style={styles.matchText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-                It's a Match! 🎉
+                It's a Match!
               </Text>
+              
+              {/* Confetti Icon */}
+              <Animated.View
+                style={{
+                  transform: [
+                    { scale: confettiScale },
+                    {
+                      rotate: confettiRotation.interpolate({
+                        inputRange: [-1, 0, 1],
+                        outputRange: ['-15deg', '0deg', '15deg'],
+                      }),
+                    },
+                  ],
+                  marginTop: Spacing.md,
+                  marginBottom: Spacing.sm,
+                }}
+              >
+                <Text style={styles.confettiEmoji}>🎉</Text>
+              </Animated.View>
+
               <Text style={styles.matchSubtext}>Perfect song found for your vibe</Text>
-              <View style={styles.matchEmojiContainer}>
-                <Animated.Text
-                  style={[
-                    styles.matchEmoji,
-                    {
-                      transform: [
-                        { scale: emoji1Scale },
-                        {
-                          rotate: emoji1Rotation.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['-15deg', '15deg'],
-                          }),
-                        },
-                      ],
-                    }
-                  ]}
-                >
-                  🎵
-                </Animated.Text>
-                <Animated.Text
-                  style={[
-                    styles.matchEmoji,
-                    {
-                      transform: [
-                        { scale: emoji2Scale },
-                        {
-                          rotate: emoji2Rotation.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['-15deg', '15deg'],
-                          }),
-                        },
-                      ],
-                    }
-                  ]}
-                >
-                  ✨
-                </Animated.Text>
-                <Animated.Text
-                  style={[
-                    styles.matchEmoji,
-                    {
-                      transform: [
-                        { scale: emoji3Scale },
-                        {
-                          rotate: emoji3Rotation.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: ['-15deg', '15deg'],
-                          }),
-                        },
-                      ],
-                    }
-                  ]}
-                >
-                  🔥
-                </Animated.Text>
-              </View>
             </Animated.View>
+
+            {/* Song Recommendation Card */}
+            {songs[0] && (
+              <Animated.View
+                style={[
+                  styles.songRecommendationCard,
+                  {
+                    opacity: songCardOpacity,
+                    transform: [
+                      { translateY: songCardTranslateY },
+                      { scale: songCardScale },
+                    ],
+                  },
+                ]}
+              >
+                <LinearGradient
+                  colors={['#F5F5DC', '#E8E8D8', '#F5F5DC']} // Beige/off-white gradient
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.songCardGradient}
+                >
+                  <View style={styles.songCardContent}>
+                    {/* Album Art */}
+                    <Image
+                      source={
+                        songs[0]?.album_cover
+                          ? { uri: songs[0].album_cover }
+                          : require('../../../assets/icon.png')
+                      }
+                      style={styles.albumArt}
+                    />
+                    
+                    {/* Song Info - Horizontally aligned */}
+                    <View style={styles.songInfoContainer}>
+                      <Text style={styles.songTitle}>
+                        {songs[0]?.title || 'Unknown Title'}
+                      </Text>
+                      <Text style={styles.songArtist} numberOfLines={1}>
+                        {songs[0]?.artist || 'Unknown Artist'}
+                      </Text>
+                    </View>
+
+                    {/* Play Button */}
+                    <Animated.View
+                      style={{
+                        transform: [{ scale: playButtonScale }],
+                        opacity: playButtonOpacity,
+                      }}
+                    >
+                      <TouchableOpacity
+                        style={styles.playButton}
+                        onPress={() => {
+                          triggerHaptic('medium');
+                          if (songs[0]?.spotify_url) {
+                            Linking.openURL(songs[0].spotify_url);
+                          }
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialCommunityIcons name="play" size={28} color="#FFFFFF" />
+                      </TouchableOpacity>
+                    </Animated.View>
+                  </View>
+                </LinearGradient>
+              </Animated.View>
+            )}
           </Animated.View>
         )}
 
@@ -931,18 +1028,18 @@ const ResultsScreen = () => {
                 <>
                   <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
                   <Text style={styles.mainSongTitle} numberOfLines={3}>
-                    {songs[0].title}
+                    {songs[0]?.title || 'Unknown Title'}
                   </Text>
                   <Text style={styles.mainSongArtist} numberOfLines={2}>
-                    by {songs[0].artist}
+                    by {songs[0]?.artist || 'Unknown Artist'}
                   </Text>
                   <Text style={styles.mainSongReason} numberOfLines={6}>
-                    {songs[0].reason}
+                    {songs[0]?.reason || ''}
                   </Text>
-                  {songs[0].spotify_url && (
+                  {songs[0]?.spotify_url && (
                     <TouchableOpacity 
                       style={styles.spotifyButton}
-                      onPress={() => Linking.openURL(songs[0].spotify_url)}
+                      onPress={() => Linking.openURL(songs[0]?.spotify_url || '')}
                     >
                       <MaterialCommunityIcons name="spotify" size={16} color={Colors.textPrimary} />
                       <Text style={styles.spotifyText}>Play</Text>
@@ -977,19 +1074,19 @@ const ResultsScreen = () => {
                 >
                   <View style={styles.alternativeInfo}>
                     <Text style={styles.alternativeTitle} numberOfLines={1}>
-                      {song.title}
+                      {song?.title || 'Unknown Title'}
                     </Text>
                     <Text style={styles.alternativeArtist} numberOfLines={2}>
-                      by {song.artist}
+                      by {song?.artist || 'Unknown Artist'}
                     </Text>
                     <Text style={styles.alternativeReason} numberOfLines={5}>
-                      {song.reason}
+                      {song?.reason || ''}
                     </Text>
                   </View>
-                  {song.spotify_url && (
+                  {song?.spotify_url && (
                     <TouchableOpacity 
                       style={styles.smallSpotifyButton}
-                      onPress={() => Linking.openURL(song.spotify_url)}
+                      onPress={() => Linking.openURL(song?.spotify_url || '')}
                     >
                       <MaterialCommunityIcons name="spotify" size={14} color={Colors.accent.green} />
                     </TouchableOpacity>
@@ -1034,7 +1131,7 @@ const ResultsScreen = () => {
                     resizeMode="contain"
                   />
                 ) : (
-                  <ActivityIndicator size="large" color={Colors.accent.blue} />
+                  <ActivityIndicator size="large" color="#FF3B30" />
                 )}
               </View>
 
@@ -1055,7 +1152,7 @@ const ResultsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: '#221019', // Matching DashboardScreen background
   },
   scrollView: {
     flex: 1,
@@ -1098,7 +1195,7 @@ const styles = StyleSheet.create({
     height: 200,
     borderRadius: 100,
     borderWidth: 3,
-    borderColor: Colors.accent.blue,
+    borderColor: '#FF3B30',
     top: '50%',
     left: '50%',
     marginLeft: -100,
@@ -1109,7 +1206,7 @@ const styles = StyleSheet.create({
     width: 300,
     height: 300,
     borderRadius: 150,
-    backgroundColor: Colors.accent.blue,
+    backgroundColor: '#FF3B30',
     opacity: 0.3,
   },
   matchText: {
@@ -1119,7 +1216,7 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     textAlign: 'center',
     marginBottom: Spacing.sm,
-    textShadowColor: Colors.accent.blue,
+    textShadowColor: '#FF3B30',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 20,
     letterSpacing: 1,
@@ -1128,21 +1225,99 @@ const styles = StyleSheet.create({
   },
   matchSubtext: {
     ...Typography.body,
-    color: Colors.textSecondary,
+    color: '#FFFFFF',
     textAlign: 'center',
-    fontSize: 18,
-    marginTop: Spacing.xs,
-    fontWeight: '500',
-  },
-  matchEmojiContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    fontSize: 16,
     marginTop: Spacing.md,
+    fontWeight: '400',
+    lineHeight: 22,
+    paddingHorizontal: Spacing.lg,
+  },
+  confettiEmoji: {
+    fontSize: 48,
+    textAlign: 'center',
+  },
+  songRecommendationCard: {
+    width: width * 0.85,
+    marginTop: Spacing.xxl,
+    borderRadius: BorderRadius.xl,
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  songCardGradient: {
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+  },
+  songCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingRight: Spacing.sm,
     gap: Spacing.md,
   },
-  matchEmoji: {
-    fontSize: 32,
+  albumArt: {
+    width: 120,
+    height: 120,
+    borderRadius: BorderRadius.md,
+    backgroundColor: '#E0E0E0',
+    flexShrink: 0,
+  },
+  songInfoContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingRight: Spacing.sm,
+  },
+  songTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1F1F1F',
+    marginBottom: 4,
+  },
+  songArtist: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: 'rgba(31, 31, 31, 0.7)',
+  },
+  playButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  curvedLine1: {
+    position: 'absolute',
+    top: height * 0.15,
+    right: -width * 0.3,
+    width: width * 0.6,
+    height: width * 0.6,
+    borderWidth: 2,
+    borderColor: '#FF3B3040',
+    borderRadius: width * 0.3,
+    borderTopColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
+  curvedLine2: {
+    position: 'absolute',
+    bottom: height * 0.15,
+    left: -width * 0.3,
+    width: width * 0.6,
+    height: width * 0.6,
+    borderWidth: 2,
+    borderColor: '#FF3B3040',
+    borderRadius: width * 0.3,
+    borderBottomColor: 'transparent',
+    borderLeftColor: 'transparent',
   },
    
    // Tinder-style match cards
@@ -1179,7 +1354,7 @@ const styles = StyleSheet.create({
      bottom: 0,
      left: 0,
      right: 0,
-     backgroundColor: Colors.accent.blue + 'E0',
+     backgroundColor: '#FF3B30E0',
      paddingVertical: Spacing.sm,
      alignItems: 'center',
    },
@@ -1203,11 +1378,11 @@ const styles = StyleSheet.create({
    continueButton: {
      flexDirection: 'row',
      alignItems: 'center',
-     backgroundColor: Colors.accent.blue,
+     backgroundColor: '#FF3B30',
      paddingHorizontal: Spacing.xl,
      paddingVertical: Spacing.lg,
      borderRadius: BorderRadius.round,
-     shadowColor: Colors.accent.blue,
+     shadowColor: '#FF3B30',
      shadowOffset: { width: 0, height: 4 },
      shadowOpacity: 0.3,
      shadowRadius: 12,
@@ -1267,10 +1442,10 @@ const styles = StyleSheet.create({
     height: 160,
     borderRadius: BorderRadius.lg,
     padding: 6,
-    backgroundColor: Colors.accent.blue + '30',
+    backgroundColor: '#FF3B3030',
     borderWidth: 2,
-    borderColor: Colors.accent.blue + '60',
-    shadowColor: Colors.accent.blue,
+    borderColor: '#FF3B3060',
+    shadowColor: '#FF3B30',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -1310,7 +1485,7 @@ const styles = StyleSheet.create({
   },
   mainSongLabel: {
     ...Typography.caption,
-    color: Colors.accent.blue,
+    color: '#FF3B30',
     fontWeight: '700',
     fontSize: 11,
     textTransform: 'uppercase',
@@ -1465,6 +1640,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.md,
+  },
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -height * 0.1,
+    left: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -height * 0.1,
+    right: -width * 0.2,
+    width: width * 0.8,
+    height: height * 0.5,
+    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
+    borderRadius: 9999,
+    opacity: 0.3,
+    zIndex: 0,
   },
 });
 

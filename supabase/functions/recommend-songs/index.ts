@@ -83,7 +83,7 @@ async function findTrackOnSpotify(
     let encodedQuery = encodeURIComponent(query);
     
     let response = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10&market=BG`,
+      `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`,
       {
         headers: {
           "Authorization": `Bearer ${accessToken}`
@@ -105,7 +105,7 @@ async function findTrackOnSpotify(
       encodedQuery = encodeURIComponent(query);
       
       response = await fetch(
-        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10&market=BG`,
+        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`,
         {
           headers: {
             "Authorization": `Bearer ${accessToken}`
@@ -124,33 +124,106 @@ async function findTrackOnSpotify(
         return null;
       }
       
-      // Return best match (first result)
-      return fallbackTracks[0];
+      // Apply same strict matching to fallback results
+      const normalizedTitle = title.toLowerCase().trim();
+      const normalizedArtist = artist.toLowerCase().trim();
+      
+      let bestMatch: any = null;
+      let bestScore = 0;
+      
+      for (const track of fallbackTracks) {
+        const trackTitle = track.name?.toLowerCase().trim() || "";
+        const trackArtist = track.artists?.[0]?.name?.toLowerCase().trim() || "";
+        
+        let score = 0;
+        
+        if (trackTitle === normalizedTitle && trackArtist === normalizedArtist) {
+          return track; // Perfect match
+        }
+        
+        if (trackTitle === normalizedTitle) {
+          score += 40;
+        } else if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
+          score += 20;
+        }
+        
+        if (trackArtist === normalizedArtist) {
+          score += 60;
+        } else if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
+          score += 30;
+        } else {
+          score -= 50; // No artist match
+        }
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = track;
+        }
+      }
+      
+      // Only return if we have a decent match
+      if (bestMatch && bestScore >= 30) {
+        console.log(`✅ Found fallback match for "${title}" by "${artist}": "${bestMatch.name}" by "${bestMatch.artists[0]?.name}" (score: ${bestScore})`);
+        return bestMatch;
+      }
+      
+      console.warn(`⚠️ No good fallback match found for "${title}" by "${artist}". Best score: ${bestScore}`);
+      return null;
     }
 
     // Find best match by comparing title and artist similarity
     const normalizedTitle = title.toLowerCase().trim();
     const normalizedArtist = artist.toLowerCase().trim();
     
+    // Score tracks by match quality
+    let bestMatch: any = null;
+    let bestScore = 0;
+    
     for (const track of tracks) {
       const trackTitle = track.name?.toLowerCase().trim() || "";
       const trackArtist = track.artists?.[0]?.name?.toLowerCase().trim() || "";
       
-      // Exact match
+      let score = 0;
+      
+      // Exact match = highest score
       if (trackTitle === normalizedTitle && trackArtist === normalizedArtist) {
-        return track;
+        return track; // Return immediately for perfect match
       }
       
-      // Close match (title matches, artist is similar)
-      if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
-        if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
-          return track;
-        }
+      // Title similarity (40 points max)
+      if (trackTitle === normalizedTitle) {
+        score += 40;
+      } else if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
+        score += 20; // Partial match
+      }
+      
+      // Artist similarity (60 points max - more important)
+      if (trackArtist === normalizedArtist) {
+        score += 60;
+      } else if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
+        score += 30; // Partial artist match
+      } else {
+        // No artist match at all - very low score
+        score -= 50;
+      }
+      
+      // Update best match if this score is higher
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = track;
       }
     }
-
-    // Return first result if no exact match found
-    return tracks[0];
+    
+    // Only return if we have a decent match (at least some artist similarity)
+    // Require minimum score of 30 to ensure at least partial artist match
+    if (bestMatch && bestScore >= 30) {
+      console.log(`✅ Found match for "${title}" by "${artist}": "${bestMatch.name}" by "${bestMatch.artists[0]?.name}" (score: ${bestScore})`);
+      return bestMatch;
+    }
+    
+    // No good match found
+    console.warn(`⚠️ No good match found for "${title}" by "${artist}". Best score: ${bestScore}`);
+    return null;
   } catch (err) {
     console.error(`❌ Error searching Spotify for "${title}" by "${artist}":`, err);
     return null;
@@ -251,6 +324,7 @@ Hard rules:
 - Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
 - Only suggest songs you are confident exist (title + primary artist).
 - Prefer deep cuts and non-obvious picks over top hits.
+- IMPORTANT: Unless the request specifically mentions Bulgarian/chalga/BG music, recommend international (primarily English) songs. Only suggest Bulgarian songs if explicitly requested.
 ${avoidSection}
 
 Return JSON with this structure:
@@ -277,6 +351,7 @@ Hard rules:
 - Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
 - Only suggest songs you are confident exist (title + primary artist).
 - Prefer deep cuts and non-obvious picks over top hits.
+- IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music unless the image or context explicitly shows Bulgarian content or culture. Default to English-language music.
 ${avoidSection}
 
 Return JSON with this structure:
@@ -310,11 +385,14 @@ function buildUserPrompt(params: {
   if (useCustomRequest) {
     return `Custom request: "${customRequest.trim()}"
 
-Recommend 3 songs that match this request. Prefer unexpected-but-accurate picks over obvious hits.`;
+Recommend 3 songs that match this request. Prefer unexpected-but-accurate picks over obvious hits.
+IMPORTANT: Unless the request specifically mentions Bulgarian/chalga/BG music, recommend ONLY international (primarily English) songs. Only suggest Bulgarian songs if explicitly requested.`;
   } else if (useGenre) {
-    return `Recommend songs in the "${genre}" genre. The image should complement the genre selection.`;
+    return `Recommend songs in the "${genre}" genre. The image should complement the genre selection.
+IMPORTANT: Recommend ONLY international (primarily English) songs in this genre. DO NOT recommend Bulgarian/chalga/BG music unless explicitly part of the genre request.`;
   } else {
-    return `Analyze the image and recommend 3 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.`;
+    return `Analyze the image and recommend 3 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.
+IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music.`;
   }
 }
 
