@@ -1,7 +1,6 @@
 import React, { useRef } from 'react';
 import { TouchableOpacity, Text, ViewStyle, TextStyle, StyleSheet, Animated } from 'react-native';
 import { Colors, Typography, BorderRadius, Shadows, Layout } from '../designSystem';
-import { triggerHaptic } from '../utils/haptics';
 
 interface ModernButtonProps {
   title: string;
@@ -10,7 +9,6 @@ interface ModernButtonProps {
   style?: ViewStyle;
   textStyle?: TextStyle;
   disabled?: boolean;
-  hapticType?: 'light' | 'medium' | 'heavy' | 'success';
 }
 
 export const ModernButton: React.FC<ModernButtonProps> = ({
@@ -20,7 +18,6 @@ export const ModernButton: React.FC<ModernButtonProps> = ({
   style,
   textStyle,
   disabled = false,
-  hapticType = 'medium',
 }) => {
   const buttonStyle = variant === 'primary' ? styles.primaryButton : styles.secondaryButton;
   const buttonTextStyle = variant === 'primary' ? styles.primaryText : styles.secondaryText;
@@ -28,7 +25,6 @@ export const ModernButton: React.FC<ModernButtonProps> = ({
 
   const handlePressIn = () => {
     if (!disabled) {
-      triggerHaptic(hapticType);
       Animated.spring(scaleAnim, {
         toValue: 0.95,
         useNativeDriver: true,

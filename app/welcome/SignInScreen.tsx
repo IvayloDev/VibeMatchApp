@@ -10,7 +10,6 @@ import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase'
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
-import { triggerHaptic } from '../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -36,15 +35,12 @@ const SignInScreen = () => {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
-    triggerHaptic('light');
     setLoading(true);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
-      triggerHaptic('error');
       Alert.alert('Sign In Error', error.message);
     } else if (data?.user) {
-      triggerHaptic('success');
       // Navigate to main app on successful sign-in
       navigation.reset({
         index: 0,
@@ -54,55 +50,46 @@ const SignInScreen = () => {
   };
 
   const handleGoogleSignIn = async () => {
-    triggerHaptic('light');
     setSocialLoading('google');
     try {
       const result = await signInWithGoogle();
       if (result.success) {
-        triggerHaptic('success');
         // Navigate to main app on successful sign-in
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],
         });
       } else if (result.error) {
-        triggerHaptic('error');
         Alert.alert('Google Sign-In Error', result.error);
       }
     } catch (error) {
       console.error('Google sign-in error:', error);
-      triggerHaptic('error');
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
     setSocialLoading(null);
   };
 
   const handleAppleSignIn = async () => {
-    triggerHaptic('light');
     setSocialLoading('apple');
     try {
       const result = await signInWithApple();
       if (result.success) {
-        triggerHaptic('success');
         // Navigate to main app on successful sign-in
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],
         });
       } else if (result.error) {
-        triggerHaptic('error');
         Alert.alert('Apple Sign-In Error', result.error);
       }
     } catch (error) {
       console.error('Apple sign-in error:', error);
-      triggerHaptic('error');
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
     setSocialLoading(null);
   };
 
   const handleSkipForNow = () => {
-    triggerHaptic('light');
     setShowGuestModal(true);
   };
 
@@ -248,7 +235,6 @@ const SignInScreen = () => {
             <View style={styles.footerContainer}>
               <TouchableOpacity 
                 onPress={() => {
-                  triggerHaptic('light');
                   navigation.navigate('SignUp');
                 }} 
                 style={styles.signUpLink}
@@ -275,7 +261,6 @@ const SignInScreen = () => {
       <GuestCreditsModal
         visible={showGuestModal}
         onContinue={async () => {
-          triggerHaptic('medium');
           setShowGuestModal(false);
           
           // Grant free credits to guest user
@@ -288,7 +273,6 @@ const SignInScreen = () => {
           navigation.navigate('MainTabs');
         }}
         onSignUp={() => {
-          triggerHaptic('light');
           setShowGuestModal(false);
           navigation.navigate('SignUp');
         }}

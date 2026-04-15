@@ -13,7 +13,6 @@ import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
-import { triggerHaptic } from '../../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -62,7 +61,6 @@ const ProfileScreen = () => {
   );
 
   const handleSignOut = async () => {
-    triggerHaptic('light');
     Alert.alert(
       'Sign Out',
       'Are you sure you want to sign out?',
@@ -72,7 +70,6 @@ const ProfileScreen = () => {
           text: 'Sign Out', 
           style: 'destructive',
           onPress: async () => {
-            triggerHaptic('medium');
             await signOut();
             
             // Navigate to Welcome screen after sign out
@@ -89,7 +86,6 @@ const ProfileScreen = () => {
   };
 
   const handleDeleteProfile = () => {
-    triggerHaptic('warning');
     Alert.alert(
       'Delete Profile',
       'Are you sure you want to delete your profile? This action cannot be undone and will permanently delete your account and all your data.',
@@ -99,7 +95,6 @@ const ProfileScreen = () => {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            triggerHaptic('heavy');
             try {
               console.log('Starting delete profile process...');
               
@@ -219,7 +214,6 @@ const ProfileScreen = () => {
               <TouchableOpacity 
                 style={styles.editAvatarButton}
                 onPress={() => {
-                  triggerHaptic('light');
                   // TODO: Implement avatar edit
                 }}
               >
@@ -274,7 +268,6 @@ const ProfileScreen = () => {
               <TouchableOpacity
                 style={styles.topUpButton}
                 onPress={() => {
-                  triggerHaptic('medium');
                   navigation.navigate('Payment');
                 }}
                 activeOpacity={0.9}

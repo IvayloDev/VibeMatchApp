@@ -14,7 +14,6 @@ import { getUserCredits } from '../../../lib/credits';
 import { useAuth } from '../../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
-import { triggerHaptic } from '../../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -78,9 +77,7 @@ const DashboardScreen = () => {
   );
 
   const pickImage = async () => {
-    triggerHaptic('light');
     if (credits < 1) {
-      triggerHaptic('warning');
       Alert.alert(
         'No Credits Available',
         'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
@@ -89,7 +86,6 @@ const DashboardScreen = () => {
           { 
             text: 'Buy Credits', 
             onPress: () => {
-              triggerHaptic('medium');
               navigation.navigate('Payment');
             }
           }
@@ -100,7 +96,7 @@ const DashboardScreen = () => {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
+      allowsEditing: false,
       quality: 1,
     });
 
@@ -178,7 +174,6 @@ const DashboardScreen = () => {
               {!loading && (
                 <Pressable
                   onPress={() => {
-                    triggerHaptic('light');
                     navigation.navigate('Payment');
                   }}
                   style={styles.creditsBadge}

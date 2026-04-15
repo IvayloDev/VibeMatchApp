@@ -1033,7 +1033,7 @@ const ResultsScreen = () => {
                   <Text style={styles.mainSongArtist} numberOfLines={2}>
                     by {songs[0]?.artist || 'Unknown Artist'}
                   </Text>
-                  <Text style={styles.mainSongReason} numberOfLines={6}>
+                  <Text style={styles.mainSongReason}>
                     {songs[0]?.reason || ''}
                   </Text>
                   {songs[0]?.spotify_url && (
@@ -1079,7 +1079,7 @@ const ResultsScreen = () => {
                     <Text style={styles.alternativeArtist} numberOfLines={2}>
                       by {song?.artist || 'Unknown Artist'}
                     </Text>
-                    <Text style={styles.alternativeReason} numberOfLines={5}>
+                    <Text style={styles.alternativeReason}>
                       {song?.reason || ''}
                     </Text>
                   </View>

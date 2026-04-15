@@ -55,11 +55,20 @@ async function getSpotifyToken(): Promise<string> {
     });
 
     if (!response.ok) {
-      console.error("❌ Spotify token request failed:", response.status);
+      const errBody = await response.text();
+      console.error(
+        "❌ Spotify token request failed:",
+        response.status,
+        errBody?.slice(0, 800)
+      );
       return "";
     }
 
     const data = await response.json();
+    if (!data.access_token) {
+      console.error("❌ Spotify token response missing access_token:", JSON.stringify(data)?.slice(0, 500));
+      return "";
+    }
     return data.access_token;
   } catch (err) {
     console.error("❌ Error getting Spotify token:", err);
@@ -71,53 +80,124 @@ async function getSpotifyToken(): Promise<string> {
  * Search Spotify for a specific track using title and artist
  * Returns the best match or null
  */
+/** Summarize Spotify search JSON for logs (avoids dumping huge payloads). */
+/** Tracks last Spotify Search API HTTP status across lookups (for auth vs “no results”). */
+type SpotifySearchState = { lastHttpStatus?: number };
+
+function isSpotifyAuthFailure(status?: number): boolean {
+  return status === 401 || status === 403;
+}
+
+function spotifyAuthErrorResponse() {
+  return jsonResponse({
+    error: "Spotify API error",
+    code: "SPOTIFY_AUTH",
+    message:
+      "Music search is temporarily unavailable. If this continues, Spotify credentials on the server may need to be updated."
+  }, 503);
+}
+
+/** Parse Spotify Web API error JSON: { "error": { "status": number, "message": string } } */
+function parseSpotifyApiErrorBody(text: string): string {
+  try {
+    const j = JSON.parse(text) as { error?: { message?: string; status?: number } };
+    if (j?.error?.message) {
+      return `${j.error.status ?? "?"}: ${j.error.message}`;
+    }
+  } catch {
+    /* not JSON */
+  }
+  return text?.slice(0, 500) ?? "";
+}
+
+function logSpotifySearchApiResponse(
+  phase: "primary" | "fallback",
+  response: Response,
+  data: Record<string, unknown>
+) {
+    const tracks = (data as { tracks?: { total?: number; items?: unknown[] } })?.tracks;
+    const items = tracks?.items ?? [];
+    const preview = items.slice(0, 5).map((t: any) => ({
+      id: t?.id,
+      name: t?.name,
+      artist: t?.artists?.[0]?.name
+    }));
+    console.log(
+      `🎵 Spotify API response [${phase}] http=${response.status} total=${tracks?.total ?? "?"} items=${items.length} preview=`,
+      JSON.stringify(preview)
+    );
+}
+
 async function findTrackOnSpotify(
   title: string, 
   artist: string, 
   searchQuery: string,
-  accessToken: string
+  accessToken: string,
+  state?: SpotifySearchState
 ): Promise<any | null> {
   try {
     // First try exact search with track:"title" artist:"artist"
     let query = searchQuery || `track:"${title}" artist:"${artist}"`;
     let encodedQuery = encodeURIComponent(query);
-    
-    let response = await fetch(
-      `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`,
-      {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`
-        }
+    const primarySearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
+    console.log("🎵 Spotify search [primary] query:", query, "| encoded q param:", encodedQuery, "| url:", primarySearchUrl);
+
+    let response = await fetch(primarySearchUrl, {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`
       }
-    );
+    });
 
     if (!response.ok) {
-      console.warn(`⚠️ Spotify search failed for "${title}" by "${artist}":`, response.status);
+      if (state) state.lastHttpStatus = response.status;
+      const errText = await response.text();
+      const detail = parseSpotifyApiErrorBody(errText);
+      if (response.status === 403 || response.status === 401) {
+        console.error(
+          `❌ Spotify search ${response.status} for "${title}" by "${artist}" — ${detail}`,
+          "\n→ Fix: Supabase Edge secrets SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET must match https://developer.spotify.com/dashboard (same app). 403 often means wrong secret, revoked app, or Developer Terms not accepted."
+        );
+      } else {
+        console.warn(
+          `⚠️ Spotify search failed for "${title}" by "${artist}":`,
+          response.status,
+          detail || errText?.slice(0, 500)
+        );
+      }
       return null;
     }
 
     const data = await response.json();
+    logSpotifySearchApiResponse("primary", response, data);
     const tracks = data.tracks?.items || [];
 
     if (tracks.length === 0) {
       // Fallback: try without quotes (fuzzy search)
       query = `${title} ${artist}`;
       encodedQuery = encodeURIComponent(query);
-      
-      response = await fetch(
-        `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`,
-        {
-          headers: {
-            "Authorization": `Bearer ${accessToken}`
-          }
+      const fallbackSearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
+      console.log("🎵 Spotify search [fallback] query:", query, "| encoded q param:", encodedQuery, "| url:", fallbackSearchUrl);
+
+      response = await fetch(fallbackSearchUrl, {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`
         }
-      );
+      });
 
       if (!response.ok) {
+        if (state) state.lastHttpStatus = response.status;
+        const errText = await response.text();
+        const detail = parseSpotifyApiErrorBody(errText);
+        if (response.status === 403 || response.status === 401) {
+          console.error("❌ Spotify search [fallback]", response.status, detail);
+        } else {
+          console.warn("⚠️ Spotify search [fallback] failed:", response.status, detail || errText?.slice(0, 500));
+        }
         return null;
       }
 
       const fallbackData = await response.json();
+      logSpotifySearchApiResponse("fallback", response, fallbackData);
       const fallbackTracks = fallbackData.tracks?.items || [];
       
       if (fallbackTracks.length === 0) {
@@ -744,13 +824,15 @@ serve(async (req) => {
 
   const resolvedSongs: any[] = [];
   const failedSongs: any[] = [];
+  const spotifySearchState: SpotifySearchState = {};
 
   for (const rec of openaiData.recommendations) {
     const track = await findTrackOnSpotify(
       rec.title,
       rec.artist,
       rec.search_query,
-      spotifyToken
+      spotifyToken,
+      spotifySearchState
     );
 
     if (track) {
@@ -777,9 +859,14 @@ serve(async (req) => {
     // If we have at least 1 resolved song, continue (we'll handle partial results below)
     // If no songs found at all, return error
     if (resolvedSongs.length === 0) {
+      if (isSpotifyAuthFailure(spotifySearchState.lastHttpStatus)) {
+        return spotifyAuthErrorResponse();
+      }
       return jsonResponse({
         error: "No matches found",
-        message: "We couldn't find any songs matching your request on Spotify. Please try a different search."
+        message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
+        // null = every Spotify Search call returned 2xx; failure was empty results or strict title/artist scoring
+        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null
       }, 404);
     }
   }
@@ -812,14 +899,28 @@ serve(async (req) => {
       }, 200);
     } else {
       // No songs found at all - return error
+      if (isSpotifyAuthFailure(spotifySearchState.lastHttpStatus)) {
+        return spotifyAuthErrorResponse();
+      }
       return jsonResponse({
         error: "No matches found",
-        message: "We couldn't find any songs matching your request on Spotify. Please try a different search."
+        message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
+        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null
       }, 404);
     }
   }
 
   console.log(`✅ Returning ${deduplicatedSongs.length} resolved songs (all unique artists)`);
+  console.log(
+    "📤 Response to client (summary):",
+    JSON.stringify(
+      deduplicatedSongs.slice(0, 3).map((s: any) => ({
+        title: s.title,
+        artist: s.artist,
+        spotify_url: s.spotify_url
+      }))
+    )
+  );
 
   return jsonResponse({
     songs: deduplicatedSongs.slice(0, 3) // Ensure exactly 3

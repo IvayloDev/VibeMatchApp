@@ -345,6 +345,15 @@ const AnalyzingScreen = () => {
           headers['Authorization'] = `Bearer ${accessToken}`;
         }
 
+        if (__DEV__) {
+          console.log('[recommend-songs] request', {
+            ...payload,
+            imageUrl: payload.imageUrl
+              ? `${payload.imageUrl.substring(0, 72)}…`
+              : undefined,
+          });
+        }
+
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
           method: 'POST',
           headers,
@@ -355,6 +364,23 @@ const AnalyzingScreen = () => {
         setProgress(85);
         
         const data = await response.json();
+        if (__DEV__) {
+          const songs = Array.isArray(data?.songs) ? data.songs : [];
+          console.log('[recommend-songs] response', {
+            httpStatus: response.status,
+            ok: response.ok,
+            error: data?.error,
+            code: data?.code,
+            lastSpotifyHttpStatus: data?.lastSpotifyHttpStatus,
+            message: data?.message,
+            songCount: songs.length,
+            songs: songs.map((s: { title?: string; artist?: string; spotify_url?: string }) => ({
+              title: s?.title,
+              artist: s?.artist,
+              spotify_url: s?.spotify_url,
+            })),
+          });
+        }
         setProgress(90);
 
         if (!response.ok || data.error || !data.songs) {

@@ -7,7 +7,6 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
-import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 
@@ -123,12 +122,10 @@ const WelcomeScreen = () => {
   };
 
   const handleContinueAsGuest = async () => {
-    triggerHaptic('light');
     setShowGuestModal(true);
   };
 
   const handleGuestModalContinue = async () => {
-    triggerHaptic('medium');
     setShowGuestModal(false);
     
     // Grant free credits to guest user
@@ -142,7 +139,6 @@ const WelcomeScreen = () => {
   };
 
   const handleGuestModalSignUp = () => {
-    triggerHaptic('light');
     setShowGuestModal(false);
     navigation.navigate('SignUp');
   };
@@ -267,7 +263,6 @@ const WelcomeScreen = () => {
             <TouchableOpacity
               style={styles.signInButton}
               onPress={() => {
-                triggerHaptic('light');
                 navigation.navigate('SignIn');
               }}
               activeOpacity={0.9}
@@ -279,7 +274,6 @@ const WelcomeScreen = () => {
             <TouchableOpacity
               style={styles.createAccountButton}
               onPress={() => {
-                triggerHaptic('light');
                 navigation.navigate('SignUp');
               }}
               activeOpacity={0.9}

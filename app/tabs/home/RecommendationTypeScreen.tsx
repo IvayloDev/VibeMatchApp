@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, Alert, TouchableOpacity, Animated, Dimensions, ScrollView, Platform, PanResponder, TextInput } from 'react-native';
+import { View, StyleSheet, Image, Alert, TouchableOpacity, Animated, Dimensions, ScrollView, PanResponder, TextInput } from 'react-native';
 import { Text } from 'react-native-paper';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
@@ -7,16 +7,16 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getUserCredits } from '../../../lib/credits';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
-import { triggerHaptic } from '../../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
 // Bottom sheet constants
-const COLLAPSED_HEIGHT = 380; // Height when collapsed - expanded down more
+const COLLAPSED_HEIGHT = 312; // Height when collapsed - expanded down more
 const EXPANDED_HEIGHT = height * 0.80; // Height when expanded - use 85% of screen height for maximum scrolling
+const TAB_BAR_HEIGHT = 49; // Standard tab bar height (without safe area)
 
 // Colors matching HTML reference
 const DesignColors = {
@@ -42,6 +42,7 @@ const genreOptions = [
   { id: 'pop', name: 'Pop', icon: 'music' as const },
   { id: 'electronic', name: 'Electro', icon: 'equalizer' as const },
   { id: 'hiphop', name: 'Hip Hop', icon: 'microphone' as const },
+  { id: 'rap', name: 'Rap', icon: 'microphone-variant' as const },
   { id: 'jazz', name: 'Jazz', icon: 'piano' as const },
   { id: 'ambient', name: 'Ambient', icon: 'wave' as const },
   { id: 'chill', name: 'Lo-Fi', icon: 'coffee' as const },
@@ -68,7 +69,11 @@ const genreOptions = [
 const RecommendationTypeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
+  const insets = useSafeAreaInsets();
   const { image } = (route.params || {}) as RouteParams;
+  
+  // Dynamic bottom offset: tab bar height + safe area bottom inset (for gesture bar)
+  const bottomOffset = TAB_BAR_HEIGHT + insets.bottom;
   const [type, setType] = useState<'surprise' | 'genre'>('surprise');
   const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
   const [customRequest, setCustomRequest] = useState('');
@@ -99,7 +104,6 @@ const RecommendationTypeScreen = () => {
       onPanResponderGrant: () => {
         sheetTranslateY.setOffset(lastSheetY.current);
         sheetTranslateY.setValue(0);
-        triggerHaptic('light');
       },
       onPanResponderMove: (_, gestureState) => {
         sheetTranslateY.setValue(gestureState.dy);
@@ -129,8 +133,6 @@ const RecommendationTypeScreen = () => {
         // Allow initial offset values that are within the valid range
         targetY = Math.max(-maxY, Math.min(0, targetY));
         lastSheetY.current = targetY;
-        
-        triggerHaptic('light');
         
         Animated.spring(sheetTranslateY, {
           toValue: targetY,
@@ -175,7 +177,6 @@ const RecommendationTypeScreen = () => {
   const handleStartAnalysis = async () => {
     try {
       setLoading(true);
-      triggerHaptic('medium');
 
       const currentCredits = await getUserCredits();
       if (currentCredits < 1) {
@@ -214,14 +215,12 @@ const RecommendationTypeScreen = () => {
   };
 
   const handleSurprisePress = () => {
-    triggerHaptic('light');
     setType('surprise');
     setSelectedGenre(null);
     setCustomRequest('');
   };
 
   const handleGenrePress = (genreId: string) => {
-    triggerHaptic('light');
     setType('genre');
     setSelectedGenre(genreId === selectedGenre ? null : genreId);
     // Clear custom request when selecting a genre
@@ -242,7 +241,6 @@ const RecommendationTypeScreen = () => {
   };
 
   const handleBack = () => {
-    triggerHaptic('light');
     (navigation as any).goBack();
   };
 
@@ -277,7 +275,8 @@ const RecommendationTypeScreen = () => {
             <Text style={styles.headerTitle}>
               Vibe Analysis
             </Text>
-            <View style={{ width: 40 }} /> {/* Spacer to balance header */}
+            {/* Spacer to balance header */}
+            <View style={{ width: 40 }} />
           </View>
 
           {/* Main Content - Image */}
@@ -293,7 +292,7 @@ const RecommendationTypeScreen = () => {
                 />
                 <View style={styles.imageBorderInner}>
                   <View style={styles.imageContainer}>
-                    {image && image.trim() ? (
+                    {(image && image.trim()) ? (
                       <Image 
                         source={{ uri: image }} 
                         style={styles.image}
@@ -301,7 +300,7 @@ const RecommendationTypeScreen = () => {
                     ) : null}
                     
                     {/* Gradient overlay - simplified when expanded */}
-              <LinearGradient
+                    <LinearGradient
                       colors={[DesignColors.backgroundDark + 'E6', 'transparent', 'transparent']}
                       start={{ x: 0, y: 1 }}
                       end={{ x: 0, y: 0 }}
@@ -329,12 +328,13 @@ const RecommendationTypeScreen = () => {
       </SafeAreaView>
 
       {/* Bottom Sheet - Draggable */}
-              <Animated.View
-                style={[
+      <Animated.View
+        style={[
           styles.bottomSheet,
           {
             transform: [{ translateY: sheetTranslateY }],
             height: EXPANDED_HEIGHT,
+            bottom: -(EXPANDED_HEIGHT - COLLAPSED_HEIGHT) + bottomOffset,
           },
         ]}
       >
@@ -402,10 +402,11 @@ const RecommendationTypeScreen = () => {
                     }
                     if (selectedGenre) {
                       const genre = genreOptions.find(g => g.id === selectedGenre);
-                      return `Selected: ${genre?.name || 'Custom'}`;
+                      const genreName = genre?.name || 'Custom';
+                      return `Selected: ${genreName}`;
                     }
                     return 'AI Auto-Selection';
-                  })()}
+                  })() || 'AI Auto-Selection'}
                 </Text>
               </View>
                   </View>
@@ -445,7 +446,7 @@ const RecommendationTypeScreen = () => {
                 <TextInput
                   placeholder="e.g. Moody, 50 cent, 80s music, UK Rap"
                   placeholderTextColor="rgba(255, 255, 255, 0.5)"
-                  value={customRequest}
+                  value={customRequest || ''}
                   onChangeText={handleCustomRequestChange}
                   style={styles.customRequestInput}
                   multiline
@@ -477,11 +478,15 @@ const RecommendationTypeScreen = () => {
                         color={isSelected ? DesignColors.primary : 'rgba(255, 255, 255, 0.4)'}
                       />
                     </View>
-                    <Text style={[
-                      styles.genreGridLabel,
-                      isSelected && styles.genreGridLabelSelected
-                    ]}>
-                      {genre.name}
+                    <Text 
+                      style={[
+                        styles.genreGridLabel,
+                        isSelected && styles.genreGridLabelSelected
+                      ]}
+                      numberOfLines={1}
+                      ellipsizeMode="tail"
+                    >
+                      {genre.name || 'Unknown'}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -489,6 +494,30 @@ const RecommendationTypeScreen = () => {
             </View>
           </View>
         </ScrollView>
+      </Animated.View>
+
+      {/* Black gradient overlay below button */}
+      <Animated.View 
+        style={[
+          styles.buttonGradientOverlay,
+          {
+            bottom: sheetTranslateY.interpolate({
+              inputRange: [-maxY, initialOffset],
+              outputRange: [
+                bottomOffset + 40 + Spacing.md - 60, // Expanded: positioned below button
+                bottomOffset + 40 - 60 // Collapsed: positioned below button
+              ],
+              extrapolate: 'clamp',
+            }),
+          }
+        ]}
+      >
+        <LinearGradient
+          colors={['#000000', 'transparent']}
+          start={{ x: 0, y: 1 }}
+          end={{ x: 0, y: 0 }}
+          style={StyleSheet.absoluteFill}
+        />
       </Animated.View>
 
       {/* Start Analysis Button - Moves with bottom sheet */}
@@ -502,8 +531,8 @@ const RecommendationTypeScreen = () => {
             bottom: sheetTranslateY.interpolate({
               inputRange: [-maxY, initialOffset],
               outputRange: [
-                90 + Spacing.md, // Expanded: bottom of expanded panel (above nav bar with padding)
-                110 // Collapsed: above nav bar
+                bottomOffset + 40 + Spacing.md, // Expanded: bottom of expanded panel (above nav bar with padding)
+                bottomOffset + 40 // Collapsed: above nav bar
               ],
               extrapolate: 'clamp',
             }),
@@ -715,7 +744,7 @@ const styles = StyleSheet.create({
   },
   bottomSheet: {
     position: 'absolute',
-    bottom: -(EXPANDED_HEIGHT - COLLAPSED_HEIGHT), // Base position
+    // bottom is set dynamically using bottomOffset (safe area insets)
     left: 0,
     right: 0,
     borderTopLeftRadius: 48,
@@ -881,7 +910,7 @@ const styles = StyleSheet.create({
   genreGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     gap: Spacing.md,
     paddingVertical: Spacing.sm,
   },
@@ -889,6 +918,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     width: (width - Spacing.lg * 2 - Spacing.md * 3) / 4, // 4 columns with gaps
+    minWidth: 0, // Allow shrinking
   },
   genreCircle: {
     width: 64,
@@ -917,10 +947,19 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: 'rgba(255, 255, 255, 0.4)',
     textAlign: 'center',
+    width: '100%',
   },
   genreGridLabelSelected: {
     color: DesignColors.primary,
     fontWeight: '900',
+  },
+  buttonGradientOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 60,
+    zIndex: 99, // Just below the button
+    pointerEvents: 'none', // Allow touches to pass through
   },
   startButtonContainer: {
     position: 'absolute',

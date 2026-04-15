@@ -7,7 +7,6 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
-import { triggerHaptic } from '../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -32,15 +31,12 @@ const SignUpScreen = () => {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
-    triggerHaptic('light');
     setLoading(true);
     const { data, error } = await supabase.auth.signUp({ email, password });
     setLoading(false);
     if (error) {
-      triggerHaptic('error');
       Alert.alert('Sign Up Error', error.message);
     } else if (data?.user) {
-      triggerHaptic('success');
       // Navigate to main app on successful sign-up
       navigation.reset({
         index: 0,
@@ -50,48 +46,40 @@ const SignUpScreen = () => {
   };
 
   const handleGoogleSignUp = async () => {
-    triggerHaptic('light');
     setSocialLoading('google');
     try {
       const result = await signInWithGoogle();
       if (result.success) {
-        triggerHaptic('success');
         // Navigate to main app on successful sign-up
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],
         });
       } else if (result.error) {
-        triggerHaptic('error');
         Alert.alert('Google Sign-Up Error', result.error);
       }
     } catch (error) {
       console.error('Google sign-up error:', error);
-      triggerHaptic('error');
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
     setSocialLoading(null);
   };
 
   const handleAppleSignUp = async () => {
-    triggerHaptic('light');
     setSocialLoading('apple');
     try {
       const result = await signInWithApple();
       if (result.success) {
-        triggerHaptic('success');
         // Navigate to main app on successful sign-up
         navigation.reset({
           index: 0,
           routes: [{ name: 'MainTabs' }],
         });
       } else if (result.error) {
-        triggerHaptic('error');
         Alert.alert('Apple Sign-Up Error', result.error);
       }
     } catch (error) {
       console.error('Apple sign-up error:', error);
-      triggerHaptic('error');
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
     setSocialLoading(null);
@@ -239,7 +227,6 @@ const SignUpScreen = () => {
             <View style={styles.footerContainer}>
               <TouchableOpacity 
                 onPress={() => {
-                  triggerHaptic('light');
                   navigation.navigate('SignIn');
                 }} 
                 style={styles.signInLink}

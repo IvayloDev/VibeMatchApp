@@ -13,7 +13,6 @@ import { supabase, getImageSignedUrl } from '../../../lib/supabase';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { FloatingCard } from '../../../lib/components/FloatingCard';
-import { triggerHaptic } from '../../../lib/utils/haptics';
 
 const { width, height } = Dimensions.get('window');
 
@@ -137,7 +136,6 @@ const HistoryScreen = () => {
   };
 
   const handleItemPress = (item: HistoryItem, currentImageUrl: string) => {
-    triggerHaptic('light');
     navigation.navigate('HistoryResults', { 
       image: currentImageUrl || item.image_url,
       songs: item.songs,
