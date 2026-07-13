@@ -133,6 +133,7 @@ const styles = StyleSheet.create({
   blurContainer: {
     borderRadius: BorderRadius.xl,
     overflow: 'hidden',
+    backgroundColor: Colors.cardBackground,
     ...Shadows.prominent,
   },
   gradient: {

@@ -13,6 +13,8 @@ import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { deductCredits, refundCredits } from '../../../lib/credits';
+import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
+import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 
 const { width, height } = Dimensions.get('window');
 
@@ -37,7 +39,7 @@ const TAG_CATEGORIES = [
   { id: 10, label: 'Rock', icon: 'guitar-acoustic', active: false },
 ];
 
-type AnalyzingParams = { image: string; selectedGenre?: string; customRequest?: string; userId?: string };
+type AnalyzingParams = { image: string; selectedVibe?: string; userId?: string; fromOnboarding?: boolean };
 type RootStackParamList = {
   Results: { image: string; songs: any[]; imagePath?: string };
   Payment: undefined;
@@ -143,7 +145,7 @@ async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
 const AnalyzingScreen = () => {
   const navigation = useNavigation<AnalyzingNavigationProp>();
   const route = useRoute();
-  const { image, selectedGenre, customRequest, userId } = (route.params || {}) as AnalyzingParams;
+  const { image, selectedVibe, userId, fromOnboarding } = (route.params || {}) as AnalyzingParams;
   
   const [progress, setProgress] = useState(0);
   const [activeTagIndex, setActiveTagIndex] = useState(0);
@@ -302,15 +304,23 @@ const AnalyzingScreen = () => {
         uploadedFilePath = filePath;
         setProgress(25);
 
-        const hasCustomRequest = !!(customRequest && customRequest.trim());
-        const hasGenre = !!selectedGenre && !hasCustomRequest;
-        
-        const payload = { 
-          imageUrl: signedUrl, 
-          genre: hasCustomRequest ? undefined : selectedGenre,
-          customRequest: hasCustomRequest ? customRequest.trim() : undefined,
-          hasCustomRequest: hasCustomRequest,
-          hasGenre: hasGenre
+        // Guest users don't have a Supabase session, so the edge function
+        // cannot look up their taste profile server-side. Pass it inline.
+        let guestTasteProfile: any = null;
+        try {
+          const { data: { session: s } } = await supabase.auth.getSession();
+          if (!s?.user) {
+            const { loadGuestTasteProfile } = await import('../../../lib/spotify');
+            guestTasteProfile = await loadGuestTasteProfile();
+          }
+        } catch (err) {
+          console.warn('Could not load guest taste profile:', err);
+        }
+
+        const payload = {
+          imageUrl: signedUrl,
+          vibe: selectedVibe,
+          tasteProfile: guestTasteProfile ?? undefined,
         };
         
         let accessToken: string | undefined;
@@ -391,10 +401,13 @@ const AnalyzingScreen = () => {
             useNativeDriver: false,
           }).start(() => {
             setTimeout(() => {
+              const fallbackNav = fromOnboarding
+                ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
+                : () => (navigation as any).navigate('Dashboard');
               Alert.alert(
                 'No Matches Found',
                 data.message || 'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
-                [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
+                [{ text: 'OK', onPress: fallbackNav }]
               );
             }, 300);
           });
@@ -412,10 +425,13 @@ const AnalyzingScreen = () => {
             useNativeDriver: false,
           }).start(() => {
             setTimeout(() => {
+              const fallbackNav2 = fromOnboarding
+                ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
+                : () => (navigation as any).navigate('Dashboard');
               Alert.alert(
                 'No Matches Found',
                 'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
-                [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
+                [{ text: 'OK', onPress: fallbackNav2 }]
               );
             }, 300);
           });
@@ -432,6 +448,20 @@ const AnalyzingScreen = () => {
             { user_id: currentUserId, image_url: filePath, songs: songs },
           ]);
         }
+
+        // Count this genuine fresh match (drives the once-ever review prompt).
+        // History re-views never reach here, so they don't inflate the count.
+        try {
+          await recordSuccessfulMatch();
+        } catch {}
+
+        // Value-first: only now (after a real success) ask for notification
+        // permission, then (re)arm the gentle re-engagement ladder.
+        try {
+          await ensureNotificationPermission();
+          await rescheduleEngagementReminders();
+        } catch {}
+
         setProgress(95);
 
         setProgress(100);
@@ -442,14 +472,39 @@ const AnalyzingScreen = () => {
           useNativeDriver: false,
         }).start(() => {
           setTimeout(() => {
-            (navigation as any).navigate('History', { 
-              screen: 'HistoryResults',
-              params: { 
-                image: signedUrl, 
-                songs: songs, 
-                imagePath: uploadedFilePath ?? undefined 
-              }
-            });
+            if (fromOnboarding) {
+              // From root stack (OnboardingAnalyzing) — reset nav to MainTabs
+              // with History tab pre-showing results
+              (navigation as any).reset({
+                index: 0,
+                routes: [{
+                  name: 'MainTabs',
+                  params: {
+                    screen: 'History',
+                    params: {
+                      screen: 'HistoryResults',
+                      params: {
+                        image: signedUrl,
+                        songs,
+                        imagePath: uploadedFilePath ?? undefined,
+                        fromOnboarding: true,
+                        fromFreshMatch: true,
+                      },
+                    },
+                  },
+                }],
+              });
+            } else {
+              (navigation as any).navigate('History', {
+                screen: 'HistoryResults',
+                params: {
+                  image: signedUrl,
+                  songs: songs,
+                  imagePath: uploadedFilePath ?? undefined,
+                  fromFreshMatch: true,
+                }
+              });
+            }
           }, 300);
         });
       } catch (error) {
@@ -461,11 +516,20 @@ const AnalyzingScreen = () => {
           useNativeDriver: false,
         }).start(() => {
           setTimeout(() => {
-            Alert.alert(
-              'Analysis Failed',
-              'Sorry, we encountered an error while analyzing your photo. Your credit has not been charged. Please try again.',
-              [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
-            );
+            if (fromOnboarding) {
+              // Don't leave user stuck — onboarding already marked complete, go to app
+              Alert.alert(
+                'Analysis Failed',
+                'We couldn\'t analyze your photo this time. You can try again from the app!',
+                [{ text: 'OK', onPress: () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] }) }]
+              );
+            } else {
+              Alert.alert(
+                'Analysis Failed',
+                'Sorry, we encountered an error while analyzing your photo. Your credit has not been charged. Please try again.',
+                [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
+              );
+            }
           }, 300);
         });
       }
@@ -479,7 +543,7 @@ const AnalyzingScreen = () => {
       cornerPulseLoop.stop();
       pulseDotLoop.stop();
     };
-  }, [navigation, image, selectedGenre, customRequest, userId]);
+  }, [navigation, image, selectedVibe, userId, fromOnboarding]);
 
   useEffect(() => {
     Animated.timing(progressAnim, {

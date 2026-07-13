@@ -48,6 +48,17 @@ serve(async (req) => {
       .delete()
       .eq('user_id', user.id)
 
+    // Explicitly clear Spotify data (FK CASCADE also handles this, but be explicit)
+    await supabaseClient
+      .from('spotify_connections')
+      .delete()
+      .eq('user_id', user.id)
+
+    await supabaseClient
+      .from('spotify_taste_profiles')
+      .delete()
+      .eq('user_id', user.id)
+
     // Delete the user account using admin privileges
     const { error: deleteError } = await supabaseClient.auth.admin.deleteUser(user.id)
 

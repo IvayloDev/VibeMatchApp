@@ -12,6 +12,7 @@ import { supabase } from '../../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
+import { maybeRequestReview } from '../../../lib/reviewPrompt';
 
 const { width, height } = Dimensions.get('window');
 
@@ -28,6 +29,8 @@ type ResultsParams = {
   songs: Song[];
   historyItemId?: string; // Optional history item ID for deletion
   imagePath?: string; // Original storage path for refreshing signed URLs
+  fromOnboarding?: boolean;
+  fromFreshMatch?: boolean; // True only on a live new match (not history re-view)
 };
 
 type TabParamList = {
@@ -53,7 +56,7 @@ const ResultsScreen = () => {
   const route = useRoute();
   const navigation = useNavigation<ResultsNavigationProp>();
   const insets = useSafeAreaInsets();
-  const { image, songs = [], historyItemId, imagePath } = (route.params || {}) as ResultsParams;
+  const { image, songs = [], historyItemId, imagePath, fromOnboarding, fromFreshMatch } = (route.params || {}) as ResultsParams;
   const [imageUrl, setImageUrl] = useState<string>(image);
   const [showAnimation, setShowAnimation] = useState(!historyItemId); // Only animate for new results, not history
   const [showMatchCards, setShowMatchCards] = useState(false);
@@ -112,6 +115,17 @@ const ResultsScreen = () => {
   console.log('ResultsScreen params:', { image, songsCount: songs?.length, historyItemId, showAnimation });
 
   const storageImagePath = imagePath || (image && !image.startsWith('http') ? image : undefined);
+
+  // After a genuine fresh match, give the user a moment to see the result,
+  // then (maybe) surface the native review sheet. Gated once-ever inside
+  // maybeRequestReview(); history re-views never pass fromFreshMatch.
+  useEffect(() => {
+    if (!fromFreshMatch) return;
+    const t = setTimeout(() => {
+      maybeRequestReview();
+    }, 2500);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -496,9 +510,13 @@ const ResultsScreen = () => {
 
   const handleBackPress = () => {
     triggerHaptic('light');
+    if (fromOnboarding) {
+      (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+      return;
+    }
     // Check if we're in HistoryResults (History stack) or Results (Home stack)
     const routeName = route.name;
-    
+
     if (routeName === 'HistoryResults') {
       // If we're in HistoryResults, navigate to History list
       // This ensures we always go back to History, not Analyzing
@@ -674,17 +692,25 @@ const ResultsScreen = () => {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
       {/* Floating Action Buttons */}
-      <View style={[styles.floatingActions, { top: insets.top + 10 }]}>
-        <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
-          <MaterialCommunityIcons name="arrow-left" size={24} color={Colors.textPrimary} />
-        </TouchableOpacity>
-        
-        {historyItemId && (
-          <TouchableOpacity onPress={handleDeletePress} style={styles.deleteButton}>
-            <MaterialCommunityIcons name="delete" size={24} color={Colors.accent.red} />
+      {fromOnboarding ? (
+        <View style={[styles.floatingActions, styles.floatingActionsCenter, { top: insets.top + 10 }]}>
+          <TouchableOpacity onPress={handleBackPress} style={styles.exploreButton}>
+            <Text style={styles.exploreButtonText}>Start Exploring</Text>
+            <MaterialCommunityIcons name="arrow-right" size={20} color="#FFFFFF" />
           </TouchableOpacity>
-        )}
-      </View>
+        </View>
+      ) : (
+        <View style={[styles.floatingActions, { top: insets.top + 10 }]}>
+          <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
+            <MaterialCommunityIcons name="arrow-left" size={24} color={Colors.textPrimary} />
+          </TouchableOpacity>
+          {historyItemId && (
+            <TouchableOpacity onPress={handleDeletePress} style={styles.deleteButton}>
+              <MaterialCommunityIcons name="delete" size={24} color={Colors.accent.red} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
       
       <View style={styles.container}>
         {/* Background Blur Effects */}
@@ -858,7 +884,7 @@ const ResultsScreen = () => {
                       <Text style={styles.songTitle}>
                         {songs[0]?.title || 'Unknown Title'}
                       </Text>
-                      <Text style={styles.songArtist} numberOfLines={1}>
+                      <Text style={styles.songArtist}>
                         {songs[0]?.artist || 'Unknown Artist'}
                       </Text>
                     </View>
@@ -1027,10 +1053,10 @@ const ResultsScreen = () => {
               {songs[0] && (
                 <>
                   <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
-                  <Text style={styles.mainSongTitle} numberOfLines={3}>
+                  <Text style={styles.mainSongTitle}>
                     {songs[0]?.title || 'Unknown Title'}
                   </Text>
-                  <Text style={styles.mainSongArtist} numberOfLines={2}>
+                  <Text style={styles.mainSongArtist}>
                     by {songs[0]?.artist || 'Unknown Artist'}
                   </Text>
                   <Text style={styles.mainSongReason}>
@@ -1260,8 +1286,8 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   albumArt: {
-    width: 120,
-    height: 120,
+    width: 80,
+    height: 80,
     borderRadius: BorderRadius.md,
     backgroundColor: '#E0E0E0',
     flexShrink: 0,
@@ -1408,6 +1434,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     zIndex: 100,
   },
+  floatingActionsCenter: {
+    justifyContent: 'center',
+  },
+  exploreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FF3B30',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.round,
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  exploreButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 15,
+    letterSpacing: 0.3,
+  },
   backButton: {
     backgroundColor: Colors.cardBackground + 'E0',
     borderRadius: BorderRadius.round,
@@ -1512,7 +1561,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     marginBottom: Spacing.md,
-    flexShrink: 1,
   },
   spotifyButton: {
     flexDirection: 'row',

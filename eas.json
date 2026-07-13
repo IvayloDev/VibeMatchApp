@@ -21,6 +21,7 @@
       }
     },
     "preview-testflight": {
+      "autoIncrement": true,
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
@@ -30,6 +31,10 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6749324670"
+      }
+    }
   }
 }

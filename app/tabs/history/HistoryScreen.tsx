@@ -24,7 +24,7 @@ type TabParamList = {
 
 type HomeStackParamList = {
   Dashboard: undefined;
-  RecommendationType: { image: string };
+  VibeSelection: { image: string };
   Analyzing: undefined;
   Results: { image: string; songs: any[]; imagePath?: string };
 };

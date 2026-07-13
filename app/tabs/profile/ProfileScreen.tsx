@@ -11,6 +11,8 @@ import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
 
@@ -125,10 +127,29 @@ const ProfileScreen = () => {
               console.log('Response result:', result);
 
               if (response.ok && result.success) {
-                console.log('Delete successful, signing out...');
-                // Sign out to clear session and trigger navigation to welcome
+                console.log('Delete successful, clearing local data...');
+
+                // Clear all local storage (credits, taste profile, onboarding flag, Spotify tokens)
+                const secureKeys = [
+                  'tunematch_onboarding_complete',
+                  'tunematch_spotify_access_token',
+                  'tunematch_spotify_refresh_token',
+                  'tunematch_spotify_expires_at',
+                  'tunematch_free_credits_granted',
+                  'tunematch_guest_credits_granted',
+                ];
+                await Promise.allSettled(secureKeys.map(k => SecureStore.deleteItemAsync(k)));
+
+                const asyncKeys = [
+                  '@tunematch_local_credits',
+                  '@tunematch/guest_spotify_taste_profile',
+                  '@tunematch_local_purchases',
+                ];
+                await Promise.allSettled(asyncKeys.map(k => AsyncStorage.removeItem(k)));
+
+                // Sign out to clear Supabase session
                 await signOut();
-                
+
                 // Navigate to Welcome screen after account deletion
                 navigation.dispatch(
                   CommonActions.reset({

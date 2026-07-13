@@ -128,6 +128,23 @@ function logSpotifySearchApiResponse(
     );
 }
 
+/**
+ * fetch with retry on transient Spotify failures (5xx, 429).
+ * Up to 3 attempts: 0ms, 400ms, 1200ms backoff.
+ */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  const delays = [0, 400, 1200];
+  let lastResponse: Response | null = null;
+  for (const ms of delays) {
+    if (ms > 0) await new Promise(r => setTimeout(r, ms));
+    const resp = await fetch(url, init);
+    if (resp.status < 500 && resp.status !== 429) return resp;
+    lastResponse = resp;
+    console.warn(`↻ Spotify ${resp.status} — retrying after ${ms}ms backoff`);
+  }
+  return lastResponse!;
+}
+
 async function findTrackOnSpotify(
   title: string, 
   artist: string, 
@@ -136,13 +153,14 @@ async function findTrackOnSpotify(
   state?: SpotifySearchState
 ): Promise<any | null> {
   try {
-    // First try exact search with track:"title" artist:"artist"
-    let query = searchQuery || `track:"${title}" artist:"${artist}"`;
+    // Always build the query ourselves — never trust AI-generated search_query
+    // (AI occasionally corrupts it with JSON syntax artifacts)
+    let query = `track:"${title}" artist:"${artist}"`;
     let encodedQuery = encodeURIComponent(query);
     const primarySearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
     console.log("🎵 Spotify search [primary] query:", query, "| encoded q param:", encodedQuery, "| url:", primarySearchUrl);
 
-    let response = await fetch(primarySearchUrl, {
+    let response = await fetchWithRetry(primarySearchUrl, {
       headers: {
         "Authorization": `Bearer ${accessToken}`
       }
@@ -178,7 +196,7 @@ async function findTrackOnSpotify(
       const fallbackSearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
       console.log("🎵 Spotify search [fallback] query:", query, "| encoded q param:", encodedQuery, "| url:", fallbackSearchUrl);
 
-      response = await fetch(fallbackSearchUrl, {
+      response = await fetchWithRetry(fallbackSearchUrl, {
         headers: {
           "Authorization": `Bearer ${accessToken}`
         }
@@ -381,56 +399,80 @@ function translateBulgarianToSearchQuery(text: string): string[] {
   return queries.length > 0 ? queries : [text.trim()];
 }
 
+type TasteProfile = {
+  top_artists?: Array<{ name: string; genres?: string[] }>;
+  top_tracks?: Array<{ name: string; artist: string }>;
+  recently_played?: Array<{ name: string; artist: string }>;
+  saved_tracks?: Array<{ name: string; artist: string }>;
+  top_genres?: string[];
+};
+
+/**
+ * Format a compact taste-profile block for the LLM prompt.
+ * Order matters: lead with high-intent signals (saved + top artists), end with
+ * the noisiest one (top_genres) so the model doesn't anchor on a transient
+ * genre tag from a short listening window.
+ */
+function buildTasteBlock(profile: TasteProfile | null): string {
+  if (!profile) return "";
+
+  const saved = (profile.saved_tracks ?? []).slice(0, 20).map((t) => `${t.name} — ${t.artist}`);
+  const artists = (profile.top_artists ?? []).slice(0, 25).map((a) => a.name);
+  const tracks = (profile.top_tracks ?? []).slice(0, 20).map((t) => `${t.name} — ${t.artist}`);
+  const recent = (profile.recently_played ?? []).slice(0, 15).map((t) => `${t.name} — ${t.artist}`);
+  const genres = (profile.top_genres ?? []).slice(0, 10);
+
+  const parts: string[] = [];
+  if (saved.length) parts.push(`Saved (high-intent — songs they chose to keep): ${saved.join("; ")}`);
+  if (artists.length) parts.push(`Most-listened artists: ${artists.join(", ")}`);
+  if (tracks.length) parts.push(`Most-listened tracks: ${tracks.join("; ")}`);
+  if (recent.length) parts.push(`Currently in rotation: ${recent.join("; ")}`);
+  if (genres.length) parts.push(`Spotify-tagged genres (noisy hint — derived from listening, can be skewed by short binges): ${genres.join(", ")}`);
+
+  if (parts.length === 0) return "";
+  return parts.join("\n");
+}
+
+function buildTasteGuidance(hasTaste: boolean): string {
+  if (!hasTaste) return "";
+  return `\n\nUSER MUSIC TASTE — READ THIS CAREFULLY:
+- The user's Spotify listening profile is provided below. Treat it as their SONIC DNA, not a genre filter.
+- "Sonic DNA" = the production style, instrumentation, vocal qualities, mood, era, rhythmic feel, and lyrical sensibility that runs through their saved tracks and top artists.
+- DO NOT anchor on top_genres alone. Spotify's auto-tagged genres reflect short listening windows and can be a temporary obsession (e.g. one week of italo-disco does not make someone an italo-disco listener). Use genres only as one weak signal among many.
+- Weight signals: saved tracks > top artists > top tracks > recently played > top_genres. Saved = high intent. Genres = lowest weight.
+- Cross-genre is fine and encouraged: if a folk listener saves moody electronic tracks, electronic is in-bounds. Trust the audible patterns over the tag.
+- DISCOVERY QUOTA: at least 3 of the 6 picks must be artists NOT listed in the user's profile. Surface adjacent artists, label-mates, contemporaries, influences, or proteges of artists they already love — songs they probably haven't heard but will recognize as "their kind of thing."
+- Of the remaining picks, prefer DEEP CUTS from listed artists (b-sides, album tracks, collabs) over the obvious hits already in their library. Do not recommend tracks already in saved/top/recent.
+- The image mood + chosen vibe set the emotional anchor. The user's sonic DNA shapes which adjacent musical space we draw from. They are weighted equally — neither should override the other.
+- A pick is GREAT when a friend who knows the user's taste would say "of course, this is so them" while also "wait, how did you find this?"`;
+}
+
 /**
  * Build system prompt based on mode
  */
 function buildSystemPrompt(
-  useCustomRequest: boolean,
   avoidTracks: string[],
-  avoidArtists: string[]
+  avoidArtists: string[],
+  hasTaste: boolean = false
 ): string {
   const avoidSection = avoidTracks.length > 0 || avoidArtists.length > 0
     ? `\n\nAVOID THESE (do not recommend):\n${avoidTracks.length > 0 ? `- Tracks: ${avoidTracks.join(", ")}\n` : ""}${avoidArtists.length > 0 ? `- Artists: ${avoidArtists.join(", ")}\n` : ""}`
     : "";
 
-  if (useCustomRequest) {
-    return `You are VibeMatch, a music curator. Given a custom request, recommend 3 non-obvious real songs that match it.
+  const tasteGuidance = buildTasteGuidance(hasTaste);
+
+  return `You are VibeMatch, a personalized music curator. You combine the visual/emotional read of an image with the user's overall sonic taste to surface songs they'll love — including ones they haven't discovered yet.${tasteGuidance}
 
 Hard rules:
 - Output MUST be valid JSON matching the schema. No extra text.
-- Recommend exactly 3 tracks (no more, no less).
+- Recommend exactly 6 tracks (no more, no less) — we need extras as fallbacks in case some can't be found on Spotify.
+- RANKING IS CRITICAL: Sort recommendations from BEST to WORST match. Position 1 must be the single most on-point pick that best combines the image mood + chosen vibe with the user's sonic DNA. Positions 2-3 are strong alternatives. Positions 4-6 are good fallbacks.
 - No repeated artist (each track must have a different artist).
 - Avoid ultra-mainstream, over-recommended staples (no "default playlist" picks like Mr. Brightside, Bohemian Rhapsody, etc.).
-- Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
+- Ensure diversity: at least 3 distinct subgenres OR eras across the 6 tracks. Cross-genre picks are welcomed when the sonic DNA fits.
+- DO NOT recommend any track or artist already present in the user's saved/top/recently-played lists. Find adjacent, undiscovered music instead.
+- At least 3 of the 6 picks should be artists the user has NOT listened to (per the profile data), surfacing genuine discoveries — not safe repeats from their current rotation.
 - Only suggest songs you are confident exist (title + primary artist).
-- Prefer deep cuts and non-obvious picks over top hits.
-- IMPORTANT: Unless the request specifically mentions Bulgarian/chalga/BG music, recommend international (primarily English) songs. Only suggest Bulgarian songs if explicitly requested.
-${avoidSection}
-
-Return JSON with this structure:
-{
-  "recommendations": [
-    {
-      "title": "REAL song title",
-      "artist": "REAL artist name",
-      "reason": "1-2 sentences: why this matches the request",
-      "mood_tags": ["tag1", "tag2", "tag3"],
-      "search_query": "track:\\"title\\" artist:\\"artist\\""
-    }
-  ]
-}`;
-  }
-
-  return `You are VibeMatch, a music curator. Given an image, infer the mood/scene/subtext and propose 3 non-obvious real songs.
-
-Hard rules:
-- Output MUST be valid JSON matching the schema. No extra text.
-- Recommend exactly 3 tracks (no more, no less).
-- No repeated artist (each track must have a different artist).
-- Avoid ultra-mainstream, over-recommended staples (no "default playlist" picks like Mr. Brightside, Bohemian Rhapsody, etc.).
-- Ensure diversity: at least 2 distinct subgenres OR eras across the 3 tracks.
-- Only suggest songs you are confident exist (title + primary artist).
-- Prefer deep cuts and non-obvious picks over top hits.
 - IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music unless the image or context explicitly shows Bulgarian content or culture. Default to English-language music.
 ${avoidSection}
 
@@ -440,40 +482,38 @@ Return JSON with this structure:
     {
       "title": "REAL song title",
       "artist": "REAL artist name",
-      "reason": "1-2 sentences: visual cue -> emotional inference -> musical match",
+      "reason": "1-2 sentences: connect the image mood + chosen vibe to a specific sonic-DNA trait of the user (e.g. 'shares the dusty, lo-fi warmth of your saved [Artist] tracks'). For discovery picks, name the bridge to a listed artist or production trait — not a genre tag.",
       "mood_tags": ["tag1", "tag2", "tag3"],
-      "search_query": "track:\\"title\\" artist:\\"artist\\""
+      "search_query": "track:\\"Song Title\\" artist:\\"Artist Name\\""
     }
   ]
 }`;
 }
 
+const VIBE_GUIDANCE: Record<string, string> = {
+  hype: "energetic, upbeat, high-BPM, anthemic — fits party / workout / going-out content",
+  chill: "relaxed, laid-back, mellow, easy-listening — fits hangouts / coffee / vibey daytime",
+  romantic: "soft, intimate, warm, swooning — fits sunsets / love / tender moments",
+  moody: "melancholic, deep, introspective, nocturnal — fits night / pensive / cinematic feel",
+};
+
 /**
  * Build user prompt
  */
-function buildUserPrompt(params: {
-  customRequest?: string;
-  hasCustomRequest?: boolean;
-  genre?: string;
-  hasGenre?: boolean;
-}): string {
-  const { customRequest, hasCustomRequest, genre, hasGenre } = params;
-  
-  const useCustomRequest = hasCustomRequest && customRequest && customRequest.trim();
-  const useGenre = !useCustomRequest && hasGenre && genre && genre !== "N/A";
-  
-  if (useCustomRequest) {
-    return `Custom request: "${customRequest.trim()}"
+function buildUserPrompt(params: { vibe?: string }): string {
+  const { vibe } = params;
+  const vibeKey = vibe?.toLowerCase().trim();
+  const guidance = vibeKey ? VIBE_GUIDANCE[vibeKey] : undefined;
 
-Recommend 3 songs that match this request. Prefer unexpected-but-accurate picks over obvious hits.
-IMPORTANT: Unless the request specifically mentions Bulgarian/chalga/BG music, recommend ONLY international (primarily English) songs. Only suggest Bulgarian songs if explicitly requested.`;
-  } else if (useGenre) {
-    return `Recommend songs in the "${genre}" genre. The image should complement the genre selection.
-IMPORTANT: Recommend ONLY international (primarily English) songs in this genre. DO NOT recommend Bulgarian/chalga/BG music unless explicitly part of the genre request.`;
-  } else {
-    return `Analyze the image and recommend 3 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.
+  if (vibe && guidance) {
+    return `The user picked the "${vibe}" vibe for their social-media story photo (${guidance}).
+
+Analyze the image and recommend 6 songs that match this vibe AND complement the photo's atmosphere, color palette, and implied story. Lean into the emotional tone of the vibe. Prefer unexpected-but-accurate picks over obvious hits.
 IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music.`;
   }
+
+  return `Analyze the image and recommend 6 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.
+IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music.`;
 }
 
 // Edge function
@@ -515,33 +555,29 @@ serve(async (req) => {
 
   // 1) Parse incoming JSON
   let imageUrl: string;
-  let genre: string | undefined;
-  let customRequest: string | undefined;
-  let hasCustomRequest: boolean;
-  let hasGenre: boolean;
+  let vibe: string | undefined;
   let avoidTracks: string[] = [];
   let avoidArtists: string[] = [];
+  let tasteProfile: TasteProfile | null = null;
 
   try {
     const body = await req.json();
     imageUrl = body.imageUrl;
-    genre = body.genre;
-    customRequest = body.customRequest;
-    hasCustomRequest = body.hasCustomRequest ?? !!(customRequest && customRequest.trim());
-    hasGenre = body.hasGenre ?? !!(genre && genre !== "N/A" && !hasCustomRequest);
+    vibe = typeof body.vibe === "string" ? body.vibe : undefined;
     // Only use userId from body if we didn't get it from auth header
     if (!userId) {
       userId = body.userId;
     }
     avoidTracks = body.avoidTracks || [];
     avoidArtists = body.avoidArtists || [];
+    // Guest taste profile may be passed inline from the client
+    if (body.tasteProfile && typeof body.tasteProfile === "object") {
+      tasteProfile = body.tasteProfile as TasteProfile;
+    }
 
     console.log("📥 Body:", {
       imageUrl: imageUrl ? `${imageUrl.substring(0, 50)}...` : 'N/A',
-      genre,
-      customRequest,
-      hasCustomRequest,
-      hasGenre,
+      vibe,
       userId: userId || 'N/A',
       avoidTracks: avoidTracks.length,
       avoidArtists: avoidArtists.length
@@ -603,6 +639,40 @@ serve(async (req) => {
       console.warn("⚠️ Could not fetch user history:", err);
       // Continue without history
     }
+
+    // 2b) Load Spotify taste profile from DB (if not already passed inline)
+    // Use service role so RLS (auth.uid() = user_id) doesn't block the lookup.
+    if (!tasteProfile) {
+      try {
+        const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+          ?? Deno.env.get('SERVICE_ROLE_KEY')
+          ?? '';
+        const sb = createClient(
+          Deno.env.get('SUPABASE_URL') ?? '',
+          serviceKey
+        );
+        const { data: tasteRow, error: tasteErr } = await sb
+          .from('spotify_taste_profiles')
+          .select('top_artists, top_tracks, recently_played, saved_tracks, top_genres')
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (tasteErr) {
+          console.warn("⚠️ Taste profile query error:", tasteErr.message);
+        }
+        if (tasteRow) {
+          tasteProfile = tasteRow as TasteProfile;
+          console.log("🎵 Loaded taste profile from DB", {
+            genres: (tasteRow.top_genres || []).length,
+            artists: (tasteRow.top_artists || []).length,
+            tracks: (tasteRow.top_tracks || []).length,
+          });
+        } else {
+          console.log("🎵 No taste profile row for user", userId);
+        }
+      } catch (err) {
+        console.warn("⚠️ Could not fetch Spotify taste profile:", err);
+      }
+    }
   }
 
   // 3) Load API keys
@@ -627,33 +697,25 @@ serve(async (req) => {
   }
 
   // 5) Build OpenAI prompt
-  const useCustomRequest = !!(hasCustomRequest && customRequest && customRequest.trim());
-  const systemPrompt = buildSystemPrompt(useCustomRequest, avoidTracks, avoidArtists);
-  const userText = buildUserPrompt({
-    customRequest,
-    hasCustomRequest,
-    genre,
-    hasGenre
-  });
+  const tasteBlock = buildTasteBlock(tasteProfile);
+  const hasTaste = !!tasteBlock;
+  const systemPrompt = buildSystemPrompt(avoidTracks, avoidArtists, hasTaste);
+  let userText = buildUserPrompt({ vibe });
+  if (hasTaste) {
+    userText = `USER'S SPOTIFY LISTENING PROFILE (personalize recommendations to match):\n${tasteBlock}\n\n${userText}`;
+  }
 
   console.log("📝 System prompt length:", systemPrompt.length);
-  console.log("📝 User prompt:", userText);
+  console.log("📝 User prompt length:", userText.length);
+  console.log("🎵 Taste profile injected:", hasTaste);
 
-  // Build messages
+  // Build messages — image always included
   const messages: any[] = [
     {
       role: "system",
       content: systemPrompt
-    }
-  ];
-
-  if (useCustomRequest && customRequest) {
-    messages.push({
-      role: "user",
-      content: userText
-    });
-  } else {
-    messages.push({
+    },
+    {
       role: "user",
       content: [
         {
@@ -668,12 +730,12 @@ serve(async (req) => {
           }
         }
       ]
-    });
-  }
+    }
+  ];
 
   // 6) Call OpenAI with structured output
   const payload = {
-    model: "gpt-4o",
+    model: "gpt-4.1",
     messages: messages,
     response_format: {
       type: "json_schema",
@@ -700,8 +762,8 @@ serve(async (req) => {
                 required: ["title", "artist", "reason", "mood_tags", "search_query"],
                 additionalProperties: false
               },
-              minItems: 3,
-              maxItems: 3
+              minItems: 6,
+              maxItems: 6
             }
           },
           required: ["recommendations"],
@@ -709,8 +771,8 @@ serve(async (req) => {
         }
       }
     },
-    max_tokens: 800,
-    temperature: 0.6 // Balanced: creativity in content, reliability in structure (0.5-0.7 range)
+    max_tokens: 1200,
+    temperature: 0.75 // Lean into discovery / creative picks
   };
 
   console.log("📤 Calling OpenAI with structured output");

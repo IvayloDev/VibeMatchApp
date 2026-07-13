@@ -13,7 +13,6 @@ import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { useAuth } from '../../../lib/AuthContext';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
-import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
 
 const { width, height } = Dimensions.get('window');
 
@@ -27,7 +26,7 @@ const DesignColors = {
 };
 
 type RootStackParamList = {
-  RecommendationType: { image: string };
+  VibeSelection: { image: string };
   Payment: undefined;
 };
 
@@ -107,7 +106,7 @@ const DashboardScreen = () => {
         [{ resize: { width: 800 } }],
         { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
       );
-      navigation.navigate('RecommendationType', { image: manipResult.uri });
+      navigation.navigate('VibeSelection', { image: manipResult.uri });
     }
   };
 
@@ -179,7 +178,7 @@ const DashboardScreen = () => {
                   style={styles.creditsBadge}
                 >
                   <View style={styles.creditsTextContainer}>
-                    <AnimatedCounter value={credits} duration={800} textStyle={styles.creditsValue} />
+                    <Text style={styles.creditsValue}>{credits}</Text>
                     <Text style={styles.creditsText}> CREDITS</Text>
                   </View>
                 </Pressable>

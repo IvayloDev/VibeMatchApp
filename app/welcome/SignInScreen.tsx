@@ -10,6 +10,7 @@ import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase'
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { getSpotifyConnectionStatus } from '../../lib/spotify';
 
 const { width, height } = Dimensions.get('window');
 
@@ -18,6 +19,7 @@ type RootStackParamList = {
   Welcome: undefined;
   SignUp: undefined;
   SignIn: undefined;
+  ConnectSpotify: undefined;
   MainTabs: undefined;
 };
 
@@ -30,22 +32,34 @@ const SignInScreen = () => {
   const [showGuestModal, setShowGuestModal] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  const routeAfterAuth = async () => {
+    const status = await getSpotifyConnectionStatus();
+    navigation.reset({
+      index: 0,
+      routes: [{ name: status.connected ? 'MainTabs' : 'ConnectSpotify' }],
+    });
+  };
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const canSubmit = email.trim().length > 0 && password.length > 0 && !loading;
+
   const handleSignIn = async () => {
-    if (!email || !password) {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
+    if (!emailRegex.test(cleanEmail)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
     setLoading(true);
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
       Alert.alert('Sign In Error', error.message);
     } else if (data?.user) {
-      // Navigate to main app on successful sign-in
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'MainTabs' }],
-      });
+      await routeAfterAuth();
     }
   };
 
@@ -54,11 +68,7 @@ const SignInScreen = () => {
     try {
       const result = await signInWithGoogle();
       if (result.success) {
-        // Navigate to main app on successful sign-in
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'MainTabs' }],
-        });
+        await routeAfterAuth();
       } else if (result.error) {
         Alert.alert('Google Sign-In Error', result.error);
       }
@@ -74,11 +84,7 @@ const SignInScreen = () => {
     try {
       const result = await signInWithApple();
       if (result.success) {
-        // Navigate to main app on successful sign-in
-        navigation.reset({
-          index: 0,
-          routes: [{ name: 'MainTabs' }],
-        });
+        await routeAfterAuth();
       } else if (result.error) {
         Alert.alert('Apple Sign-In Error', result.error);
       }
@@ -172,9 +178,9 @@ const SignInScreen = () => {
 
               {/* Sign In Button - Solid Red */}
               <TouchableOpacity
-                style={styles.signInButton}
+                style={[styles.signInButton, !canSubmit && { opacity: 0.5 }]}
                 onPress={handleSignIn}
-                disabled={loading}
+                disabled={!canSubmit}
                 activeOpacity={0.9}
               >
                 {loading ? (
@@ -268,9 +274,9 @@ const SignInScreen = () => {
           if (granted) {
             console.log('✅ Guest free credits granted');
           }
-          
-          // Navigate to main app
-          navigation.navigate('MainTabs');
+
+          // Guests must also connect Spotify
+          await routeAfterAuth();
         }}
         onSignUp={() => {
           setShowGuestModal(false);

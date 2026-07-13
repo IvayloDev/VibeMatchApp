@@ -8,6 +8,7 @@ import { LinearGradientFallback as LinearGradient } from '../../lib/components/L
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
 import { useAuth } from '../../lib/AuthContext';
+import { getSpotifyConnectionStatus } from '../../lib/spotify';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 
 // Define the navigation stack param list
@@ -15,6 +16,8 @@ type RootStackParamList = {
   Welcome: undefined;
   SignUp: undefined;
   SignIn: undefined;
+  ConnectSpotify: undefined;
+  Onboarding: undefined;
   MainTabs: undefined;
 };
 
@@ -24,7 +27,7 @@ const { width, height } = Dimensions.get('window');
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user, loading } = useAuth();
+  const { user, loading, spotifyConnected } = useAuth();
   const [showGuestModal, setShowGuestModal] = useState(false);
 
   // Animation values for wave effect
@@ -98,15 +101,18 @@ const WelcomeScreen = () => {
     createWaveAnimation();
   }, []);
 
-  // Redirect to MainTabs if user is already logged in
+  // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
+    console.log('[Welcome] auth effect — loading:', loading, 'user:', !!user, 'spotifyConnected:', spotifyConnected);
     if (!loading && user) {
+      const dest = spotifyConnected ? 'MainTabs' : 'ConnectSpotify';
+      console.log('[Welcome] logged-in user detected → resetting to', dest);
       navigation.reset({
         index: 0,
-        routes: [{ name: 'MainTabs' }],
+        routes: [{ name: dest }],
       });
     }
-  }, [user, loading, navigation]);
+  }, [user, loading, spotifyConnected, navigation]);
   
   const handlePrivacyPolicyPress = async () => {
     try {
@@ -127,15 +133,29 @@ const WelcomeScreen = () => {
 
   const handleGuestModalContinue = async () => {
     setShowGuestModal(false);
-    
+
     // Grant free credits to guest user
     const granted = await grantGuestFreeCredits();
-    if (granted) {
-      console.log('✅ Guest free credits granted');
-    }
-    
-    // Navigate to main app
-    navigation.navigate('MainTabs');
+    console.log('[Guest] credits granted:', granted);
+
+    // Check Spotify connection — guests must connect too.
+    // Do NOT call refreshSpotifyStatus() here: it sets spotifyChecking=true in
+    // AuthContext which causes App.js to unmount NavigationContainer, wiping
+    // the navigation.reset we're about to perform.
+    const status = await getSpotifyConnectionStatus();
+    console.log('[Guest] Spotify status:', JSON.stringify(status));
+
+    // Guests never skip onboarding — the onboardingComplete flag belongs to
+    // registered-user sessions and must not short-circuit the guest path.
+    let target: keyof RootStackParamList;
+    if (!status.connected) target = 'ConnectSpotify';
+    else target = 'Onboarding';
+
+    console.log('[Guest] Navigating to:', target);
+    navigation.reset({
+      index: 0,
+      routes: [{ name: target }],
+    });
   };
 
   const handleGuestModalSignUp = () => {

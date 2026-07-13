@@ -7,7 +7,7 @@ import { LinearGradientFallback as LinearGradient } from '../../lib/components/L
 import { BlurViewFallback as BlurView } from '../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import DashboardScreen from '../tabs/home/DashboardScreen';
-import RecommendationTypeScreen from '../tabs/home/RecommendationTypeScreen';
+import VibeSelectionScreen from '../tabs/home/VibeSelectionScreen';
 import AnalyzingScreen from '../tabs/home/AnalyzingScreen';
 import ResultsScreen from '../tabs/home/ResultsScreen';
 import HistoryScreen from '../tabs/history/HistoryScreen';
@@ -20,12 +20,12 @@ const HomeStack = createNativeStackNavigator();
 const HistoryStack = createNativeStackNavigator();
 const ProfileStack = createNativeStackNavigator();
 
-// Home Stack (Dashboard, RecommendationType, Analyzing, Results)
+// Home Stack (Dashboard, VibeSelection, Analyzing, Results)
 const HomeStackNavigator = () => {
   return (
     <HomeStack.Navigator screenOptions={{ headerShown: false }}>
       <HomeStack.Screen name="Dashboard" component={DashboardScreen} />
-      <HomeStack.Screen name="RecommendationType" component={RecommendationTypeScreen} />
+      <HomeStack.Screen name="VibeSelection" component={VibeSelectionScreen} />
       <HomeStack.Screen 
         name="Analyzing" 
         component={AnalyzingScreen}
