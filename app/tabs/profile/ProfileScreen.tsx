@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
+import { trackEvent } from '../../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -85,6 +86,11 @@ const ProfileScreen = () => {
         }
       ]
     );
+  };
+
+  const handleRegister = () => {
+    trackEvent('register_cta_tapped', { source: 'profile' });
+    navigation.navigate('SignUp');
   };
 
   const handleDeleteProfile = () => {
@@ -300,25 +306,39 @@ const ProfileScreen = () => {
           </LinearGradient>
         </Animatable.View>
 
-        {/* Sign Out Button */}
-        <TouchableOpacity
-          style={styles.signOutButton}
-          onPress={handleSignOut}
-          activeOpacity={0.8}
-        >
-          <MaterialCommunityIcons name="logout" size={20} color="#FF3B30" />
-          <Text style={styles.signOutButtonText}>Sign Out</Text>
-        </TouchableOpacity>
+        {user ? (
+          <>
+            {/* Sign Out Button */}
+            <TouchableOpacity
+              style={styles.signOutButton}
+              onPress={handleSignOut}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="logout" size={20} color="#FF3B30" />
+              <Text style={styles.signOutButtonText}>Sign Out</Text>
+            </TouchableOpacity>
 
-        {/* Delete Profile Button */}
-        <TouchableOpacity
-          style={styles.deleteProfileButton}
-          onPress={handleDeleteProfile}
-          activeOpacity={0.8}
-        >
-          <MaterialCommunityIcons name="delete" size={20} color="#FF453A" />
-          <Text style={styles.deleteProfileButtonText}>Delete Profile</Text>
-        </TouchableOpacity>
+            {/* Delete Profile Button */}
+            <TouchableOpacity
+              style={styles.deleteProfileButton}
+              onPress={handleDeleteProfile}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="delete" size={20} color="#FF453A" />
+              <Text style={styles.deleteProfileButtonText}>Delete Profile</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          /* Guest: prompt to create an account for a free credit */
+          <TouchableOpacity
+            style={styles.registerCtaButton}
+            onPress={handleRegister}
+            activeOpacity={0.85}
+          >
+            <MaterialCommunityIcons name="account-plus" size={20} color="#FFFFFF" />
+            <Text style={styles.registerCtaButtonText}>Create account - get 1 free credit</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
@@ -485,6 +505,27 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#FF3B30',
+  },
+  registerCtaButton: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.xl,
+    paddingVertical: Spacing.md,
+    backgroundColor: '#f4258c',
+    borderRadius: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    shadowColor: '#f4258c',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  registerCtaButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   signOutButton: {
     marginHorizontal: Spacing.md,

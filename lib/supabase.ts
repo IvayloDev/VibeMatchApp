@@ -402,7 +402,8 @@ export async function getImageSignedUrl(filePath: string): Promise<string | null
  */
 export async function validatePurchase(
   transactionId: string,
-  productId: string
+  productId: string,
+  bonus: number = 0
 ): Promise<{
   success: boolean;
   creditsGranted?: number;
@@ -425,6 +426,8 @@ export async function validatePurchase(
         transactionId,
         productId,
         platform: Platform.OS,
+        // Launch offer bonus credits (server-side capped and validated)
+        bonus,
       },
       headers: {
         Authorization: `Bearer ${session.access_token}`,
@@ -489,7 +492,8 @@ export async function validatePurchase(
 export async function validatePurchaseWithRetry(
   transactionId: string,
   productId: string,
-  maxRetries: number = 3
+  maxRetries: number = 3,
+  bonus: number = 0
 ): Promise<{
   success: boolean;
   creditsGranted?: number;
@@ -509,7 +513,7 @@ export async function validatePurchaseWithRetry(
       retriesAttempted++;
     }
 
-    const result = await validatePurchase(transactionId, productId);
+    const result = await validatePurchase(transactionId, productId, bonus);
 
     // If successful or already processed, return immediately
     if (result.success || result.alreadyProcessed) {

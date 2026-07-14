@@ -13,6 +13,8 @@ import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
+import { startLaunchOffer } from '../../../lib/launchOffer';
+import { trackEvent } from '../../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -123,7 +125,7 @@ const ResultsScreen = () => {
     if (!fromFreshMatch) return;
     const t = setTimeout(() => {
       maybeRequestReview();
-    }, 2500);
+    }, 3500);
     return () => clearTimeout(t);
   }, []);
 
@@ -527,6 +529,13 @@ const ResultsScreen = () => {
     }
   };
 
+  const handleStartExploring = () => {
+    // Kick off the launch offer before resetting navigation
+    startLaunchOffer().catch(() => {});
+    trackEvent('launch_offer_started');
+    handleBackPress();
+  };
+
   const handleContinueToResults = () => {
     // Hide match cards and show main results content
     setShowMatchCards(false);
@@ -689,17 +698,12 @@ const ResultsScreen = () => {
     );
   };
 
+  const hasBottomArea = !!fromOnboarding;
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
       {/* Floating Action Buttons */}
-      {fromOnboarding ? (
-        <View style={[styles.floatingActions, styles.floatingActionsCenter, { top: insets.top + 10 }]}>
-          <TouchableOpacity onPress={handleBackPress} style={styles.exploreButton}>
-            <Text style={styles.exploreButtonText}>Start Exploring</Text>
-            <MaterialCommunityIcons name="arrow-right" size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      ) : (
+      {!fromOnboarding && (
         <View style={[styles.floatingActions, { top: insets.top + 10 }]}>
           <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
             <MaterialCommunityIcons name="arrow-left" size={24} color={Colors.textPrimary} />
@@ -997,9 +1001,9 @@ const ResultsScreen = () => {
           </Animated.View>
         )}
 
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, hasBottomArea && styles.scrollContentWithBottomArea]}
           showsVerticalScrollIndicator={false}
         >
           {/* Animated Content */}
@@ -1059,7 +1063,7 @@ const ResultsScreen = () => {
                   <Text style={styles.mainSongArtist}>
                     by {songs[0]?.artist || 'Unknown Artist'}
                   </Text>
-                  <Text style={styles.mainSongReason}>
+                  <Text style={styles.mainSongReason} numberOfLines={3} ellipsizeMode="tail">
                     {songs[0]?.reason || ''}
                   </Text>
                   {songs[0]?.spotify_url && (
@@ -1098,14 +1102,24 @@ const ResultsScreen = () => {
                     }
                   ]}
                 >
+                  {song?.album_cover ? (
+                    <Image
+                      source={{ uri: song.album_cover }}
+                      style={styles.alternativeAlbumArt}
+                    />
+                  ) : (
+                    <View style={[styles.alternativeAlbumArt, styles.alternativeAlbumArtFallback]}>
+                      <MaterialCommunityIcons name="music-note" size={24} color={Colors.textSecondary} />
+                    </View>
+                  )}
                   <View style={styles.alternativeInfo}>
                     <Text style={styles.alternativeTitle} numberOfLines={1}>
                       {song?.title || 'Unknown Title'}
                     </Text>
-                    <Text style={styles.alternativeArtist} numberOfLines={2}>
+                    <Text style={styles.alternativeArtist} numberOfLines={1}>
                       by {song?.artist || 'Unknown Artist'}
                     </Text>
-                    <Text style={styles.alternativeReason}>
+                    <Text style={styles.alternativeReason} numberOfLines={2} ellipsizeMode="tail">
                       {song?.reason || ''}
                     </Text>
                   </View>
@@ -1123,6 +1137,26 @@ const ResultsScreen = () => {
             </View>
           </Animated.View>
         </Animated.View>
+
+          {/* Start Exploring lives inside the scroll content so it is never
+              clipped by the bottom tab bar and is always reachable. */}
+          {fromOnboarding && (
+            <TouchableOpacity
+              style={styles.exploreButtonWrapper}
+              onPress={handleStartExploring}
+              activeOpacity={0.85}
+            >
+              <LinearGradient
+                colors={['#FF3B30', '#FF2D55']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.exploreButton}
+              >
+                <Text style={styles.exploreButtonText}>Start Exploring</Text>
+                <MaterialCommunityIcons name="arrow-right" size={22} color="#FFFFFF" />
+              </LinearGradient>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       </View>
 
@@ -1186,6 +1220,11 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: Spacing.xl,
+  },
+  scrollContentWithBottomArea: {
+    // Clears the floating bottom tab bar so the inline Start Exploring button
+    // is fully visible when scrolled to the end.
+    paddingBottom: 120,
   },
   
   // Animation styles
@@ -1434,16 +1473,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     zIndex: 100,
   },
-  floatingActionsCenter: {
-    justifyContent: 'center',
+  exploreButtonWrapper: {
+    marginHorizontal: Layout.screenPadding,
+    marginTop: Spacing.lg,
   },
   exploreButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#FF3B30',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.md + 2,
     borderRadius: BorderRadius.round,
     shadowColor: '#FF3B30',
     shadowOffset: { width: 0, height: 4 },
@@ -1454,7 +1494,7 @@ const styles = StyleSheet.create({
   exploreButtonText: {
     color: '#FFFFFF',
     fontWeight: '700',
-    fontSize: 15,
+    fontSize: 16,
     letterSpacing: 0.3,
   },
   backButton: {
@@ -1604,6 +1644,18 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: Colors.accent.yellow,
     minHeight: 0, // Allow items to expand based on content
+  },
+  alternativeAlbumArt: {
+    width: 48,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    marginRight: Spacing.md,
+    backgroundColor: Colors.cardBackgroundSecondary,
+    flexShrink: 0,
+  },
+  alternativeAlbumArtFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   alternativeInfo: {
     flex: 1,

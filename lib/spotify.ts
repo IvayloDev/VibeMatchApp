@@ -33,10 +33,10 @@ const STORAGE_KEY_GUEST_TASTE = '@tunematch/guest_spotify_taste_profile';
 // ---------- Types ----------
 
 export type SpotifyTasteProfile = {
-  top_artists: Array<{ id: string; name: string; genres: string[] }>;
-  top_tracks: Array<{ id: string; name: string; artist: string }>;
-  recently_played: Array<{ id: string; name: string; artist: string }>;
-  saved_tracks: Array<{ id: string; name: string; artist: string }>;
+  top_artists: Array<{ id: string; name: string; genres: string[]; image?: string | null }>;
+  top_tracks: Array<{ id: string; name: string; artist: string; image?: string | null }>;
+  recently_played: Array<{ id: string; name: string; artist: string; image?: string | null }>;
+  saved_tracks: Array<{ id: string; name: string; artist: string; image?: string | null }>;
   top_genres: string[];
   refreshed_at: string;
 };

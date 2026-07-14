@@ -31,23 +31,23 @@ Notifications.setNotificationHandler({
 const REMINDERS: { offsetDays: number; title: string; body: string }[] = [
   {
     offsetDays: 3,
-    title: 'VibeMatch',
+    title: 'TuneMatch',
     body: 'Your camera roll has a soundtrack 🎵 Find today’s vibe.',
   },
   {
     offsetDays: 10,
-    title: 'VibeMatch',
+    title: 'TuneMatch',
     body: 'New photos? New playlist. Match a vibe in seconds.',
   },
   {
     offsetDays: 17,
-    title: 'VibeMatch',
+    title: 'TuneMatch',
     body: 'Miss the music? Turn a moment into a song 🎧',
   },
   {
     offsetDays: 24,
-    title: 'VibeMatch',
-    body: 'That sunset deserves a soundtrack. Open VibeMatch.',
+    title: 'TuneMatch',
+    body: 'That sunset deserves a soundtrack. Open TuneMatch.',
   },
 ];
 

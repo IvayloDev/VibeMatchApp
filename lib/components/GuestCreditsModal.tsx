@@ -77,7 +77,7 @@ export const GuestCreditsModal: React.FC<GuestCreditsModalProps> = ({
                       color={Colors.accent.green} 
                     />
                     <Text style={styles.infoText}>
-                      <Text style={styles.highlight}>Create Account:</Text> Get {REGISTERED_FREE_CREDITS} free credits
+                      <Text style={styles.highlight}>Create Account:</Text> Get {REGISTERED_FREE_CREDITS} free credit{REGISTERED_FREE_CREDITS === 1 ? '' : 's'}
                     </Text>
                   </View>
                 </View>

@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Dimensions } from 'react-native';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { View, StyleSheet, Alert, ScrollView, Dimensions, TouchableOpacity } from 'react-native';
 import { Text, Button, IconButton, ActivityIndicator } from 'react-native-paper';
 import { useNavigation, CommonActions } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,6 +14,8 @@ import {
 import { getUserCredits, getLocalCredits, addLocalCredits, storeLocalPurchase } from '../../lib/credits';
 import { validatePurchaseWithRetry } from '../../lib/supabase';
 import { storePendingValidation, removePendingValidation } from '../../lib/credits';
+import { getLaunchOfferState, getOfferBonus } from '../../lib/launchOffer';
+import { trackEvent } from '../../lib/posthog';
 import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
@@ -82,7 +84,60 @@ const PaymentScreen = () => {
   const [packages, setPackages] = useState<DisplayPackage[]>([]);
   const [currentCredits, setCurrentCredits] = useState<number>(0);
   const [isUsingMockData, setIsUsingMockData] = useState(false);
+  const [offerActive, setOfferActive] = useState(false);
+  const [offerRemainingMs, setOfferRemainingMs] = useState(0);
+  const offerShownTracked = useRef(false);
   const isAuthenticated = !!user;
+
+  // Launch offer countdown - read state on mount, tick every second while active
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let cancelled = false;
+
+    const initOffer = async () => {
+      const state = await getLaunchOfferState();
+      if (cancelled || !state.active) return;
+
+      const deadline = Date.now() + state.remainingMs;
+      setOfferActive(true);
+      setOfferRemainingMs(state.remainingMs);
+
+      if (!offerShownTracked.current) {
+        offerShownTracked.current = true;
+        trackEvent('launch_offer_shown');
+      }
+
+      interval = setInterval(() => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          // Offer expired while the screen is mounted - hide banner and revert labels
+          setOfferActive(false);
+          setOfferRemainingMs(0);
+          trackEvent('launch_offer_expired');
+          if (interval) {
+            clearInterval(interval);
+            interval = null;
+          }
+        } else {
+          setOfferRemainingMs(remaining);
+        }
+      }, 1000);
+    };
+
+    initOffer();
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  const formatCountdown = (ms: number): string => {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
 
   const loadData = useCallback(async () => {
     try {
@@ -184,7 +239,11 @@ const PaymentScreen = () => {
 
     try {
       setProcessingPackage(pkg.id);
-      
+
+      // Snapshot launch offer state at tap time so a mid-purchase expiry
+      // doesn't change what the user was promised
+      const offerSnapshot = await getLaunchOfferState();
+
       // Need to get the actual package for purchase
       const availablePackages = await getAvailablePackages();
       const actualPackage = availablePackages.find(p => p.identifier === pkg.id);
@@ -198,17 +257,24 @@ const PaymentScreen = () => {
       
       if (result.success && result.transactionId && result.productId) {
         const creditsAmount = getCreditsForProduct(result.productId) || 0;
-        
+        const offerBonus = offerSnapshot.active ? getOfferBonus(result.productId) : 0;
+
         if (isAuthenticated) {
           // User is authenticated - validate server-side and add to account
           // Use retry logic to handle transient network/server errors
-          const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
-          
+          // The launch offer bonus is passed to the server, which caps and grants it
+          const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3, offerBonus);
+
           if (validation.success && validation.creditsGranted) {
             // Remove from pending if it was there
             await removePendingValidation(result.transactionId);
-            
+
             triggerHaptic('success');
+            trackEvent('purchase_completed', {
+              product_id: result.productId,
+              credits_granted: validation.creditsGranted,
+              offer_active: offerSnapshot.active,
+            });
             setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
             Alert.alert(
               '🎉 Purchase Successful!',
@@ -218,7 +284,7 @@ const PaymentScreen = () => {
           } else {
             // Validation failed even after retries
             // Store as pending validation so it can be retried later
-            await storePendingValidation(result.transactionId, result.productId, creditsAmount);
+            await storePendingValidation(result.transactionId, result.productId, creditsAmount + offerBonus);
             
             triggerHaptic('warning');
             
@@ -241,7 +307,7 @@ const PaymentScreen = () => {
                     text: 'Retry Now', 
                     onPress: async () => {
                       setLoading(true);
-                      const retryValidation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
+                      const retryValidation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3, offerBonus);
                       if (retryValidation.success && retryValidation.creditsGranted) {
                         await removePendingValidation(result.transactionId);
                         await loadData();
@@ -262,19 +328,25 @@ const PaymentScreen = () => {
           }
         } else {
           // Apple Guideline 5.1.1: Allow purchases WITHOUT registration
-          // Store credits locally on device
-          await addLocalCredits(creditsAmount);
-          await storeLocalPurchase(result.transactionId, result.productId, creditsAmount);
-          
-          const newLocalCredits = currentCredits + creditsAmount;
+          // Store credits locally on device (base + launch offer bonus)
+          const totalCredits = creditsAmount + offerBonus;
+          await addLocalCredits(totalCredits);
+          await storeLocalPurchase(result.transactionId, result.productId, totalCredits);
+
+          const newLocalCredits = currentCredits + totalCredits;
           setCurrentCredits(newLocalCredits);
-          
+
           triggerHaptic('success');
-          
+          trackEvent('purchase_completed', {
+            product_id: result.productId,
+            credits_granted: totalCredits,
+            offer_active: offerSnapshot.active,
+          });
+
           // Offer OPTIONAL registration for cross-device access
           Alert.alert(
             '🎉 Purchase Successful!',
-            `You received ${creditsAmount} credits!\n\nYour balance: ${newLocalCredits} credits\n\nWant to access your credits from any device? Sign up for free to enable cross-device sync.`,
+            `You received ${totalCredits} credits!${offerBonus > 0 ? ` (includes ${offerBonus} launch offer bonus)` : ''}\n\nYour balance: ${newLocalCredits} credits\n\nWant to access your credits from any device? Sign up for free to enable cross-device sync.`,
             [
               { 
                 text: 'Maybe Later', 
@@ -337,6 +409,40 @@ const PaymentScreen = () => {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Launch Offer Countdown Banner */}
+        {offerActive && (
+          <View style={styles.offerBanner}>
+            <LinearGradient
+              colors={['#FF3B30', '#FF3B30DD']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.offerBannerGradient}
+            >
+              <MaterialCommunityIcons name="rocket-launch" size={18} color="#FFF" />
+              <Text style={styles.offerBannerText}>
+                Launch offer - extra credits! Ends in {formatCountdown(offerRemainingMs)}
+              </Text>
+            </LinearGradient>
+          </View>
+        )}
+
+        {/* Guest Register CTA */}
+        {!isAuthenticated && (
+          <TouchableOpacity
+            style={styles.registerCta}
+            activeOpacity={0.8}
+            onPress={() => {
+              triggerHaptic('light');
+              trackEvent('register_cta_tapped', { source: 'paywall' });
+              navigation.dispatch(CommonActions.navigate({ name: 'SignUp' }));
+            }}
+          >
+            <MaterialCommunityIcons name="account-plus" size={18} color="#FF3B30" />
+            <Text style={styles.registerCtaText}>Create account - get 1 free credit</Text>
+            <MaterialCommunityIcons name="chevron-right" size={18} color="#FF3B30" />
+          </TouchableOpacity>
+        )}
+
         {/* Hero Section - Current Credits */}
         <View style={styles.heroSection}>
           <LinearGradient
@@ -372,7 +478,9 @@ const PaymentScreen = () => {
               const config = getPackageConfig(pkg.productId);
               const isMostPopular = config.isMostPopular;
               const credits = getCreditsForProduct(pkg.productId);
-              
+              const offerBonus = offerActive ? getOfferBonus(pkg.productId) : 0;
+              const displayCredits = (credits || 0) + offerBonus;
+
               return (
                 <View 
                   key={pkg.id} 
@@ -399,7 +507,14 @@ const PaymentScreen = () => {
                       <View style={styles.packageLeft}>
                         <Text style={styles.packageIcon}>{config.icon || '🎵'}</Text>
                         <View style={styles.creditsInfo}>
-                          <Text style={styles.packageCredits}>{credits}</Text>
+                          {offerBonus > 0 ? (
+                            <View style={styles.boostedCreditsRow}>
+                              <Text style={styles.strikethroughCredits}>{credits}</Text>
+                              <Text style={styles.packageCredits}>{displayCredits}</Text>
+                            </View>
+                          ) : (
+                            <Text style={styles.packageCredits}>{credits}</Text>
+                          )}
                           <Text style={styles.packageCreditsLabel}>Credits</Text>
                           {config.bonus && (
                             <View style={styles.bonusContainer}>
@@ -409,6 +524,17 @@ const PaymentScreen = () => {
                               >
                                 <MaterialCommunityIcons name="gift" size={12} color="#FFF" />
                                 <Text style={styles.bonusText}>{config.bonus}</Text>
+                              </LinearGradient>
+                            </View>
+                          )}
+                          {offerBonus > 0 && (
+                            <View style={styles.bonusContainer}>
+                              <LinearGradient
+                                colors={['#FF3B30', '#FF3B30DD']}
+                                style={styles.bonusGradient}
+                              >
+                                <MaterialCommunityIcons name="rocket-launch" size={12} color="#FFF" />
+                                <Text style={styles.bonusText}>+{offerBonus} bonus</Text>
                               </LinearGradient>
                             </View>
                           )}
@@ -481,6 +607,61 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.md,
   },
   
+  // Launch Offer Banner
+  offerBanner: {
+    marginBottom: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    overflow: 'hidden',
+    ...Shadows.card,
+  },
+  offerBannerGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.xs,
+  },
+  offerBannerText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+
+  // Guest Register CTA
+  registerCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    backgroundColor: '#FF3B3015',
+  },
+  registerCtaText: {
+    color: '#FF3B30',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  // Boosted credits (launch offer)
+  boostedCreditsRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+  },
+  strikethroughCredits: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    textDecorationLine: 'line-through',
+  },
+
   // Hero Section
   heroSection: {
     marginBottom: Spacing.lg,

@@ -23,8 +23,8 @@ const json = (body: unknown, status = 200) =>
 
 const SPOTIFY_API = "https://api.spotify.com/v1";
 
-type CompactArtist = { id: string; name: string; genres: string[] };
-type CompactTrack = { id: string; name: string; artist: string };
+type CompactArtist = { id: string; name: string; genres: string[]; image: string | null };
+type CompactTrack = { id: string; name: string; artist: string; image: string | null };
 
 async function spotifyGet(path: string, token: string): Promise<any | null> {
   const resp = await fetch(`${SPOTIFY_API}${path}`, {
@@ -69,6 +69,8 @@ function compactArtist(a: any): CompactArtist {
     id: a?.id ?? "",
     name: a?.name ?? "",
     genres: Array.isArray(a?.genres) ? a.genres.slice(0, 5) : [],
+    // Index 1 = ~300px medium size, fall back to the largest, then null
+    image: a?.images?.[1]?.url ?? a?.images?.[0]?.url ?? null,
   };
 }
 
@@ -77,6 +79,7 @@ function compactTrack(t: any): CompactTrack {
     id: t?.id ?? "",
     name: t?.name ?? "",
     artist: t?.artists?.[0]?.name ?? "",
+    image: t?.album?.images?.[1]?.url ?? t?.album?.images?.[0]?.url ?? null,
   };
 }
 

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Alert,
   Image,
+  ScrollView,
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,7 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { supabase } from '../../lib/supabase';
-import { loadGuestTasteProfile } from '../../lib/spotify';
+import { loadGuestTasteProfile, syncTasteProfile } from '../../lib/spotify';
 import { useAuth } from '../../lib/AuthContext';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
@@ -72,10 +73,10 @@ function derivePersonality(genres: string[]): Personality {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type TasteProfile = {
-  top_artists?: { name: string; genres?: string[] }[];
-  top_tracks?: { name: string; artist?: string }[];
+  top_artists?: { name: string; genres?: string[]; image?: string | null }[];
+  top_tracks?: { name: string; artist?: string; image?: string | null }[];
   top_genres?: string[];
-  recently_played?: { name: string; artist?: string }[];
+  recently_played?: { name: string; artist?: string; image?: string | null }[];
 };
 
 type RootStackParamList = {
@@ -135,7 +136,7 @@ const WelcomePage: React.FC<{ user: any; onNext: () => void }> = ({ user, onNext
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const GenrePage: React.FC<{ genre: string; onNext: () => void }> = ({ genre, onNext }) => {
+const GenrePage: React.FC<{ genres: string[]; onNext: () => void }> = ({ genres, onNext }) => {
   const bigScale = useRef(new Animated.Value(0.4)).current;
   const bigOpacity = useRef(new Animated.Value(0)).current;
   const labelOpacity = useRef(new Animated.Value(0)).current;
@@ -151,9 +152,11 @@ const GenrePage: React.FC<{ genre: string; onNext: () => void }> = ({ genre, onN
     ]).start();
   }, []);
 
-  const displayGenre = genre
-    ? genre.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-    : 'Mixed';
+  const formatGenre = (g: string) =>
+    g.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+  const displayGenre = genres[0] ? formatGenre(genres[0]) : 'Mixed';
+  const runnerUps = genres.slice(1, 3);
 
   return (
     <View style={styles.page}>
@@ -173,6 +176,17 @@ const GenrePage: React.FC<{ genre: string; onNext: () => void }> = ({ genre, onN
         <Animated.Text style={[styles.genreCaption, { opacity: labelOpacity }]}>
           This genre showed up more than any other{'\n'}in your listening history
         </Animated.Text>
+
+        {runnerUps.length > 0 && (
+          <Animated.View style={[styles.genreRunnerUpRow, { opacity: labelOpacity }]}>
+            {runnerUps.map((g, i) => (
+              <View key={g} style={styles.genreRunnerUpChip}>
+                <Text style={styles.genreRunnerUpRank}>#{i + 2}</Text>
+                <Text style={styles.genreRunnerUpText} numberOfLines={1}>{formatGenre(g)}</Text>
+              </View>
+            ))}
+          </Animated.View>
+        )}
       </View>
 
       <TouchableOpacity style={styles.nextBtn} onPress={() => { triggerHaptic('medium'); onNext(); }} activeOpacity={0.85}>
@@ -184,7 +198,7 @@ const GenrePage: React.FC<{ genre: string; onNext: () => void }> = ({ genre, onN
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const ArtistPage: React.FC<{ artist: string; onNext: () => void }> = ({ artist, onNext }) => {
+const ArtistPage: React.FC<{ artist: string; image?: string | null; onNext: () => void }> = ({ artist, image, onNext }) => {
   const slideY = useRef(new Animated.Value(40)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const glow = useRef(new Animated.Value(0)).current;
@@ -215,9 +229,13 @@ const ArtistPage: React.FC<{ artist: string; onNext: () => void }> = ({ artist, 
           <Animated.View style={[styles.artistGlow, {
             opacity: glow.interpolate({ inputRange: [0, 1], outputRange: [0.2, 0.55] }),
           }]} />
-          <LinearGradient colors={[C.primary, C.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.artistAvatar}>
-            <MaterialCommunityIcons name="account-music" size={52} color="#FFF" />
-          </LinearGradient>
+          {image ? (
+            <Image source={{ uri: image }} style={styles.artistAvatarImage} resizeMode="cover" />
+          ) : (
+            <LinearGradient colors={[C.primary, C.purple]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.artistAvatar}>
+              <MaterialCommunityIcons name="account-music" size={52} color="#FFF" />
+            </LinearGradient>
+          )}
         </Animated.View>
 
         <Animated.Text style={[styles.bigArtistText, { opacity, transform: [{ translateY: slideY }] }]}>
@@ -285,7 +303,7 @@ const PersonalityPage: React.FC<{ personality: Personality; onNext: () => void }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const TracksPage: React.FC<{ tracks: { name: string; artist?: string }[]; onNext: () => void }> = ({ tracks, onNext }) => {
+const TracksPage: React.FC<{ tracks: { name: string; artist?: string; image?: string | null }[]; onNext: () => void }> = ({ tracks, onNext }) => {
   const itemAnims = useRef(tracks.slice(0, 5).map(() => ({
     opacity: new Animated.Value(0),
     x: new Animated.Value(30),
@@ -307,7 +325,7 @@ const TracksPage: React.FC<{ tracks: { name: string; artist?: string }[]; onNext
   const display = tracks.slice(0, 5);
 
   return (
-    <View style={styles.page}>
+    <ScrollView style={styles.pageScroll} contentContainerStyle={styles.pageScrollContent} showsVerticalScrollIndicator={false}>
       <Text style={styles.statLabel}>SONGS THAT DEFINE YOU</Text>
       <Text style={styles.tracksSubtitle}>Your most-played tracks right now</Text>
 
@@ -323,11 +341,16 @@ const TracksPage: React.FC<{ tracks: { name: string; artist?: string }[]; onNext
             <View style={styles.trackRank}>
               <Text style={styles.trackRankText}>{i + 1}</Text>
             </View>
+            {track.image ? (
+              <Image source={{ uri: track.image }} style={styles.trackThumb} resizeMode="cover" />
+            ) : null}
             <View style={styles.trackInfo}>
               <Text style={styles.trackName} numberOfLines={1}>{track.name}</Text>
               {track.artist && <Text style={styles.trackArtist} numberOfLines={1}>{track.artist}</Text>}
             </View>
-            <MaterialCommunityIcons name="music-note" size={16} color={C.primary + '80'} />
+            {!track.image && (
+              <MaterialCommunityIcons name="music-note" size={16} color={C.primary + '80'} />
+            )}
           </Animated.View>
         ))}
       </View>
@@ -336,7 +359,7 @@ const TracksPage: React.FC<{ tracks: { name: string; artist?: string }[]; onNext
         <Text style={styles.nextBtnText}>One More Thing</Text>
         <MaterialCommunityIcons name="arrow-right" size={20} color="#FFF" />
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 };
 
@@ -565,7 +588,12 @@ const VibePage: React.FC<{
   }, []);
 
   return (
-    <Animated.View style={[styles.page, styles.vibePage, { opacity }]}>
+    <Animated.View style={[styles.pageScroll, { opacity }]}>
+      <ScrollView
+        style={styles.pageScroll}
+        contentContainerStyle={[styles.pageScrollContent, styles.vibePage]}
+        showsVerticalScrollIndicator={false}
+      >
       <Text style={styles.photoTitle}>Pick your vibe</Text>
       <Text style={styles.photoSubtitle}>
         We'll match songs to the energy of your story
@@ -603,6 +631,7 @@ const VibePage: React.FC<{
           </>
         )}
       </TouchableOpacity>
+      </ScrollView>
     </Animated.View>
   );
 };
@@ -626,22 +655,42 @@ const OnboardingScreen: React.FC = () => {
 
   // Load taste profile on mount
   useEffect(() => {
+    const fetchProfile = async (): Promise<TasteProfile | null> => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const { data } = await supabase
+          .from('spotify_taste_profiles')
+          .select('top_genres, top_artists, top_tracks')
+          .eq('user_id', session.user.id)
+          .maybeSingle();
+        return data ?? null;
+      }
+      const guestProfile = await loadGuestTasteProfile();
+      return (guestProfile as TasteProfile) ?? null;
+    };
+
     const loadProfile = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
-          const { data } = await supabase
-            .from('spotify_taste_profiles')
-            .select('top_genres, top_artists, top_tracks')
-            .eq('user_id', session.user.id)
-            .maybeSingle();
-          if (data) setProfile(data);
-        } else {
-          const guestProfile = await loadGuestTasteProfile();
-          if (guestProfile) setProfile(guestProfile as TasteProfile);
+        let data = await fetchProfile();
+
+        // Profiles synced before artwork was added have no image URLs.
+        // Re-sync once so existing users get artwork immediately instead of
+        // waiting for the 24h auto-refresh. One retry max - if the sync fails
+        // or images still aren't there, fall back to the profile without them.
+        if (data?.top_artists?.length && !data.top_artists[0]?.image) {
+          try {
+            const { success } = await syncTasteProfile();
+            if (success) {
+              data = (await fetchProfile()) ?? data;
+            }
+          } catch {
+            // Keep the image-less profile
+          }
         }
+
+        if (data) setProfile(data);
       } catch {
-        // Non-fatal — we'll show fallback content
+        // Non-fatal - we'll show fallback content
       }
     };
     loadProfile();
@@ -699,16 +748,17 @@ const OnboardingScreen: React.FC = () => {
   };
 
   // Derived stats
-  const topGenre = profile?.top_genres?.[0] ?? '';
+  const topGenres = profile?.top_genres ?? [];
   const topArtist = profile?.top_artists?.[0]?.name ?? '';
-  const topTracks = (profile?.top_tracks ?? []).map(t => ({ name: t.name, artist: t.artist }));
+  const topArtistImage = profile?.top_artists?.[0]?.image ?? null;
+  const topTracks = (profile?.top_tracks ?? []).map(t => ({ name: t.name, artist: t.artist, image: t.image }));
   const personality = derivePersonality(profile?.top_genres ?? []);
 
   const renderPage = () => {
     switch (page) {
       case 0: return <WelcomePage user={user} onNext={handleNext} />;
-      case 1: return <GenrePage genre={topGenre} onNext={handleNext} />;
-      case 2: return <ArtistPage artist={topArtist} onNext={handleNext} />;
+      case 1: return <GenrePage genres={topGenres} onNext={handleNext} />;
+      case 2: return <ArtistPage artist={topArtist} image={topArtistImage} onNext={handleNext} />;
       case 3: return <PersonalityPage personality={personality} onNext={handleNext} />;
       case 4: return <TracksPage tracks={topTracks} onNext={handleNext} />;
       case 5: return <CraftingPage onNext={handleNext} />;
@@ -819,6 +869,18 @@ const styles = StyleSheet.create({
   },
   page: {
     flex: 1,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Scrollable page variant - keeps the centered layout but lets content
+  // scroll on small devices so the CTA is always reachable
+  pageScroll: {
+    flex: 1,
+  },
+  pageScrollContent: {
+    flexGrow: 1,
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.lg,
     alignItems: 'center',
@@ -940,6 +1002,27 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 21,
   },
+  genreRunnerUpRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginTop: Spacing.xl,
+  },
+  genreRunnerUpChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: C.card,
+    borderWidth: 1,
+    borderColor: C.border,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.round,
+    maxWidth: width * 0.42,
+  },
+  genreRunnerUpRank: { color: C.primary, fontSize: 12, fontWeight: '800' },
+  genreRunnerUpText: { color: C.white, fontSize: 13, fontWeight: '500', flexShrink: 1 },
 
   // Artist page
   artistAvatarWrap: { alignItems: 'center', marginBottom: Spacing.lg, position: 'relative' },
@@ -958,6 +1041,13 @@ const styles = StyleSheet.create({
     borderRadius: 60,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  artistAvatarImage: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 2,
+    borderColor: C.primary + '60',
   },
   bigArtistText: {
     fontSize: 36,
@@ -1011,6 +1101,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   trackRankText: { color: C.primary, fontWeight: '800', fontSize: 13 },
+  trackThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: C.card,
+  },
   trackInfo: { flex: 1 },
   trackName: { color: C.white, fontWeight: '600', fontSize: 14 },
   trackArtist: { color: C.dim, fontSize: 12, marginTop: 2 },

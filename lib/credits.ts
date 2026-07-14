@@ -18,7 +18,7 @@ export const creditPackages: CreditPackage[] = [
 export const creditProductIds = creditPackages.map((pkg) => pkg.productId);
 
 // Free trial constants
-export const FREE_CREDITS_ON_SIGNUP = 3;
+export const FREE_CREDITS_ON_SIGNUP = 1;
 export const FIRST_ANALYSIS_FREE = true;
 
 // Local storage key for credits (Apple 5.1.1 compliance - allow purchases without registration)
@@ -236,7 +236,7 @@ export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, c
         // Clear local credits since we're not merging the guest free credit
         await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
         await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-        console.log(`ℹ️ Guest free credit not merged (registered users get 3 credits, not 1+3)`);
+        console.log(`ℹ️ Guest free credit not merged (registered users get their own signup credit, not 1+1)`);
       }
       return { merged: false, creditsMerged: 0 };
     }

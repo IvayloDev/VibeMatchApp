@@ -15,6 +15,7 @@ import { triggerHaptic } from '../../../lib/utils/haptics';
 import { deductCredits, refundCredits } from '../../../lib/credits';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
+import { trackEvent } from '../../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -297,7 +298,13 @@ const AnalyzingScreen = () => {
 
     const analyzePhoto = async () => {
       let uploadedFilePath: string | null = null;
-      
+      const scanStartTime = Date.now();
+      trackEvent('scan_started', {
+        vibe: selectedVibe,
+        from_onboarding: !!fromOnboarding,
+        signed_in: !!userId,
+      });
+
       try {
         setProgress(5);
         const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(image, userId || 'anonymous');
@@ -394,6 +401,12 @@ const AnalyzingScreen = () => {
         setProgress(90);
 
         if (!response.ok || data.error || !data.songs) {
+          trackEvent('scan_failed', {
+            reason: 'no_matches',
+            http_status: response.status,
+            vibe: selectedVibe,
+            duration_ms: Date.now() - scanStartTime,
+          });
           setProgress(100);
           Animated.timing(progressAnim, {
             toValue: 100,
@@ -418,6 +431,12 @@ const AnalyzingScreen = () => {
         const hasValidResponse = Array.isArray(songs) && songs.length >= 3;
 
         if (!hasValidResponse) {
+          trackEvent('scan_failed', {
+            reason: 'too_few_songs',
+            song_count: songs.length,
+            vibe: selectedVibe,
+            duration_ms: Date.now() - scanStartTime,
+          });
           setProgress(100);
           Animated.timing(progressAnim, {
             toValue: 100,
@@ -437,6 +456,13 @@ const AnalyzingScreen = () => {
           });
           return;
         }
+
+        trackEvent('scan_completed', {
+          vibe: selectedVibe,
+          song_count: songs.length,
+          from_onboarding: !!fromOnboarding,
+          duration_ms: Date.now() - scanStartTime,
+        });
 
         const deductionSuccess = await deductCredits(1);
         if (deductionSuccess) {
@@ -509,6 +535,12 @@ const AnalyzingScreen = () => {
         });
       } catch (error) {
         console.log('Error during analysis:', error);
+        trackEvent('scan_failed', {
+          reason: 'error',
+          error_message: error instanceof Error ? error.message : String(error),
+          vibe: selectedVibe,
+          duration_ms: Date.now() - scanStartTime,
+        });
         setProgress(100);
         Animated.timing(progressAnim, {
           toValue: 100,
@@ -593,7 +625,7 @@ const AnalyzingScreen = () => {
               <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={styles.headerTitle}>
-              <Text style={styles.headerSubtitle}>VibeMatch AI</Text>
+              <Text style={styles.headerSubtitle}>TuneMatch AI</Text>
               <Text style={styles.headerMainTitle}>Analysis</Text>
             </View>
             <View style={styles.headerSpacer} />

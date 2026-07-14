@@ -48,7 +48,7 @@ serve(async (req) => {
 
     // Parse request body
     const body = await req.json();
-    const { transactionId, productId, platform } = body;
+    const { transactionId, productId, platform, bonus } = body;
 
     if (!transactionId || !productId || !platform) {
       return new Response(
@@ -91,8 +91,8 @@ serve(async (req) => {
     }
 
     // Get credits for this product
-    const creditsToGrant = CREDITS_PER_PRODUCT[productId] || 0;
-    if (creditsToGrant === 0) {
+    const baseCredits = CREDITS_PER_PRODUCT[productId] || 0;
+    if (baseCredits === 0) {
       return new Response(
         JSON.stringify({ success: false, error: 'Invalid product ID' }),
         {
@@ -101,6 +101,12 @@ serve(async (req) => {
         }
       );
     }
+
+    // Launch offer bonus credits (client-requested, capped server-side)
+    // Only accepted for known product ids (enforced by the baseCredits check above)
+    const requestedBonus = Number(bonus) || 0;
+    const bonusCredits = Math.min(Math.max(0, Math.floor(requestedBonus)), 30);
+    const creditsToGrant = baseCredits + bonusCredits;
 
     // NOTE: RevenueCat validates receipts on their servers.
     // Since we're using RevenueCat, we trust their validation.
@@ -118,6 +124,8 @@ serve(async (req) => {
         validation_data: {
           validated_by: 'revenuecat',
           validated_at: new Date().toISOString(),
+          base_credits: baseCredits,
+          launch_offer_bonus: bonusCredits,
         },
       });
 

@@ -35,7 +35,15 @@ const ConnectSpotifyScreen: React.FC = () => {
         Alert.alert('Spotify Connection', result.error ?? 'Could not connect to Spotify');
         return;
       }
-      await refreshSpotifyStatus();
+      // Do NOT call refreshSpotifyStatus() for guests: it flips spotifyChecking
+      // in AuthContext, which unmounts the NavigationContainer (App.js shows the
+      // LoadingScreen) and then remounts it at getTarget() = 'Welcome' for a
+      // guest (no auth user) - bouncing them back to the splash and discarding
+      // the navigation.reset below. Registered users still need the refresh so
+      // their getTarget-based routing reflects the new connection.
+      if (user) {
+        await refreshSpotifyStatus();
+      }
       // Guests (no auth user) must always go through onboarding regardless of
       // any onboardingComplete flag left over from a prior registered session.
       const target = (user && onboardingComplete) ? 'MainTabs' : 'Onboarding';

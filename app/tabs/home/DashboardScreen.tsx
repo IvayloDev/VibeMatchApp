@@ -12,6 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { useAuth } from '../../../lib/AuthContext';
+import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 
 const { width, height } = Dimensions.get('window');
@@ -28,6 +29,7 @@ const DesignColors = {
 type RootStackParamList = {
   VibeSelection: { image: string };
   Payment: undefined;
+  SignUp: undefined;
 };
 
 const DashboardScreen = () => {
@@ -163,9 +165,9 @@ const DashboardScreen = () => {
                 <MaterialCommunityIcons name="account-circle" size={24} color="#FFFFFF" />
               </View>
               
-              {/* Center: VibeMatch Title */}
+              {/* Center: TuneMatch Title */}
               <View style={styles.titleContainer}>
-                <Text style={styles.appTitle}>VibeMatch</Text>
+                <Text style={styles.appTitle}>TuneMatch</Text>
                 <View style={styles.titleUnderline} />
               </View>
               
@@ -196,10 +198,31 @@ const DashboardScreen = () => {
             ]}
           >
             <Text style={styles.mainHeading}>
-              Turn your world into <Text style={styles.gradientText}>rhythm.</Text>
+              Match music to your <Text style={styles.gradientText}>mood.</Text>
             </Text>
-            <Text style={styles.subtitle}>AI-powered playlists inspired by your view</Text>
+            <Text style={styles.subtitle}>AI-curated songs from any photo you take.</Text>
           </Animated.View>
+
+          {/* Guest register prompt: create an account for an extra free credit */}
+          {!user && (
+            <Animated.View style={{ opacity: fadeAnim }}>
+              <TouchableOpacity
+                style={styles.guestRegisterBanner}
+                onPress={() => {
+                  trackEvent('register_cta_tapped', { source: 'dashboard' });
+                  navigation.navigate('SignUp');
+                }}
+                activeOpacity={0.85}
+              >
+                <MaterialCommunityIcons name="gift-outline" size={20} color="#FFFFFF" />
+                <View style={styles.guestRegisterTextWrap}>
+                  <Text style={styles.guestRegisterTitle}>Create a free account</Text>
+                  <Text style={styles.guestRegisterSubtitle}>Get 1 free credit to keep matching</Text>
+                </View>
+                <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
+              </TouchableOpacity>
+            </Animated.View>
+          )}
 
           {/* Upload Card */}
           <Animated.View 
@@ -426,6 +449,36 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     textAlign: 'center',
     marginTop: 12,
+  },
+  guestRegisterBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: '#f4258c',
+    shadowColor: '#f4258c',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  guestRegisterTextWrap: {
+    flex: 1,
+  },
+  guestRegisterTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  guestRegisterSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.85)',
+    marginTop: 1,
   },
   uploadCardContainer: {
     paddingHorizontal: Spacing.lg,
