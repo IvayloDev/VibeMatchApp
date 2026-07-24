@@ -84,7 +84,6 @@ const VibeSelectionScreen = () => {
     (navigation as any).goBack();
   };
 
-  const previewHeight = width * 0.42;
 
   return (
     <View style={styles.container}>
@@ -107,7 +106,7 @@ const VibeSelectionScreen = () => {
           </View>
 
           {/* Image preview */}
-          <View style={[styles.previewWrapper, { height: previewHeight }]}>
+          <View style={styles.previewWrapper}>
             <View style={styles.previewBorder}>
               <LinearGradient
                 colors={[DesignColors.primary + '60', 'transparent']}
@@ -234,6 +233,11 @@ const styles = StyleSheet.create({
   },
   previewWrapper: {
     width: '100%',
+    // Absorb whatever vertical space is left after the header, mood grid and
+    // CTA, so the photo reads like the results hero and the page never needs to
+    // scroll — on a short screen the image shrinks instead of pushing content off.
+    flex: 1,
+    minHeight: 120,
     marginBottom: Spacing.lg,
   },
   previewBorder: {

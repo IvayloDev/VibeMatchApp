@@ -28,8 +28,16 @@ export function TrackPreviewButton({
   song: PreviewSong;
   variant: 'hero' | 'pill' | 'small';
 }) {
-  const { activeKey, status, progress, toggle } = useTrackPreview();
+  const { activeKey, status, progress, availability, checkAvailability, toggle } = useTrackPreview();
   const key = song.spotify_url || `${song.title}·${song.artist}`;
+
+  // Resolve preview availability up front so we can hide the play button for
+  // tracks that genuinely cannot be previewed, rather than opening Spotify.
+  React.useEffect(() => {
+    checkAvailability(key, song);
+  }, [key]);
+
+  const canPreview = availability[key] !== 'unavailable';
   const isActive = activeKey === key;
   const isLoading = isActive && status === 'loading';
   const isPlaying = isActive && status === 'playing';
@@ -42,6 +50,36 @@ export function TrackPreviewButton({
   };
 
   const openSpotify = () => song.spotify_url && Linking.openURL(song.spotify_url);
+
+  // Track can't be previewed: drop the play button entirely and put Spotify in
+  // its place, so tapping "play" never silently launches another app.
+  if (!canPreview) {
+    if (variant === 'hero') {
+      return (
+        <View style={styles.heroWrap}>
+          <TouchableOpacity onPress={openSpotify} activeOpacity={0.8} style={styles.heroWrap}>
+            <MaterialCommunityIcons name="spotify" size={58} color={SPOTIFY_GREEN} />
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    if (variant === 'pill') {
+      return (
+        <View style={styles.pillRow}>
+          <TouchableOpacity onPress={openSpotify} hitSlop={10} activeOpacity={0.7} style={styles.spotifyOnly}>
+            <MaterialCommunityIcons name="spotify" size={42} color={SPOTIFY_GREEN} />
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.smallRow}>
+        <TouchableOpacity onPress={openSpotify} hitSlop={10} activeOpacity={0.7} style={styles.smallWrap}>
+          <MaterialCommunityIcons name="spotify" size={30} color={SPOTIFY_GREEN} />
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   if (variant === 'hero') {
     return (
@@ -160,6 +198,10 @@ const styles = StyleSheet.create({
   spotifyIcon: {
     marginLeft: Spacing.sm,
     padding: Spacing.xs,
+  },
+  spotifyOnly: {
+    paddingVertical: Spacing.xs,
+    paddingRight: Spacing.sm,
   },
   smallRow: {
     flexDirection: 'row',

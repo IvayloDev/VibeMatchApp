@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "49",
+      "buildNumber": "50",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
@@ -32,7 +32,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.paltech.tunematch",
       "runtimeVersion": "1.0.0",
-      "versionCode": 28
+      "versionCode": 29
     },
     "web": {
       "favicon": "./assets/favicon.png"

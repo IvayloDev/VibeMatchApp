@@ -15,11 +15,14 @@ type PreviewSong = {
 };
 
 type Status = 'idle' | 'loading' | 'playing';
+type Availability = 'unknown' | 'available' | 'unavailable';
 
 type TrackPreviewCtx = {
   activeKey: string | null;
   status: Status;
   progress: number; // 0..1 for the active track
+  availability: Record<string, Availability>;
+  checkAvailability: (key: string, song: PreviewSong) => void;
   toggle: (key: string, song: PreviewSong) => void;
   stop: () => void;
 };
@@ -36,16 +39,33 @@ function norm(s: string): string {
     .trim();
 }
 
-/**
- * Try Spotify's clip first, then iTunes Search.
- *
- * iTunes fuzzy-matches, so we MUST verify the result is actually the requested
- * track — searching "Lana Del Rey Cherry" returns "Cherry Blossom" first, which
- * would silently play the wrong song. Require both artist and title to match;
- * otherwise return null so the caller falls back to opening Spotify.
- */
-async function resolvePreviewUrl(song: PreviewSong): Promise<string | null> {
-  if (song.preview_url) return song.preview_url;
+function artistMatches(candidate: string, want: string): boolean {
+  const a = norm(candidate);
+  return a === want || a.includes(want) || want.includes(a);
+}
+
+/** Deezer: free, no auth, and currently the best preview coverage. */
+async function deezerPreview(song: PreviewSong): Promise<string | null> {
+  try {
+    const q = encodeURIComponent(`${song.artist} ${song.title}`.trim());
+    const r = await fetch(`https://api.deezer.com/search?q=${q}&limit=10`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    const wantTitle = norm(song.title);
+    const wantArtist = norm(song.artist);
+    const hit = (j?.data || []).find(
+      (res: any) =>
+        res?.preview &&
+        norm(res.title) === wantTitle &&
+        artistMatches(res?.artist?.name ?? '', wantArtist)
+    );
+    return hit?.preview ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function itunesPreview(song: PreviewSong): Promise<string | null> {
   try {
     const term = encodeURIComponent(`${song.artist} ${song.title}`.trim());
     const r = await fetch(`https://itunes.apple.com/search?term=${term}&entity=song&limit=10`);
@@ -53,21 +73,31 @@ async function resolvePreviewUrl(song: PreviewSong): Promise<string | null> {
     const j = await r.json();
     const wantTitle = norm(song.title);
     const wantArtist = norm(song.artist);
-
-    // Title must match EXACTLY once normalized. A substring test is not enough:
-    // "cherry blossom".includes("cherry") is true, which is how the wrong song
-    // got played. Better to play nothing (and open Spotify) than the wrong track.
-    const match = (j?.results || []).find((res: any) => {
-      if (!res?.previewUrl) return false;
-      const a = norm(res.artistName);
-      const artistOk = a === wantArtist || a.includes(wantArtist) || wantArtist.includes(a);
-      return artistOk && norm(res.trackName) === wantTitle;
-    });
-
-    return match?.previewUrl ?? null;
+    const hit = (j?.results || []).find(
+      (res: any) =>
+        res?.previewUrl &&
+        norm(res.trackName) === wantTitle &&
+        artistMatches(res?.artistName ?? '', wantArtist)
+    );
+    return hit?.previewUrl ?? null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve a 30s preview URL, or null when the track genuinely can't be previewed.
+ *
+ * Spotify has effectively stopped returning preview_url for API apps (it is null
+ * for virtually every track now), so the third-party sources do the real work.
+ * Titles must match EXACTLY once normalized — a substring test is not enough,
+ * since "cherry blossom".includes("cherry") is true, which is how a completely
+ * different song got played. Returning null is correct and expected; the caller
+ * hides the play button rather than opening Spotify.
+ */
+async function resolvePreviewUrl(song: PreviewSong): Promise<string | null> {
+  if (song.preview_url) return song.preview_url;
+  return (await deezerPreview(song)) ?? (await itunesPreview(song));
 }
 
 export function TrackPreviewProvider({ children }: { children: React.ReactNode }) {
@@ -76,6 +106,11 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>('idle');
   const [progress, setProgress] = useState(0);
+  // Preview availability per track, resolved once and cached so the button can
+  // hide itself when a track can't be previewed (instead of opening Spotify).
+  const [availability, setAvailability] = useState<Record<string, Availability>>({});
+  const urlCacheRef = useRef<Record<string, string | null>>({});
+  const inFlightRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     // Play even when the phone's silent switch is on (expected for a tap-to-play).
@@ -102,6 +137,16 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
     }, [stop])
   );
 
+  /** Resolve (once) whether a track can be previewed; cached for instant playback. */
+  const checkAvailability = useCallback(async (key: string, song: PreviewSong) => {
+    if (key in urlCacheRef.current || inFlightRef.current[key]) return;
+    inFlightRef.current[key] = true;
+    const url = await resolvePreviewUrl(song);
+    urlCacheRef.current[key] = url;
+    inFlightRef.current[key] = false;
+    setAvailability((prev) => ({ ...prev, [key]: url ? 'available' : 'unavailable' }));
+  }, []);
+
   const toggle = useCallback(async (key: string, song: PreviewSong) => {
     // Tapping the track that's already playing pauses it.
     if (activeKey === key && status === 'playing') {
@@ -114,14 +159,19 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
     setStatus('loading');
     setProgress(0);
 
-    const url = await resolvePreviewUrl(song);
+    // Use the cached lookup when we already have it, so playback is instant.
+    const url = key in urlCacheRef.current
+      ? urlCacheRef.current[key]
+      : await resolvePreviewUrl(song);
+    urlCacheRef.current[key] = url ?? null;
     if (reqId !== reqIdRef.current) return; // a newer tap won
 
     if (!url) {
+      // Never auto-open Spotify here: it starts playback in another app that we
+      // cannot stop, which is what made music keep playing across screens.
       setActiveKey(null);
       setStatus('idle');
-      if (song.spotify_url) Linking.openURL(song.spotify_url); // fall back to full track
-      else Alert.alert('No preview', 'Could not find a preview for this track.');
+      setAvailability((prev) => ({ ...prev, [key]: 'unavailable' }));
       return;
     }
 
@@ -151,7 +201,11 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
     }
   }, [activeKey, status, stop]);
 
-  return <Ctx.Provider value={{ activeKey, status, progress, toggle, stop }}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={{ activeKey, status, progress, availability, checkAvailability, toggle, stop }}>
+      {children}
+    </Ctx.Provider>
+  );
 }
 
 export function useTrackPreview(): TrackPreviewCtx {
