@@ -10,6 +10,10 @@ import { triggerHaptic } from '../utils/haptics';
 import { useTrackPreview } from '../trackPreview';
 import { ProgressRing } from './ProgressRing';
 
+// Spotify's official brand green — brighter than the app's muted accent so the
+// button reads clearly against the dark cards.
+const SPOTIFY_GREEN = '#1DB954';
+
 type PreviewSong = {
   title: string;
   artist: string;
@@ -73,8 +77,8 @@ export function TrackPreviewButton({
           <Text style={styles.pillText}>{isPlaying ? 'Pause' : isLoading ? 'Loading' : 'Play'}</Text>
         </TouchableOpacity>
         {song.spotify_url ? (
-          <TouchableOpacity style={styles.spotifyIcon} onPress={openSpotify} hitSlop={8} activeOpacity={0.7}>
-            <MaterialCommunityIcons name="spotify" size={18} color={Colors.accent.green} />
+          <TouchableOpacity style={styles.spotifyIcon} onPress={openSpotify} hitSlop={10} activeOpacity={0.7}>
+            <MaterialCommunityIcons name="spotify" size={34} color={SPOTIFY_GREEN} />
           </TouchableOpacity>
         ) : null}
       </View>
@@ -97,8 +101,8 @@ export function TrackPreviewButton({
         </TouchableOpacity>
       </View>
       {song.spotify_url ? (
-        <TouchableOpacity onPress={openSpotify} hitSlop={8} style={styles.smallSpotify} activeOpacity={0.7}>
-          <MaterialCommunityIcons name="spotify" size={14} color={Colors.accent.green} />
+        <TouchableOpacity onPress={openSpotify} hitSlop={10} style={styles.smallSpotify} activeOpacity={0.7}>
+          <MaterialCommunityIcons name="spotify" size={30} color={SPOTIFY_GREEN} />
         </TouchableOpacity>
       ) : null}
     </View>
