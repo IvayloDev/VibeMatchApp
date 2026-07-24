@@ -121,14 +121,14 @@ const MainTabs = () => {
             let iconName: string;
             let iconSize = 28;
 
-            // Icons matched to the results-redesign reference: a vinyl-style ring
-            // for Discover, stacked list lines for Vault, account for Profile.
+            // Icons matched to the results-redesign reference: concentric rings
+            // for Discover, stacked list lines for Vault, pie for Profile.
             if (route.name === 'Home') {
-              iconName = 'record-circle-outline';
+              iconName = 'circle-double';
             } else if (route.name === 'History') {
               iconName = 'view-list-outline';
             } else if (route.name === 'Profile') {
-              iconName = 'account-circle-outline';
+              iconName = 'circle-slice-2';
             } else {
               iconName = 'circle';
             }
