@@ -270,7 +270,9 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
+    // Clear the floating bottom tab bar, which overlays this screen — otherwise
+    // the flexed photo pushes the CTA underneath it.
+    paddingBottom: 70,
   },
   continueButton: {
     borderRadius: 9999,
