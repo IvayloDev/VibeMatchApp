@@ -116,6 +116,9 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
     // Play even when the phone's silent switch is on (expected for a tap-to-play).
     setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
     return () => {
+      // pause() before remove(): during a swipe-back the provider unmounts and
+      // remove() alone does not reliably halt in-flight playback.
+      try { playerRef.current?.pause(); } catch { /* noop */ }
       try { playerRef.current?.remove(); } catch { /* noop */ }
       playerRef.current = null;
     };
