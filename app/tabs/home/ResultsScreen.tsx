@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, Linking, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator, ScrollView } from 'react-native';
+import { View, StyleSheet, Image, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator, ScrollView } from 'react-native';
 import { Text, Card } from 'react-native-paper';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
@@ -15,6 +15,8 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
 import { startLaunchOffer } from '../../../lib/launchOffer';
 import { trackEvent } from '../../../lib/posthog';
+import { TrackPreviewProvider } from '../../../lib/trackPreview';
+import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
 
 const { width, height } = Dimensions.get('window');
 
@@ -24,6 +26,7 @@ type Song = {
   reason: string;
   spotify_url?: string;
   album_cover?: string; // Album cover image URL
+  preview_url?: string | null; // 30s clip; may be null (client falls back to iTunes)
 };
 
 type ResultsParams = {
@@ -60,7 +63,9 @@ const ResultsScreen = () => {
   const insets = useSafeAreaInsets();
   const { image, songs = [], historyItemId, imagePath, fromOnboarding, fromFreshMatch } = (route.params || {}) as ResultsParams;
   const [imageUrl, setImageUrl] = useState<string>(image);
-  const [showAnimation, setShowAnimation] = useState(!historyItemId); // Only animate for new results, not history
+  // The reveal moment is now the AnalyzingScreen "Match found" animation, so we
+  // land straight on the results (no in-screen 5s reveal overlay).
+  const [showAnimation, setShowAnimation] = useState(false);
   const [showMatchCards, setShowMatchCards] = useState(false);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const [imageModalVisible, setImageModalVisible] = useState(false);
@@ -98,6 +103,9 @@ const ResultsScreen = () => {
   const contentOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
   const mainSongOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
   const alternativesOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
+  // Entrance animation for the redesigned results screen.
+  const heroEnter = useRef(new Animated.Value(0)).current;
+  const listEnter = useRef(new Animated.Value(0)).current;
   
   // Staggered animations for alternative songs (max 2 alternatives)
   const alternativeAnimations = useRef([
@@ -127,6 +135,14 @@ const ResultsScreen = () => {
       maybeRequestReview();
     }, 3500);
     return () => clearTimeout(t);
+  }, []);
+
+  // Smooth entrance: hero rises + fades in, alternatives follow with a slight stagger.
+  useEffect(() => {
+    Animated.stagger(110, [
+      Animated.timing(heroEnter, { toValue: 1, duration: 520, useNativeDriver: true }),
+      Animated.timing(listEnter, { toValue: 1, duration: 520, useNativeDriver: true }),
+    ]).start();
   }, []);
 
   useEffect(() => {
@@ -701,7 +717,8 @@ const ResultsScreen = () => {
   const hasBottomArea = !!fromOnboarding;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }}>
+    <TrackPreviewProvider>
+    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }} edges={['left', 'right']}>
       {/* Floating Action Buttons */}
       {!fromOnboarding && (
         <View style={[styles.floatingActions, { top: insets.top + 10 }]}>
@@ -720,393 +737,69 @@ const ResultsScreen = () => {
         {/* Background Blur Effects */}
         <View style={styles.backgroundBlur1} />
         <View style={styles.backgroundBlur2} />
-        {/* "It's a Match!" Overlay with Enhanced Effects */}
-        {showAnimation && (
-          <Animated.View 
-            style={[
-              styles.matchOverlay,
-              {
-                opacity: overlayOpacity,
-              }
-            ]}
-          >
-            {/* Pulsing Background Gradient */}
-            <Animated.View
-              style={[
-                styles.matchBackgroundGradient,
-                {
-                  opacity: backgroundPulse.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0.3, 0.5],
-                  }),
-                }
-              ]}
-            >
-              <LinearGradient
-                colors={['#FF3B3020', '#FF2D5515', '#FFD93D10', 'transparent']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFill}
-              />
-            </Animated.View>
-
-            {/* Glowing Red-Orange Curved Lines */}
-            <View style={styles.curvedLine1} />
-            <View style={styles.curvedLine2} />
-
-            {/* Expanding Rings - Seamlessly Looping */}
-            <Animated.View
-              style={[
-                styles.expandingRing,
-                {
-                  transform: [
-                    { scale: ring1Scale },
-                    { translateX: 0 },
-                    { translateY: 0 },
-                  ],
-                  opacity: ring1Opacity,
-                }
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.expandingRing,
-                {
-                  transform: [
-                    { scale: ring2Scale },
-                    { translateX: 0 },
-                    { translateY: 0 },
-                  ],
-                  opacity: ring2Opacity,
-                }
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.expandingRing,
-                {
-                  transform: [
-                    { scale: ring3Scale },
-                    { translateX: 0 },
-                    { translateY: 0 },
-                  ],
-                  opacity: ring3Opacity,
-                }
-              ]}
-            />
-
-            {/* Particle effects removed - using rings and glow instead for better performance */}
-
-            {/* Glow Effect */}
-            <Animated.View
-              style={[
-                styles.glowEffect,
-                {
-                  opacity: glowOpacity,
-                  transform: [{ scale: glowScale }],
-                }
-              ]}
-            />
-
-            {/* Main Match Text */}
-            <Animated.View
-              style={[
-                styles.matchTextContainer,
-                {
-                  opacity: matchTextOpacity,
-                  transform: [
-                    { scale: matchTextScale },
-                    {
-                      rotate: matchTextRotation.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: ['-5deg', '5deg'],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            >
-              <Text style={styles.matchText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-                It's a Match!
-              </Text>
-              
-              {/* Confetti Icon */}
-              <Animated.View
-                style={{
-                  transform: [
-                    { scale: confettiScale },
-                    {
-                      rotate: confettiRotation.interpolate({
-                        inputRange: [-1, 0, 1],
-                        outputRange: ['-15deg', '0deg', '15deg'],
-                      }),
-                    },
-                  ],
-                  marginTop: Spacing.md,
-                  marginBottom: Spacing.sm,
-                }}
-              >
-                <Text style={styles.confettiEmoji}>🎉</Text>
-              </Animated.View>
-
-              <Text style={styles.matchSubtext}>Perfect song found for your vibe</Text>
-            </Animated.View>
-
-            {/* Song Recommendation Card */}
-            {songs[0] && (
-              <Animated.View
-                style={[
-                  styles.songRecommendationCard,
-                  {
-                    opacity: songCardOpacity,
-                    transform: [
-                      { translateY: songCardTranslateY },
-                      { scale: songCardScale },
-                    ],
-                  },
-                ]}
-              >
-                <LinearGradient
-                  colors={['#F5F5DC', '#E8E8D8', '#F5F5DC']} // Beige/off-white gradient
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.songCardGradient}
-                >
-                  <View style={styles.songCardContent}>
-                    {/* Album Art */}
-                    <Image
-                      source={
-                        songs[0]?.album_cover
-                          ? { uri: songs[0].album_cover }
-                          : require('../../../assets/icon.png')
-                      }
-                      style={styles.albumArt}
-                    />
-                    
-                    {/* Song Info - Horizontally aligned */}
-                    <View style={styles.songInfoContainer}>
-                      <Text style={styles.songTitle}>
-                        {songs[0]?.title || 'Unknown Title'}
-                      </Text>
-                      <Text style={styles.songArtist}>
-                        {songs[0]?.artist || 'Unknown Artist'}
-                      </Text>
-                    </View>
-
-                    {/* Play Button */}
-                    <Animated.View
-                      style={{
-                        transform: [{ scale: playButtonScale }],
-                        opacity: playButtonOpacity,
-                      }}
-                    >
-                      <TouchableOpacity
-                        style={styles.playButton}
-                        onPress={() => {
-                          triggerHaptic('medium');
-                          if (songs[0]?.spotify_url) {
-                            Linking.openURL(songs[0].spotify_url);
-                          }
-                        }}
-                        activeOpacity={0.8}
-                      >
-                        <MaterialCommunityIcons name="play" size={28} color="#FFFFFF" />
-                      </TouchableOpacity>
-                    </Animated.View>
-                  </View>
-                </LinearGradient>
-              </Animated.View>
-            )}
-          </Animated.View>
-        )}
-
-         {/* Tinder-Style Match Cards */}
-         {showMatchCards && (
-           <View style={styles.matchCardsContainer}>
-             {/* User Image Card */}
-             <Animated.View
-               style={[
-                 styles.matchCard,
-                 {
-                   opacity: userCardOpacity,
-                   transform: [
-                     { translateX: userCardPosition.x },
-                     { translateY: userCardPosition.y },
-                     { 
-                       rotate: userCardRotation.interpolate({
-                         inputRange: [-180, 180],
-                         outputRange: ['-180deg', '180deg'],
-                       })
-                     },
-                   ],
-                 }
-               ]}
-             >
-               <Image source={{ uri: imageUrl }} style={styles.matchCardImage} />
-               <View style={styles.matchCardOverlay}>
-                 <Text style={styles.matchCardLabel}>YOUR VIBE</Text>
-               </View>
-             </Animated.View>
-
-             {/* Album Cover Card */}
-             <Animated.View
-               style={[
-                 styles.matchCard,
-                 {
-                   opacity: albumCardOpacity,
-                   transform: [
-                     { translateX: albumCardPosition.x },
-                     { translateY: albumCardPosition.y },
-                     { 
-                       rotate: albumCardRotation.interpolate({
-                         inputRange: [-180, 180],
-                         outputRange: ['-180deg', '180deg'],
-                       })
-                     },
-                   ],
-                 }
-               ]}
-             >
-               {/* Use album cover if available, otherwise show a placeholder */}
-               <Image 
-                 source={
-                   songs[0]?.album_cover 
-                     ? { uri: songs[0].album_cover }
-                     : require('../../../assets/icon.png') // Fallback to app icon
-                 } 
-                 style={styles.matchCardImage} 
-               />
-               <View style={styles.matchCardOverlay}>
-                 <Text style={styles.matchCardLabel}>PERFECT MATCH</Text>
-               </View>
-             </Animated.View>
-           </View>
-         )}
-
-         {/* Continue Button */}
-         {showContinueButton && (
-           <Animated.View
-             style={[
-               styles.continueButtonContainer,
-               { opacity: continueButtonOpacity }
-             ]}
-           >
-             <TouchableOpacity
-               style={styles.continueButton}
-               onPress={handleContinueToResults}
-             >
-               <Text style={styles.continueButtonText}>See Results</Text>
-               <MaterialCommunityIcons name="arrow-right" size={20} color={Colors.textPrimary} />
-             </TouchableOpacity>
-          </Animated.View>
-        )}
-
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={[styles.scrollContent, hasBottomArea && styles.scrollContentWithBottomArea]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Animated Content */}
-          <Animated.View 
+          {/* HERO: full-bleed photo, gradient scrim, main match overlaid */}
+          <Animated.View
             style={[
-              styles.contentContainer,
-              { opacity: contentOpacity }
+              styles.hero,
+              {
+                opacity: heroEnter,
+                transform: [{ translateY: heroEnter.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+              },
             ]}
           >
-          {/* Top Section: Image + Main Song */}
-          <View style={styles.topSection}>
-            {/* Animated Image with Cool Border */}
-            <Animated.View
-              style={[
-                styles.imageContainer,
-                {
-                  transform: [
-                    { scale: imageScale },
-                    { translateX: imagePosition.x },
-                    { translateY: imagePosition.y },
-                  ],
-                }
-              ]}
-            >
-              {imageUrl && (
-                <TouchableOpacity
-                  onPress={handleImagePress}
-                  activeOpacity={0.9}
-                  style={styles.imageTouchable}
-                >
-                  <Image source={{ uri: imageUrl }} style={styles.image} />
-                  <View style={styles.imageOverlay}>
-                    <MaterialCommunityIcons
-                      name="magnify-plus"
-                      size={20}
-                      color={Colors.textPrimary}
-                      style={styles.expandIcon}
-                    />
-                  </View>
-                </TouchableOpacity>
-              )}
-            </Animated.View>
-            
-            {/* Main Song Recommendation */}
-            <Animated.View 
-              style={[
-                styles.mainSongContainer,
-                { opacity: mainSongOpacity }
-              ]}
-            >
-              {songs[0] && (
-                <>
-                  <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
-                  <Text style={styles.mainSongTitle}>
-                    {songs[0]?.title || 'Unknown Title'}
+            {imageUrl && (
+              <TouchableOpacity onPress={handleImagePress} activeOpacity={0.96} style={StyleSheet.absoluteFill}>
+                <Image source={{ uri: imageUrl }} style={styles.heroImage} />
+              </TouchableOpacity>
+            )}
+            <LinearGradient
+              colors={['transparent', 'transparent', Colors.background + 'CC', Colors.background]}
+              locations={[0, 0.4, 0.8, 1]}
+              style={styles.heroScrim}
+              pointerEvents="none"
+            />
+            {songs[0] && (
+              <View style={styles.heroMain} pointerEvents="box-none">
+                <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
+                <Text style={styles.heroTitle} numberOfLines={2}>
+                  {songs[0]?.title || 'Unknown Title'}
+                </Text>
+                <Text style={styles.heroArtist} numberOfLines={1}>
+                  by {songs[0]?.artist || 'Unknown Artist'}
+                </Text>
+                {!!songs[0]?.reason && (
+                  <Text style={styles.heroReason} numberOfLines={2} ellipsizeMode="tail">
+                    {songs[0].reason}
                   </Text>
-                  <Text style={styles.mainSongArtist}>
-                    by {songs[0]?.artist || 'Unknown Artist'}
-                  </Text>
-                  <Text style={styles.mainSongReason} numberOfLines={3} ellipsizeMode="tail">
-                    {songs[0]?.reason || ''}
-                  </Text>
-                  {songs[0]?.spotify_url && (
-                    <TouchableOpacity 
-                      style={styles.spotifyButton}
-                      onPress={() => Linking.openURL(songs[0]?.spotify_url || '')}
-                    >
-                      <MaterialCommunityIcons name="spotify" size={16} color={Colors.textPrimary} />
-                      <Text style={styles.spotifyText}>Play</Text>
-                    </TouchableOpacity>
-                  )}
-                </>
-              )}
-            </Animated.View>
-          </View>
+                )}
+                <View style={styles.heroControls}>
+                  <TrackPreviewButton song={songs[0]} variant="pill" />
+                </View>
+              </View>
+            )}
+          </Animated.View>
 
-          {/* Bottom Section: Alternative Songs */}
-          <Animated.View 
+          {/* MORE MATCHES */}
+          <Animated.View
             style={[
-              styles.bottomSection,
-              { opacity: alternativesOpacity }
+              styles.altSection,
+              {
+                opacity: listEnter,
+                transform: [{ translateY: listEnter.interpolate({ inputRange: [0, 1], outputRange: [26, 0] }) }],
+              },
             ]}
           >
-            <Text style={styles.alternativesLabel}>ALTERNATIVES</Text>
+            <Text style={styles.alternativesLabel}>MORE MATCHES</Text>
             <View style={styles.alternativesList}>
-              {songs.slice(1, 3).map((song, idx) => {
-                const anim = alternativeAnimations[idx] || { opacity: new Animated.Value(1), translateX: new Animated.Value(0) };
-                return (
-                <Animated.View 
-                  key={idx} 
-                  style={[
-                    styles.alternativeItem,
-                    {
-                      opacity: anim.opacity,
-                      transform: [{ translateX: anim.translateX }],
-                    }
-                  ]}
-                >
+              {songs.slice(1, 3).map((song, idx) => (
+                <View key={idx} style={styles.alternativeItem}>
                   {song?.album_cover ? (
-                    <Image
-                      source={{ uri: song.album_cover }}
-                      style={styles.alternativeAlbumArt}
-                    />
+                    <Image source={{ uri: song.album_cover }} style={styles.alternativeAlbumArt} />
                   ) : (
                     <View style={[styles.alternativeAlbumArt, styles.alternativeAlbumArtFallback]}>
                       <MaterialCommunityIcons name="music-note" size={24} color={Colors.textSecondary} />
@@ -1123,20 +816,11 @@ const ResultsScreen = () => {
                       {song?.reason || ''}
                     </Text>
                   </View>
-                  {song?.spotify_url && (
-                    <TouchableOpacity 
-                      style={styles.smallSpotifyButton}
-                      onPress={() => Linking.openURL(song?.spotify_url || '')}
-                    >
-                      <MaterialCommunityIcons name="spotify" size={14} color={Colors.accent.green} />
-                    </TouchableOpacity>
-                  )}
-                </Animated.View>
-              );
-              })}
+                  {song && <TrackPreviewButton song={song} variant="small" />}
+                </View>
+              ))}
             </View>
           </Animated.View>
-        </Animated.View>
 
           {/* Start Exploring lives inside the scroll content so it is never
               clipped by the bottom tab bar and is always reachable. */}
@@ -1206,6 +890,7 @@ const ResultsScreen = () => {
         </View>
       </Modal>
     </SafeAreaView>
+    </TrackPreviewProvider>
   );
 };
 
@@ -1225,6 +910,67 @@ const styles = StyleSheet.create({
     // Clears the floating bottom tab bar so the inline Start Exploring button
     // is fully visible when scrolled to the end.
     paddingBottom: 120,
+  },
+
+  // Direction A: immersive hero
+  hero: {
+    width: '100%',
+    height: height * 0.6,
+    backgroundColor: Colors.cardBackground,
+  },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  heroExpand: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: Colors.background + 'AA',
+    borderRadius: BorderRadius.round,
+    padding: 6,
+  },
+  heroScrim: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroMain: {
+    position: 'absolute',
+    left: Layout.screenPadding,
+    right: Layout.screenPadding,
+    bottom: Spacing.lg,
+  },
+  heroTitle: {
+    ...Typography.heading2,
+    fontSize: 26,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    letterSpacing: -0.4,
+    lineHeight: 30,
+    marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.55)',
+    textShadowRadius: 14,
+    textShadowOffset: { width: 0, height: 1 },
+  },
+  heroArtist: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    marginTop: 3,
+  },
+  heroReason: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 8,
+  },
+  heroControls: {
+    marginTop: 16,
+  },
+  altSection: {
+    paddingHorizontal: Layout.screenPadding,
+    paddingTop: Spacing.lg,
+    paddingBottom: 110, // clear the floating bottom tab bar so the last card is fully visible
   },
   
   // Animation styles
@@ -1346,19 +1092,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: 'rgba(31, 31, 31, 0.7)',
-  },
-  playButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#FF3B30',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 8,
   },
   curvedLine1: {
     position: 'absolute',
@@ -1580,6 +1313,9 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginBottom: Spacing.xs,
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowRadius: 10,
+    textShadowOffset: { width: 0, height: 1 },
   },
   mainSongTitle: {
     ...Typography.heading2,
@@ -1602,23 +1338,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: Spacing.md,
   },
-  spotifyButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.accent.green,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.round,
-    alignSelf: 'flex-start',
-  },
-  spotifyText: {
-    ...Typography.button,
-    color: Colors.textPrimary,
-    marginLeft: Spacing.xs,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  
   // Bottom Section: Alternatives
   bottomSection: {
     flex: 1,
@@ -1681,13 +1400,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     flexShrink: 1,
   },
-  smallSpotifyButton: {
-    backgroundColor: Colors.accent.green + '30',
-    padding: Spacing.sm,
-    borderRadius: BorderRadius.round,
-    marginTop: Spacing.xs, // Align with top of text content
-  },
-
   // Full-Screen Image Modal Styles
   modalContainer: {
     flex: 1,

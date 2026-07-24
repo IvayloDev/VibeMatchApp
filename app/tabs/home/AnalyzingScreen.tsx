@@ -168,6 +168,14 @@ const AnalyzingScreen = () => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const pulseDotAnim = useRef(new Animated.Value(1)).current;
 
+  // "Match found" reveal
+  const [matchSong, setMatchSong] = useState<any>(null);
+  const revealBackdrop = useRef(new Animated.Value(0)).current;
+  const checkScale = useRef(new Animated.Value(0.4)).current;
+  const checkOpacity = useRef(new Animated.Value(0)).current;
+  const cardOpacity = useRef(new Animated.Value(0)).current;
+  const cardTranslate = useRef(new Animated.Value(24)).current;
+
   useFocusEffect(
     React.useCallback(() => {
       const parent = navigation.getParent();
@@ -489,49 +497,68 @@ const AnalyzingScreen = () => {
         } catch {}
 
         setProgress(95);
-
         setProgress(100);
-        
-        Animated.timing(progressAnim, {
-          toValue: 100,
-          duration: 500,
-          useNativeDriver: false,
-        }).start(() => {
-          setTimeout(() => {
-            if (fromOnboarding) {
-              // From root stack (OnboardingAnalyzing) — reset nav to MainTabs
-              // with History tab pre-showing results
-              (navigation as any).reset({
-                index: 0,
-                routes: [{
-                  name: 'MainTabs',
+
+        const goToResults = () => {
+          if (fromOnboarding) {
+            // From root stack (OnboardingAnalyzing) — reset nav to MainTabs
+            // with History tab pre-showing results
+            (navigation as any).reset({
+              index: 0,
+              routes: [{
+                name: 'MainTabs',
+                params: {
+                  screen: 'History',
                   params: {
-                    screen: 'History',
+                    screen: 'HistoryResults',
                     params: {
-                      screen: 'HistoryResults',
-                      params: {
-                        image: signedUrl,
-                        songs,
-                        imagePath: uploadedFilePath ?? undefined,
-                        fromOnboarding: true,
-                        fromFreshMatch: true,
-                      },
+                      image: signedUrl,
+                      songs,
+                      imagePath: uploadedFilePath ?? undefined,
+                      fromOnboarding: true,
+                      fromFreshMatch: true,
                     },
                   },
-                }],
-              });
-            } else {
-              (navigation as any).navigate('History', {
-                screen: 'HistoryResults',
-                params: {
-                  image: signedUrl,
-                  songs: songs,
-                  imagePath: uploadedFilePath ?? undefined,
-                  fromFreshMatch: true,
-                }
-              });
-            }
-          }, 300);
+                },
+              }],
+            });
+          } else {
+            (navigation as any).navigate('History', {
+              screen: 'HistoryResults',
+              params: {
+                image: signedUrl,
+                songs: songs,
+                imagePath: uploadedFilePath ?? undefined,
+                fromFreshMatch: true,
+              }
+            });
+          }
+        };
+
+        // Finish the bar, then play the "Match found" reveal before handing off.
+        Animated.timing(progressAnim, {
+          toValue: 100,
+          duration: 350,
+          useNativeDriver: false,
+        }).start(() => {
+          setMatchSong(songs[0] || { title: 'Match found', artist: '' });
+          triggerHaptic('success');
+          scanningLoop.stop();
+          cornerPulseLoop.stop();
+          pulseDotLoop.stop();
+          Animated.sequence([
+            Animated.timing(revealBackdrop, { toValue: 1, duration: 260, useNativeDriver: true }),
+            Animated.parallel([
+              Animated.spring(checkScale, { toValue: 1, friction: 5, tension: 130, useNativeDriver: true }),
+              Animated.timing(checkOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+            ]),
+            Animated.delay(160),
+            Animated.parallel([
+              Animated.timing(cardOpacity, { toValue: 1, duration: 320, useNativeDriver: true }),
+              Animated.spring(cardTranslate, { toValue: 0, friction: 7, tension: 80, useNativeDriver: true }),
+            ]),
+            Animated.delay(850),
+          ]).start(() => goToResults());
         });
       } catch (error) {
         console.log('Error during analysis:', error);
@@ -759,6 +786,30 @@ const AnalyzingScreen = () => {
           </View>
         </Animated.View>
       </SafeAreaView>
+
+      {matchSong && (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.revealOverlay, { opacity: revealBackdrop }]}>
+          <Image source={{ uri: image }} style={StyleSheet.absoluteFill} blurRadius={18} />
+          <View style={styles.revealScrim} />
+          <View style={styles.revealCenter}>
+            <Animated.View style={[styles.checkCircle, { opacity: checkOpacity, transform: [{ scale: checkScale }] }]}>
+              <MaterialCommunityIcons name="check" size={40} color="#FFFFFF" />
+            </Animated.View>
+            <Animated.View style={{ opacity: cardOpacity, transform: [{ translateY: cardTranslate }], alignItems: 'center' }}>
+              <Text style={styles.revealEyebrow}>MATCH FOUND</Text>
+              {matchSong.album_cover ? (
+                <Image source={{ uri: matchSong.album_cover }} style={styles.revealArt} />
+              ) : (
+                <View style={[styles.revealArt, styles.revealArtFallback]}>
+                  <MaterialCommunityIcons name="music-note" size={44} color="rgba(255,255,255,0.6)" />
+                </View>
+              )}
+              <Text style={styles.revealTitle} numberOfLines={1}>{matchSong.title}</Text>
+              {!!matchSong.artist && <Text style={styles.revealArtist} numberOfLines={1}>{matchSong.artist}</Text>}
+            </Animated.View>
+          </View>
+        </Animated.View>
+      )}
     </View>
   );
 };
@@ -770,6 +821,64 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+  },
+  revealOverlay: {
+    zIndex: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: DesignColors.backgroundDark,
+  },
+  revealScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(20,10,16,0.74)',
+  },
+  revealCenter: {
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  checkCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: DesignColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+    shadowColor: DesignColors.primary,
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  revealEyebrow: {
+    color: '#FF7FB0',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 2,
+    marginBottom: 16,
+  },
+  revealArt: {
+    width: 150,
+    height: 150,
+    borderRadius: 18,
+    marginBottom: 20,
+    backgroundColor: '#2a1521',
+  },
+  revealArtFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  revealTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+    textAlign: 'center',
+  },
+  revealArtist: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 15,
+    marginTop: 4,
+    textAlign: 'center',
   },
   backgroundImageContainer: {
     ...StyleSheet.absoluteFillObject,

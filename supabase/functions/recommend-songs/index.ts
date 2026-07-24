@@ -88,6 +88,44 @@ function isSpotifyAuthFailure(status?: number): boolean {
   return status === 401 || status === 403;
 }
 
+/**
+ * Strip "(feat...)", "(Live)", "[Remastered]", " - Radio Edit" etc. from a title
+ * or artist so decorated names still resolve on Spotify. Belt-and-suspenders
+ * alongside the CANONICAL TITLES prompt rule.
+ */
+function stripDecor(s: string): string {
+  return (s || "")
+    .replace(/\s*[\(\[][^\)\]]*[\)\]]/g, "")
+    .replace(/\s+-\s+(feat\.?|ft\.?|with|live|remaster(ed)?|deluxe|radio edit|single version).*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Pick the best Spotify track for a title/artist. Requires a genuine title match
+ * (>=20) AND some artist match (>=30), so we never return a different song by the
+ * right artist when the exact title isn't on Spotify.
+ */
+function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): any | null {
+  let best: any = null;
+  let bestScore = 0;
+  for (const track of tracks) {
+    const tt = track.name?.toLowerCase().trim() || "";
+    const ta = track.artists?.[0]?.name?.toLowerCase().trim() || "";
+    if (tt === normTitle && ta === normArtist) return track;
+    let titleScore = 0;
+    if (tt === normTitle) titleScore = 40;
+    else if (tt.includes(normTitle) || normTitle.includes(tt)) titleScore = 20;
+    let artistScore = 0;
+    if (ta === normArtist) artistScore = 60;
+    else if (ta.includes(normArtist) || normArtist.includes(ta)) artistScore = 30;
+    if (titleScore < 20 || artistScore < 30) continue; // demand a real title + artist match
+    const score = titleScore + artistScore;
+    if (score > bestScore) { bestScore = score; best = track; }
+  }
+  return best;
+}
+
 function spotifyAuthErrorResponse() {
   return jsonResponse({
     error: "Spotify API error",
@@ -153,6 +191,9 @@ async function findTrackOnSpotify(
   state?: SpotifySearchState
 ): Promise<any | null> {
   try {
+    // Strip decorations (feat./Live/Remastered/...) so decorated titles resolve.
+    title = stripDecor(title);
+    artist = stripDecor(artist);
     // Always build the query ourselves — never trust AI-generated search_query
     // (AI occasionally corrupts it with JSON syntax artifacts)
     let query = `track:"${title}" artist:"${artist}"`;
@@ -225,102 +266,26 @@ async function findTrackOnSpotify(
       // Apply same strict matching to fallback results
       const normalizedTitle = title.toLowerCase().trim();
       const normalizedArtist = artist.toLowerCase().trim();
-      
-      let bestMatch: any = null;
-      let bestScore = 0;
-      
-      for (const track of fallbackTracks) {
-        const trackTitle = track.name?.toLowerCase().trim() || "";
-        const trackArtist = track.artists?.[0]?.name?.toLowerCase().trim() || "";
-        
-        let score = 0;
-        
-        if (trackTitle === normalizedTitle && trackArtist === normalizedArtist) {
-          return track; // Perfect match
-        }
-        
-        if (trackTitle === normalizedTitle) {
-          score += 40;
-        } else if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
-          score += 20;
-        }
-        
-        if (trackArtist === normalizedArtist) {
-          score += 60;
-        } else if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
-          score += 30;
-        } else {
-          score -= 50; // No artist match
-        }
-        
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = track;
-        }
+
+      const fallbackMatch = bestTrackMatch(fallbackTracks, normalizedTitle, normalizedArtist);
+      if (fallbackMatch) {
+        console.log(`✅ Found fallback match for "${title}" by "${artist}": "${fallbackMatch.name}" by "${fallbackMatch.artists[0]?.name}"`);
+        return fallbackMatch;
       }
-      
-      // Only return if we have a decent match
-      if (bestMatch && bestScore >= 30) {
-        console.log(`✅ Found fallback match for "${title}" by "${artist}": "${bestMatch.name}" by "${bestMatch.artists[0]?.name}" (score: ${bestScore})`);
-        return bestMatch;
-      }
-      
-      console.warn(`⚠️ No good fallback match found for "${title}" by "${artist}". Best score: ${bestScore}`);
+      console.warn(`⚠️ No good fallback match for "${title}" by "${artist}" (needs real title + artist match)`);
       return null;
     }
 
     // Find best match by comparing title and artist similarity
     const normalizedTitle = title.toLowerCase().trim();
     const normalizedArtist = artist.toLowerCase().trim();
-    
-    // Score tracks by match quality
-    let bestMatch: any = null;
-    let bestScore = 0;
-    
-    for (const track of tracks) {
-      const trackTitle = track.name?.toLowerCase().trim() || "";
-      const trackArtist = track.artists?.[0]?.name?.toLowerCase().trim() || "";
-      
-      let score = 0;
-      
-      // Exact match = highest score
-      if (trackTitle === normalizedTitle && trackArtist === normalizedArtist) {
-        return track; // Return immediately for perfect match
-      }
-      
-      // Title similarity (40 points max)
-      if (trackTitle === normalizedTitle) {
-        score += 40;
-      } else if (trackTitle.includes(normalizedTitle) || normalizedTitle.includes(trackTitle)) {
-        score += 20; // Partial match
-      }
-      
-      // Artist similarity (60 points max - more important)
-      if (trackArtist === normalizedArtist) {
-        score += 60;
-      } else if (trackArtist.includes(normalizedArtist) || normalizedArtist.includes(trackArtist)) {
-        score += 30; // Partial artist match
-      } else {
-        // No artist match at all - very low score
-        score -= 50;
-      }
-      
-      // Update best match if this score is higher
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = track;
-      }
+
+    const primaryMatch = bestTrackMatch(tracks, normalizedTitle, normalizedArtist);
+    if (primaryMatch) {
+      console.log(`✅ Found match for "${title}" by "${artist}": "${primaryMatch.name}" by "${primaryMatch.artists[0]?.name}"`);
+      return primaryMatch;
     }
-    
-    // Only return if we have a decent match (at least some artist similarity)
-    // Require minimum score of 30 to ensure at least partial artist match
-    if (bestMatch && bestScore >= 30) {
-      console.log(`✅ Found match for "${title}" by "${artist}": "${bestMatch.name}" by "${bestMatch.artists[0]?.name}" (score: ${bestScore})`);
-      return bestMatch;
-    }
-    
-    // No good match found
-    console.warn(`⚠️ No good match found for "${title}" by "${artist}". Best score: ${bestScore}`);
+    console.warn(`⚠️ No good match for "${title}" by "${artist}" (needs real title + artist match)`);
     return null;
   } catch (err) {
     console.error(`❌ Error searching Spotify for "${title}" by "${artist}":`, err);
@@ -441,8 +406,8 @@ function buildTasteGuidance(hasTaste: boolean): string {
 - DO NOT anchor on top_genres alone. Spotify's auto-tagged genres reflect short listening windows and can be a temporary obsession (e.g. one week of italo-disco does not make someone an italo-disco listener). Use genres only as one weak signal among many.
 - Weight signals: saved tracks > top artists > top tracks > recently played > top_genres. Saved = high intent. Genres = lowest weight.
 - Cross-genre is fine and encouraged: if a folk listener saves moody electronic tracks, electronic is in-bounds. Trust the audible patterns over the tag.
-- DISCOVERY QUOTA: at least 3 of the 6 picks must be artists NOT listed in the user's profile. Surface adjacent artists, label-mates, contemporaries, influences, or proteges of artists they already love — songs they probably haven't heard but will recognize as "their kind of thing."
-- Of the remaining picks, prefer DEEP CUTS from listed artists (b-sides, album tracks, collabs) over the obvious hits already in their library. Do not recommend tracks already in saved/top/recent.
+- DISCOVERY IS THE PRODUCT: EVERY one of the 6 picks must be an artist NOT listed anywhere in the user's profile (not in saved, top tracks, recently-played, or top artists). Zero exceptions. Surface adjacent artists, label-mates, contemporaries, influences, or proteges of artists they already love - songs they probably haven't heard but will recognize as "their kind of thing."
+- Do NOT reach for a "deep cut" from an artist they already listen to. A track the user could have surfaced themselves is a failed pick, however well it fits.
 - The image mood + chosen vibe set the emotional anchor. The user's sonic DNA shapes which adjacent musical space we draw from. They are weighted equally — neither should override the other.
 - A pick is GREAT when a friend who knows the user's taste would say "of course, this is so them" while also "wait, how did you find this?"`;
 }
@@ -468,11 +433,11 @@ Hard rules:
 - Recommend exactly 6 tracks (no more, no less) — we need extras as fallbacks in case some can't be found on Spotify.
 - RANKING IS CRITICAL: Sort recommendations from BEST to WORST match. Position 1 must be the single most on-point pick that best combines the image mood + chosen vibe with the user's sonic DNA. Positions 2-3 are strong alternatives. Positions 4-6 are good fallbacks.
 - No repeated artist (each track must have a different artist).
-- Avoid ultra-mainstream, over-recommended staples (no "default playlist" picks like Mr. Brightside, Bohemian Rhapsody, etc.).
+- Avoid ultra-mainstream, over-recommended staples and viral overplayed hits. Banned examples (do not pick these or their obvious equivalents): Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Physical (Dua Lipa), Shut Up and Dance, Sweater Weather, Riptide. If a track has been a TikTok/playlist default or has billions of streams, skip it.
 - Ensure diversity: at least 3 distinct subgenres OR eras across the 6 tracks. Cross-genre picks are welcomed when the sonic DNA fits.
-- DO NOT recommend any track or artist already present in the user's saved/top/recently-played lists. Find adjacent, undiscovered music instead.
-- At least 3 of the 6 picks should be artists the user has NOT listened to (per the profile data), surfacing genuine discoveries — not safe repeats from their current rotation.
+- STRICT NO-REPEAT: do NOT recommend any track or artist that appears anywhere in the user's saved/top/recently-played/top-artists lists. All 6 must be artists they have NOT listened to. A repeat is an automatic failure - find adjacent, undiscovered music instead.
 - Only suggest songs you are confident exist (title + primary artist).
+- CANONICAL TITLES ONLY: put the plain studio title in "title" and the primary artist in "artist". No "(feat. ...)", "(Live)", "(Remastered)", "(Deluxe)", "(Radio Edit)" or similar suffixes - they break music-service lookup.
 - IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music unless the image or context explicitly shows Bulgarian content or culture. Default to English-language music.
 ${avoidSection}
 
@@ -598,9 +563,15 @@ serve(async (req) => {
   // 2) Get user history for deduplication (if userId provided)
   if (userId) {
     try {
+      // Service role so RLS (auth.uid() = user_id) doesn't block the lookup — an
+      // unauthenticated anon client reads zero rows and silently disables dedup.
+      const historyKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+        ?? Deno.env.get('SERVICE_ROLE_KEY')
+        ?? Deno.env.get('SUPABASE_ANON_KEY')
+        ?? '';
       const supabaseClient = createClient(
         Deno.env.get('SUPABASE_URL') ?? '',
-        Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+        historyKey
       );
 
       const { data: history } = await supabaseClient
@@ -618,15 +589,13 @@ serve(async (req) => {
           }
         });
 
-        // Extract unique track IDs and artist names
+        // Readable "Title — Artist" strings so the model can actually avoid past
+        // picks (opaque Spotify IDs meant nothing to it), plus artist names.
         const seenTracks = new Set<string>();
         const seenArtists = new Set<string>();
 
         allSongs.forEach((song: any) => {
-          if (song.spotify_url) {
-            const trackId = song.spotify_url.split('/track/')[1]?.split('?')[0];
-            if (trackId) seenTracks.add(trackId);
-          }
+          if (song.title && song.artist) seenTracks.add(`${song.title} — ${song.artist}`);
           if (song.artist) seenArtists.add(song.artist);
         });
 
@@ -854,8 +823,8 @@ serve(async (req) => {
       throw new Error("Invalid response structure: missing recommendations array");
     }
 
-    if (openaiData.recommendations.length !== 3) {
-      console.warn(`⚠️ Expected 3 recommendations, got ${openaiData.recommendations.length}`);
+    if (openaiData.recommendations.length !== 6) {
+      console.warn(`⚠️ Expected 6 recommendations, got ${openaiData.recommendations.length}`);
     }
 
     console.log(`✅ Got ${openaiData.recommendations.length} recommendations from OpenAI`);
@@ -879,7 +848,8 @@ serve(async (req) => {
         mood_tags: rec.mood_tags,
         language: "en",
         spotify_url: null,
-        album_cover: null
+        album_cover: null,
+        preview_url: null
       }))
     }, 200);
   }
@@ -905,7 +875,8 @@ serve(async (req) => {
         mood_tags: rec.mood_tags,
         language: "en",
         spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
-        album_cover: track.album?.images?.[0]?.url
+        album_cover: track.album?.images?.[0]?.url,
+        preview_url: track.preview_url ?? null // 30s clip; often null on newer apps - client falls back to iTunes
       });
     } else {
       console.warn(`⚠️ Could not find "${rec.title}" by "${rec.artist}" on Spotify`);
@@ -947,7 +918,7 @@ serve(async (req) => {
     }
   }
 
-  // 11) Ensure we have exactly 3 songs
+  // 11) We ship the top 3 resolved picks; picks 4-6 are Spotify-miss fallbacks.
   if (deduplicatedSongs.length < 3) {
     console.warn(`⚠️ Only got ${deduplicatedSongs.length} songs after deduplication, need 3`);
     
