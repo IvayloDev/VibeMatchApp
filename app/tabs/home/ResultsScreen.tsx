@@ -742,7 +742,8 @@ const ResultsScreen = () => {
           contentContainerStyle={[styles.scrollContent, hasBottomArea && styles.scrollContentWithBottomArea]}
           showsVerticalScrollIndicator={false}
         >
-          {/* HERO: full-bleed photo, gradient scrim, main match overlaid */}
+          {/* HERO: photo up top, main match + the full "why" in a panel that
+              grows to fit the reason (the reason is the point, so never clip it). */}
           <Animated.View
             style={[
               styles.hero,
@@ -757,14 +758,15 @@ const ResultsScreen = () => {
                 <Image source={{ uri: imageUrl }} style={styles.heroImage} />
               </TouchableOpacity>
             )}
-            <LinearGradient
-              colors={['transparent', 'transparent', Colors.background + 'CC', Colors.background]}
-              locations={[0, 0.4, 0.8, 1]}
-              style={styles.heroScrim}
-              pointerEvents="none"
-            />
+            {/* Reserve the top for the photo; the panel below sizes to its text. */}
+            <View style={styles.heroSpacer} pointerEvents="none" />
             {songs[0] && (
-              <View style={styles.heroMain} pointerEvents="box-none">
+              <LinearGradient
+                colors={['transparent', Colors.background + 'F2', Colors.background]}
+                locations={[0, 0.55, 1]}
+                style={styles.heroMain}
+                pointerEvents="box-none"
+              >
                 <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
                 <Text style={styles.heroTitle} numberOfLines={2}>
                   {songs[0]?.title || 'Unknown Title'}
@@ -773,14 +775,12 @@ const ResultsScreen = () => {
                   by {songs[0]?.artist || 'Unknown Artist'}
                 </Text>
                 {!!songs[0]?.reason && (
-                  <Text style={styles.heroReason} numberOfLines={2} ellipsizeMode="tail">
-                    {songs[0].reason}
-                  </Text>
+                  <Text style={styles.heroReason}>{songs[0].reason}</Text>
                 )}
                 <View style={styles.heroControls}>
                   <TrackPreviewButton song={songs[0]} variant="pill" />
                 </View>
-              </View>
+              </LinearGradient>
             )}
           </Animated.View>
 
@@ -806,13 +806,13 @@ const ResultsScreen = () => {
                     </View>
                   )}
                   <View style={styles.alternativeInfo}>
-                    <Text style={styles.alternativeTitle} numberOfLines={1}>
+                    <Text style={styles.alternativeTitle} numberOfLines={2}>
                       {song?.title || 'Unknown Title'}
                     </Text>
                     <Text style={styles.alternativeArtist} numberOfLines={1}>
                       by {song?.artist || 'Unknown Artist'}
                     </Text>
-                    <Text style={styles.alternativeReason} numberOfLines={2} ellipsizeMode="tail">
+                    <Text style={styles.alternativeReason}>
                       {song?.reason || ''}
                     </Text>
                   </View>
@@ -915,8 +915,12 @@ const styles = StyleSheet.create({
   // Direction A: immersive hero
   hero: {
     width: '100%',
-    height: height * 0.6,
+    // No fixed height: the panel below grows with the reason, and the photo
+    // (absolute-filled) covers whatever height the hero becomes.
     backgroundColor: Colors.cardBackground,
+  },
+  heroSpacer: {
+    height: height * 0.44,
   },
   heroImage: {
     width: '100%',
@@ -935,10 +939,9 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   heroMain: {
-    position: 'absolute',
-    left: Layout.screenPadding,
-    right: Layout.screenPadding,
-    bottom: Spacing.lg,
+    paddingHorizontal: Layout.screenPadding,
+    paddingTop: 52, // room for the gradient to fade from photo into the panel
+    paddingBottom: Spacing.lg,
   },
   heroTitle: {
     ...Typography.heading2,
@@ -959,10 +962,13 @@ const styles = StyleSheet.create({
   },
   heroReason: {
     ...Typography.caption,
-    color: Colors.textTertiary,
-    fontSize: 13,
-    lineHeight: 18,
-    marginTop: 8,
+    color: Colors.textSecondary, // the "why" is a highlight, not fine print
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 10,
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowRadius: 10,
+    textShadowOffset: { width: 0, height: 1 },
   },
   heroControls: {
     marginTop: 16,
@@ -1394,10 +1400,10 @@ const styles = StyleSheet.create({
   },
   alternativeReason: {
     ...Typography.caption,
-    color: Colors.textTertiary,
-    fontSize: 11,
+    color: Colors.textSecondary,
+    fontSize: 12,
     fontStyle: 'italic',
-    lineHeight: 16,
+    lineHeight: 17,
     flexShrink: 1,
   },
   // Full-Screen Image Modal Styles
