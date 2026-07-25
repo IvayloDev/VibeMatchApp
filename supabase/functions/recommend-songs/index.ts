@@ -447,7 +447,7 @@ Return JSON with this structure:
     {
       "title": "REAL song title",
       "artist": "REAL artist name",
-      "reason": "1-2 sentences: connect the image mood + chosen vibe to a specific sonic-DNA trait of the user (e.g. 'shares the dusty, lo-fi warmth of your saved [Artist] tracks'). For discovery picks, name the bridge to a listed artist or production trait — not a genre tag.",
+      "reason": "2-3 sentences. START by naming what is actually in the photo - the concrete scene and its mood (e.g. 'A foggy harbor at dusk, still and a little lonely...'). THEN connect that to a specific sonic-DNA trait of the user (e.g. 'shares the dusty, lo-fi warmth of your saved [Artist] tracks'). For discovery picks, name the bridge to a listed artist or production trait, not a genre tag.",
       "mood_tags": ["tag1", "tag2", "tag3"],
       "search_query": "track:\\"Song Title\\" artist:\\"Artist Name\\""
     }

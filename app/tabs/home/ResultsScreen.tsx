@@ -17,6 +17,7 @@ import { startLaunchOffer } from '../../../lib/launchOffer';
 import { trackEvent } from '../../../lib/posthog';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
+import { ExpandableText } from '../../../lib/components/ExpandableText';
 
 const { width, height } = Dimensions.get('window');
 
@@ -775,7 +776,12 @@ const ResultsScreen = () => {
                   by {songs[0]?.artist || 'Unknown Artist'}
                 </Text>
                 {!!songs[0]?.reason && (
-                  <Text style={styles.heroReason}>{songs[0].reason}</Text>
+                  <ExpandableText
+                    text={songs[0].reason}
+                    collapsedLines={3}
+                    style={styles.heroReason}
+                    toggleColor="#FF6B60"
+                  />
                 )}
                 <View style={styles.heroControls}>
                   <TrackPreviewButton song={songs[0]} variant="pill" />
@@ -812,9 +818,14 @@ const ResultsScreen = () => {
                     <Text style={styles.alternativeArtist} numberOfLines={1}>
                       by {song?.artist || 'Unknown Artist'}
                     </Text>
-                    <Text style={styles.alternativeReason}>
-                      {song?.reason || ''}
-                    </Text>
+                    {!!song?.reason && (
+                      <ExpandableText
+                        text={song.reason}
+                        collapsedLines={2}
+                        style={styles.alternativeReason}
+                        toggleColor="#FF6B60"
+                      />
+                    )}
                   </View>
                   {song && <TrackPreviewButton song={song} variant="small" />}
                 </View>
