@@ -32,7 +32,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.paltech.tunematch",
       "runtimeVersion": "1.0.0",
-      "versionCode": 31
+      "versionCode": 32
     },
     "web": {
       "favicon": "./assets/favicon.png"
