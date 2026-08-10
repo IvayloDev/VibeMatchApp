@@ -87,6 +87,7 @@ const PaymentScreen = () => {
   const [offerActive, setOfferActive] = useState(false);
   const [offerRemainingMs, setOfferRemainingMs] = useState(0);
   const offerShownTracked = useRef(false);
+  const paywallTracked = useRef(false);
   const isAuthenticated = !!user;
 
   // Launch offer countdown - read state on mount, tick every second while active
@@ -145,13 +146,25 @@ const PaymentScreen = () => {
       
       // Load user credits - account credits if authenticated, local credits if not
       // Apple Guideline 5.1.1: Allow purchases without registration
+      let credits: number;
       if (isAuthenticated) {
-        const credits = await getUserCredits();
-        setCurrentCredits(credits);
+        credits = await getUserCredits();
       } else {
         // Load local credits for non-authenticated users
-        const localCredits = await getLocalCredits();
-        setCurrentCredits(localCredits);
+        credits = await getLocalCredits();
+      }
+      setCurrentCredits(credits);
+
+      // Fires on every paywall view. `launch_offer_shown` only covers the
+      // window when an offer happens to be running, so on its own it can't
+      // measure paywall -> purchase conversion.
+      if (!paywallTracked.current) {
+        paywallTracked.current = true;
+        trackEvent('paywall_viewed', {
+          credits_balance: credits,
+          is_out_of_credits: credits === 0,
+          is_authenticated: isAuthenticated,
+        });
       }
 
       // Load available packages from RevenueCat
@@ -253,8 +266,16 @@ const PaymentScreen = () => {
         return;
       }
       
+      trackEvent('purchase_started', {
+        product_id: actualPackage.product?.identifier ?? pkg.id,
+        package_id: pkg.id,
+        offer_active: offerSnapshot.active,
+        credits_balance: currentCredits,
+        is_authenticated: isAuthenticated,
+      });
+
       const result = await purchasePackage(actualPackage);
-      
+
       if (result.success && result.transactionId && result.productId) {
         const creditsAmount = getCreditsForProduct(result.productId) || 0;
         const offerBonus = offerSnapshot.active ? getOfferBonus(result.productId) : 0;
@@ -363,11 +384,26 @@ const PaymentScreen = () => {
             ]
           );
         }
-      } else if (!result.userCancelled) {
+      } else if (result.userCancelled) {
+        trackEvent('purchase_cancelled', {
+          package_id: pkg.id,
+          offer_active: offerSnapshot.active,
+          credits_balance: currentCredits,
+        });
+      } else {
+        trackEvent('purchase_failed', {
+          package_id: pkg.id,
+          offer_active: offerSnapshot.active,
+          error: result.error || 'unknown',
+        });
         triggerHaptic('error');
         Alert.alert('Purchase Failed', result.error || 'Please try again.');
       }
     } catch (error: any) {
+      trackEvent('purchase_failed', {
+        package_id: pkg.id,
+        error: error?.message ?? 'exception',
+      });
       console.error('Purchase error:', error);
       triggerHaptic('error');
       Alert.alert('Error', 'Unable to complete purchase. Please try again.');

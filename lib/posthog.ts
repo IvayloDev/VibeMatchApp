@@ -34,3 +34,16 @@ export function trackScreen(name: string) {
 export function trackEvent(name: string, properties?: Record<string, any>) {
   posthog?.capture(name, properties);
 }
+
+/**
+ * Attach properties to every subsequent event from this device (PostHog "super
+ * properties"). Use for cohort dimensions you want to segment the whole funnel
+ * by - e.g. whether the user has a streaming taste profile - so downstream
+ * screens don't each have to plumb the value through.
+ *
+ * Deliberately not `$set`: person properties don't stick for anonymous guests,
+ * which is most of the pre-registration funnel.
+ */
+export function registerSuperProperties(properties: Record<string, any>) {
+  posthog?.register(properties);
+}

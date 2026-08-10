@@ -1,18 +1,22 @@
 // Tap-to-play 30s preview button with a circular progress ring. Three shapes:
 //  - 'hero'  : big red circle (main reveal card), ring wraps the circle
-//  - 'pill'  : green "Play/Pause" pill + small Spotify icon; ring wraps the icon
-//  - 'small' : compact icon + small Spotify icon (alternatives); ring wraps the icon
+//  - 'pill'  : green "Play/Pause" pill + streaming links; ring wraps the icon
+//  - 'small' : compact icon + streaming links (alternatives); ring wraps the icon
 import React from 'react';
 import { ActivityIndicator, Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { BorderRadius, Colors, Spacing, Typography } from '../designSystem';
 import { triggerHaptic } from '../utils/haptics';
 import { useTrackPreview } from '../trackPreview';
+import { useAppleMusicUrl } from '../appleMusic';
+import { trackEvent } from '../posthog';
 import { ProgressRing } from './ProgressRing';
 
 // Spotify's official brand green — brighter than the app's muted accent so the
 // button reads clearly against the dark cards.
 const SPOTIFY_GREEN = '#1DB954';
+// Apple Music's brand red.
+const APPLE_MUSIC_RED = '#FA243C';
 
 type PreviewSong = {
   title: string;
@@ -20,6 +24,62 @@ type PreviewSong = {
   preview_url?: string | null;
   spotify_url?: string;
 };
+
+/**
+ * "Open in <service>" links for a track. Results are resolved against Spotify
+ * by the recommendation pipeline, so Spotify is always there when the resolver
+ * matched; the Apple Music link is looked up client-side and simply omitted
+ * when the track has no Apple match.
+ */
+function StreamingLinks({
+  song,
+  size,
+  variant,
+  gap = Spacing.xs,
+}: {
+  song: PreviewSong;
+  size: number;
+  variant: string;
+  gap?: number;
+}) {
+  const appleUrl = useAppleMusicUrl(song);
+
+  const open = (service: 'spotify' | 'apple_music', url: string) => {
+    triggerHaptic('light');
+    trackEvent(service === 'spotify' ? 'spotify_opened' : 'apple_music_opened', {
+      variant,
+      had_alternative: service === 'spotify' ? !!appleUrl : !!song.spotify_url,
+    });
+    Linking.openURL(url);
+  };
+
+  if (!song.spotify_url && !appleUrl) return null;
+
+  return (
+    <View style={[styles.linksRow, { gap }]}>
+      {song.spotify_url ? (
+        <TouchableOpacity
+          onPress={() => open('spotify', song.spotify_url!)}
+          hitSlop={10}
+          activeOpacity={0.7}
+          accessibilityLabel="Open in Spotify"
+        >
+          <MaterialCommunityIcons name="spotify" size={size} color={SPOTIFY_GREEN} />
+        </TouchableOpacity>
+      ) : null}
+      {appleUrl ? (
+        <TouchableOpacity
+          onPress={() => open('apple_music', appleUrl)}
+          hitSlop={10}
+          activeOpacity={0.7}
+          accessibilityLabel="Open in Apple Music"
+        >
+          <MaterialCommunityIcons name="apple" size={size} color={APPLE_MUSIC_RED} />
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
 
 export function TrackPreviewButton({
   song,
@@ -49,34 +109,27 @@ export function TrackPreviewButton({
     toggle(key, song);
   };
 
-  const openSpotify = () => song.spotify_url && Linking.openURL(song.spotify_url);
-
-  // Track can't be previewed: drop the play button entirely and put Spotify in
-  // its place, so tapping "play" never silently launches another app.
+  // Track can't be previewed: drop the play button entirely and put the
+  // streaming links in its place, so tapping "play" never silently launches
+  // another app.
   if (!canPreview) {
     if (variant === 'hero') {
       return (
         <View style={styles.heroWrap}>
-          <TouchableOpacity onPress={openSpotify} activeOpacity={0.8} style={styles.heroWrap}>
-            <MaterialCommunityIcons name="spotify" size={58} color={SPOTIFY_GREEN} />
-          </TouchableOpacity>
+          <StreamingLinks song={song} size={48} variant={variant} gap={Spacing.sm} />
         </View>
       );
     }
     if (variant === 'pill') {
       return (
         <View style={styles.pillRow}>
-          <TouchableOpacity onPress={openSpotify} hitSlop={10} activeOpacity={0.7} style={styles.spotifyOnly}>
-            <MaterialCommunityIcons name="spotify" size={42} color={SPOTIFY_GREEN} />
-          </TouchableOpacity>
+          <StreamingLinks song={song} size={38} variant={variant} gap={Spacing.sm} />
         </View>
       );
     }
     return (
       <View style={styles.smallRow}>
-        <TouchableOpacity onPress={openSpotify} hitSlop={10} activeOpacity={0.7} style={styles.smallWrap}>
-          <MaterialCommunityIcons name="spotify" size={30} color={SPOTIFY_GREEN} />
-        </TouchableOpacity>
+        <StreamingLinks song={song} size={28} variant={variant} />
       </View>
     );
   }
@@ -114,11 +167,9 @@ export function TrackPreviewButton({
           </View>
           <Text style={styles.pillText}>{isPlaying ? 'Pause' : isLoading ? 'Loading' : 'Play'}</Text>
         </TouchableOpacity>
-        {song.spotify_url ? (
-          <TouchableOpacity style={styles.spotifyIcon} onPress={openSpotify} hitSlop={10} activeOpacity={0.7}>
-            <MaterialCommunityIcons name="spotify" size={34} color={SPOTIFY_GREEN} />
-          </TouchableOpacity>
-        ) : null}
+        <View style={styles.linksAfterPill}>
+          <StreamingLinks song={song} size={32} variant={variant} gap={Spacing.sm} />
+        </View>
       </View>
     );
   }
@@ -138,11 +189,9 @@ export function TrackPreviewButton({
           )}
         </TouchableOpacity>
       </View>
-      {song.spotify_url ? (
-        <TouchableOpacity onPress={openSpotify} hitSlop={10} style={styles.smallSpotify} activeOpacity={0.7}>
-          <MaterialCommunityIcons name="spotify" size={30} color={SPOTIFY_GREEN} />
-        </TouchableOpacity>
-      ) : null}
+      <View style={styles.smallLinks}>
+        <StreamingLinks song={song} size={26} variant={variant} />
+      </View>
     </View>
   );
 }
@@ -195,13 +244,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  spotifyIcon: {
+  linksRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  linksAfterPill: {
     marginLeft: Spacing.sm,
     padding: Spacing.xs,
-  },
-  spotifyOnly: {
-    paddingVertical: Spacing.xs,
-    paddingRight: Spacing.sm,
   },
   smallRow: {
     flexDirection: 'row',
@@ -222,7 +271,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  smallSpotify: {
+  smallLinks: {
     marginLeft: Spacing.xs,
     padding: Spacing.xs,
   },

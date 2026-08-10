@@ -79,13 +79,14 @@ const DashboardScreen = () => {
 
   const pickImage = async () => {
     if (credits < 1) {
+      trackEvent('out_of_credits', { source: 'dashboard_picker', credits_balance: credits });
       Alert.alert(
         'No Credits Available',
         'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
         [
           { text: 'Cancel', style: 'cancel' },
-          { 
-            text: 'Buy Credits', 
+          {
+            text: 'Buy Credits',
             onPress: () => {
               navigation.navigate('Payment');
             }
@@ -95,6 +96,7 @@ const DashboardScreen = () => {
       return;
     }
 
+    trackEvent('photo_picker_opened', { source: 'library', credits_balance: credits });
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: false,
@@ -102,6 +104,7 @@ const DashboardScreen = () => {
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
+      trackEvent('photo_selected', { source: 'library' });
       const uri = result.assets[0].uri;
       const manipResult = await ImageManipulator.manipulateAsync(
         uri,
@@ -109,11 +112,16 @@ const DashboardScreen = () => {
         { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
       );
       navigation.navigate('VibeSelection', { image: manipResult.uri });
+    } else {
+      // Closed the picker without choosing - the gap between tapping the CTA
+      // and a scan ever starting.
+      trackEvent('photo_picker_abandoned', { source: 'library' });
     }
   };
 
   const handleButtonPress = () => {
     if (credits < 1) {
+      trackEvent('out_of_credits', { source: 'dashboard_cta', credits_balance: credits });
       navigation.navigate('Payment');
     } else {
       pickImage();

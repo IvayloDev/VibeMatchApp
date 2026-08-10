@@ -21,6 +21,7 @@ import { supabase } from '../../lib/supabase';
 import { loadGuestTasteProfile, syncTasteProfile } from '../../lib/spotify';
 import { useAuth } from '../../lib/AuthContext';
 import { triggerHaptic } from '../../lib/utils/haptics';
+import { trackEvent, registerSuperProperties } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
 import { VIBES } from '../../lib/vibes';
 import { VibeGrid } from '../../lib/components/VibeGrid';
@@ -85,11 +86,16 @@ type RootStackParamList = {
   OnboardingAnalyzing: { image: string; selectedVibe?: string; userId?: string; fromOnboarding?: boolean };
 };
 
-const TOTAL_PAGES = 8;
+// The Wrapped-style reveal pages (genre / artist / personality / tracks) are pure
+// taste data. Without a connected streaming account they'd invent a #1 genre, a
+// "most played" artist and an empty track list, so they're dropped from the flow
+// entirely rather than shown with placeholder content.
+const PAGES_WITH_TASTE = ['welcome', 'genre', 'artist', 'personality', 'tracks', 'crafting', 'photo', 'vibe'] as const;
+const PAGES_NO_TASTE = ['welcome', 'crafting', 'photo', 'vibe'] as const;
 
 // ─── Page components ──────────────────────────────────────────────────────────
 
-const WelcomePage: React.FC<{ user: any; onNext: () => void }> = ({ user, onNext }) => {
+const WelcomePage: React.FC<{ user: any; hasTaste: boolean; onNext: () => void }> = ({ user, hasTaste, onNext }) => {
   const scale = useRef(new Animated.Value(0.85)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
@@ -113,13 +119,15 @@ const WelcomePage: React.FC<{ user: any; onNext: () => void }> = ({ user, onNext
       <Text style={styles.welcomeLabel}>WELCOME</Text>
       <Text style={styles.welcomeName}>{name}</Text>
       <Text style={styles.welcomeSubtitle}>
-        We scanned your Spotify listening history.{'\n'}Your sound DNA is ready.
+        {hasTaste
+          ? 'We scanned your Spotify listening history.\nYour sound DNA is ready.'
+          : 'Snap or pick any photo and we\'ll match it\nto a song that fits the mood.'}
       </Text>
 
       <View style={styles.statRow}>
         <View style={styles.statChip}>
           <MaterialCommunityIcons name="headphones" size={16} color={C.primary} />
-          <Text style={styles.statChipText}>Taste Profile Loaded</Text>
+          <Text style={styles.statChipText}>{hasTaste ? 'Taste Profile Loaded' : 'AI Mood Matching'}</Text>
         </View>
         <View style={styles.statChip}>
           <MaterialCommunityIcons name="check-circle" size={16} color='#30D158' />
@@ -128,7 +136,7 @@ const WelcomePage: React.FC<{ user: any; onNext: () => void }> = ({ user, onNext
       </View>
 
       <TouchableOpacity style={styles.nextBtn} onPress={() => { triggerHaptic('medium'); onNext(); }} activeOpacity={0.85}>
-        <Text style={styles.nextBtnText}>Reveal My DNA</Text>
+        <Text style={styles.nextBtnText}>{hasTaste ? 'Reveal My DNA' : 'Let\'s Go'}</Text>
         <MaterialCommunityIcons name="arrow-right" size={20} color="#FFF" />
       </TouchableOpacity>
     </Animated.View>
@@ -373,7 +381,18 @@ const CRAFT_STEPS = [
   { label: 'Profile crafted. You\'re unique.', icon: 'check-circle-outline' as const },
 ];
 
-const CraftingPage: React.FC<{ onNext: () => void }> = ({ onNext }) => {
+// Shown when there's no connected streaming taste profile. Nothing here claims
+// to have read listening history, because for these users we haven't.
+const CRAFT_STEPS_NO_TASTE = [
+  { label: 'Warming up the mood engine…', icon: 'equalizer' as const },
+  { label: 'Loading the music catalog…', icon: 'dna' as const },
+  { label: 'Calibrating the mood palette…', icon: 'palette-outline' as const },
+  { label: 'Tuning the matching model…', icon: 'tune-variant' as const },
+  { label: 'Ready when you are.', icon: 'check-circle-outline' as const },
+];
+
+const CraftingPage: React.FC<{ hasTaste: boolean; onNext: () => void }> = ({ hasTaste, onNext }) => {
+  const steps = hasTaste ? CRAFT_STEPS : CRAFT_STEPS_NO_TASTE;
   const [stepIndex, setStepIndex] = useState(0);
   const [done, setDone] = useState(false);
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -391,7 +410,7 @@ const CraftingPage: React.FC<{ onNext: () => void }> = ({ onNext }) => {
     ]).start();
 
     // Drive progress bar over total duration
-    const totalMs = CRAFT_STEPS.length * 700;
+    const totalMs = steps.length * 700;
     Animated.timing(progressAnim, {
       toValue: 1,
       duration: totalMs,
@@ -401,7 +420,7 @@ const CraftingPage: React.FC<{ onNext: () => void }> = ({ onNext }) => {
     // Cycle through steps
     let idx = 0;
     const tick = () => {
-      if (idx >= CRAFT_STEPS.length - 1) {
+      if (idx >= steps.length - 1) {
         // Reached final step — fade in, then mark done
         Animated.timing(stepOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start(() => {
           setTimeout(() => {
@@ -428,15 +447,19 @@ const CraftingPage: React.FC<{ onNext: () => void }> = ({ onNext }) => {
     return () => clearTimeout(initialDelay);
   }, []);
 
-  const step = CRAFT_STEPS[stepIndex];
+  const step = steps[stepIndex];
 
   return (
     <View style={styles.page}>
       <Animated.View style={{ opacity: titleOpacity, transform: [{ translateY: titleY }], alignItems: 'center' }}>
-        <Text style={styles.statLabel}>BUILDING YOUR PROFILE</Text>
-        <Text style={styles.craftTitle}>Crafting your{'\n'}sound identity</Text>
+        <Text style={styles.statLabel}>{hasTaste ? 'BUILDING YOUR PROFILE' : 'GETTING SET UP'}</Text>
+        <Text style={styles.craftTitle}>
+          {hasTaste ? 'Crafting your\nsound identity' : 'Getting ready to\nread your photos'}
+        </Text>
         <Text style={styles.craftSubtitle}>
-          Every listen, every skip, every obsession —{'\n'}we're weaving it all together.
+          {hasTaste
+            ? 'Every listen, every skip, every obsession -\nwe\'re weaving it all together.'
+            : 'Point us at a photo and we\'ll find the song\nthat matches its mood.'}
         </Text>
       </Animated.View>
 
@@ -462,7 +485,7 @@ const CraftingPage: React.FC<{ onNext: () => void }> = ({ onNext }) => {
         <Animated.View style={{ opacity: doneOpacity, transform: [{ scale: doneScale }], alignItems: 'center', marginTop: Spacing.xxl }}>
           <View style={styles.craftDoneBadge}>
             <MaterialCommunityIcons name="music-circle" size={28} color={C.primary} />
-            <Text style={styles.craftDoneTitle}>Your Profile is Ready</Text>
+            <Text style={styles.craftDoneTitle}>{hasTaste ? 'Your Profile is Ready' : 'You\'re All Set'}</Text>
           </View>
 
           <TouchableOpacity
@@ -643,6 +666,9 @@ const OnboardingScreen: React.FC = () => {
 
   const [page, setPage] = useState(0);
   const [profile, setProfile] = useState<TasteProfile | null>(null);
+  // Gates the first render: the page list depends on whether a taste profile
+  // exists, and flipping it mid-flow would swap copy under the user.
+  const [profileLoaded, setProfileLoaded] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [goLiveLoading, setGoLiveLoading] = useState(false);
 
@@ -690,7 +716,9 @@ const OnboardingScreen: React.FC = () => {
 
         if (data) setProfile(data);
       } catch {
-        // Non-fatal - we'll show fallback content
+        // Non-fatal - we'll show the no-taste variant
+      } finally {
+        setProfileLoaded(true);
       }
     };
     loadProfile();
@@ -712,6 +740,43 @@ const OnboardingScreen: React.FC = () => {
     ).start();
   }, []);
 
+  // A profile with no genres and no artists carries nothing the reveal pages
+  // can show. Guests who skipped the Spotify prompt land here.
+  const hasTaste =
+    (profile?.top_genres?.length ?? 0) > 0 || (profile?.top_artists?.length ?? 0) > 0;
+  const pageKeys = hasTaste ? PAGES_WITH_TASTE : PAGES_NO_TASTE;
+  const variant = hasTaste ? 'taste' : 'no_taste';
+
+  // Onboarding is a single navigation route, so App.js screen tracking only ever
+  // reports "Onboarding" - every page inside it was invisible. These events make
+  // the internal steps, and the two variants, comparable.
+  const startedRef = useRef(false);
+  const startedAtRef = useRef(0);
+  useEffect(() => {
+    if (!profileLoaded || startedRef.current) return;
+    startedRef.current = true;
+    startedAtRef.current = Date.now();
+    // Super property, so scan_started / purchase_completed / everything
+    // downstream can be split by cohort without plumbing the flag through.
+    registerSuperProperties({ has_taste: hasTaste, onboarding_variant: variant });
+    trackEvent('onboarding_started', {
+      variant,
+      has_taste: hasTaste,
+      total_pages: pageKeys.length,
+    });
+  }, [profileLoaded, variant, hasTaste, pageKeys.length]);
+
+  useEffect(() => {
+    if (!profileLoaded) return;
+    trackEvent('onboarding_page_viewed', {
+      variant,
+      has_taste: hasTaste,
+      page_key: pageKeys[page],
+      page_index: page,
+      total_pages: pageKeys.length,
+    });
+  }, [profileLoaded, page, variant, hasTaste, pageKeys]);
+
   const goToPage = useCallback((nextPage: number) => {
     // Slide current page out to the left
     Animated.timing(slideX, { toValue: -width, duration: 320, useNativeDriver: true }).start(() => {
@@ -722,8 +787,8 @@ const OnboardingScreen: React.FC = () => {
   }, [slideX]);
 
   const handleNext = useCallback(() => {
-    if (page < TOTAL_PAGES - 1) goToPage(page + 1);
-  }, [page, goToPage]);
+    if (page < pageKeys.length - 1) goToPage(page + 1);
+  }, [page, goToPage, pageKeys.length]);
 
   const handlePickPhoto = (uri: string) => setPhotoUri(uri);
 
@@ -731,6 +796,14 @@ const OnboardingScreen: React.FC = () => {
     if (!photoUri) return;
     setGoLiveLoading(true);
     try {
+      trackEvent('onboarding_completed', {
+        variant,
+        has_taste: hasTaste,
+        total_pages: pageKeys.length,
+        vibe: vibeId,
+        duration_ms: startedAtRef.current ? Date.now() - startedAtRef.current : null,
+      });
+
       // Mark onboarding complete before launching analysis
       await markOnboardingComplete();
 
@@ -755,15 +828,18 @@ const OnboardingScreen: React.FC = () => {
   const personality = derivePersonality(profile?.top_genres ?? []);
 
   const renderPage = () => {
-    switch (page) {
-      case 0: return <WelcomePage user={user} onNext={handleNext} />;
-      case 1: return <GenrePage genres={topGenres} onNext={handleNext} />;
-      case 2: return <ArtistPage artist={topArtist} image={topArtistImage} onNext={handleNext} />;
-      case 3: return <PersonalityPage personality={personality} onNext={handleNext} />;
-      case 4: return <TracksPage tracks={topTracks} onNext={handleNext} />;
-      case 5: return <CraftingPage onNext={handleNext} />;
-      case 6: return <PhotoPage onPickPhoto={handlePickPhoto} onContinue={handleNext} />;
-      case 7: return <VibePage imageUri={photoUri} onGoLive={handleGoLive} loading={goLiveLoading} />;
+    // Hold the first frame until we know whether a taste profile exists,
+    // otherwise the welcome copy and the page count swap under the user.
+    if (!profileLoaded) return null;
+    switch (pageKeys[page]) {
+      case 'welcome': return <WelcomePage user={user} hasTaste={hasTaste} onNext={handleNext} />;
+      case 'genre': return <GenrePage genres={topGenres} onNext={handleNext} />;
+      case 'artist': return <ArtistPage artist={topArtist} image={topArtistImage} onNext={handleNext} />;
+      case 'personality': return <PersonalityPage personality={personality} onNext={handleNext} />;
+      case 'tracks': return <TracksPage tracks={topTracks} onNext={handleNext} />;
+      case 'crafting': return <CraftingPage hasTaste={hasTaste} onNext={handleNext} />;
+      case 'photo': return <PhotoPage onPickPhoto={handlePickPhoto} onContinue={handleNext} />;
+      case 'vibe': return <VibePage imageUri={photoUri} onGoLive={handleGoLive} loading={goLiveLoading} />;
       default: return null;
     }
   };
@@ -791,7 +867,7 @@ const OnboardingScreen: React.FC = () => {
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
         {/* Progress dots */}
         <View style={styles.dotsRow}>
-          {Array.from({ length: TOTAL_PAGES }).map((_, i) => (
+          {Array.from({ length: pageKeys.length }).map((_, i) => (
             <View
               key={i}
               style={[

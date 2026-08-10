@@ -6,6 +6,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Alert, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import { norm, artistMatches } from './utils/trackMatch';
 
 type PreviewSong = {
   title: string;
@@ -28,21 +29,6 @@ type TrackPreviewCtx = {
 };
 
 const Ctx = createContext<TrackPreviewCtx | null>(null);
-
-/** Normalize for comparison: lowercase, strip "(feat…)"/"- Live" decorations. */
-function norm(s: string): string {
-  return (s || '')
-    .toLowerCase()
-    .replace(/\s*[\(\[][^\)\]]*[\)\]]/g, '')
-    .replace(/\s+-\s+(feat\.?|ft\.?|with|live|remaster(ed)?|deluxe|radio edit|single version).*$/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function artistMatches(candidate: string, want: string): boolean {
-  const a = norm(candidate);
-  return a === want || a.includes(want) || want.includes(a);
-}
 
 /** Deezer: free, no auth, and currently the best preview coverage. */
 async function deezerPreview(song: PreviewSong): Promise<string | null> {

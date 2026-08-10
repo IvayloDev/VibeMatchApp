@@ -8,6 +8,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Colors, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { connectSpotify } from '../../lib/spotify';
 import { useAuth } from '../../lib/AuthContext';
+import { trackEvent } from '../../lib/posthog';
 
 type RootStackParamList = {
   Welcome: undefined;
@@ -27,14 +28,32 @@ const ConnectSpotifyScreen: React.FC = () => {
   const { refreshSpotifyStatus, onboardingComplete, user } = useAuth();
   const [loading, setLoading] = useState(false);
 
+  // Where the flow goes once this screen is done with, connected or not.
+  // Guests (no auth user) must always go through onboarding regardless of any
+  // onboardingComplete flag left over from a prior registered session.
+  const nextTarget = (): 'MainTabs' | 'Onboarding' =>
+    (user && onboardingComplete) ? 'MainTabs' : 'Onboarding';
+
+  React.useEffect(() => {
+    trackEvent('spotify_connect_shown');
+  }, []);
+
+  const handleSkip = () => {
+    trackEvent('spotify_connect_skipped');
+    navigation.reset({ index: 0, routes: [{ name: nextTarget() }] });
+  };
+
   const handleConnect = async () => {
     setLoading(true);
+    trackEvent('spotify_connect_tapped');
     try {
       const result = await connectSpotify();
       if (!result.success) {
+        trackEvent('spotify_connect_failed', { error: result.error ?? 'unknown' });
         Alert.alert('Spotify Connection', result.error ?? 'Could not connect to Spotify');
         return;
       }
+      trackEvent('spotify_connect_success');
       // Do NOT call refreshSpotifyStatus() for guests: it flips spotifyChecking
       // in AuthContext, which unmounts the NavigationContainer (App.js shows the
       // LoadingScreen) and then remounts it at getTarget() = 'Welcome' for a
@@ -44,12 +63,11 @@ const ConnectSpotifyScreen: React.FC = () => {
       if (user) {
         await refreshSpotifyStatus();
       }
-      // Guests (no auth user) must always go through onboarding regardless of
-      // any onboardingComplete flag left over from a prior registered session.
-      const target = (user && onboardingComplete) ? 'MainTabs' : 'Onboarding';
+      const target = nextTarget();
       console.log('[ConnectSpotify] user:', !!user, 'onboardingComplete:', onboardingComplete, '→', target);
       navigation.reset({ index: 0, routes: [{ name: target }] });
     } catch (err: any) {
+      trackEvent('spotify_connect_failed', { error: err?.message ?? 'exception' });
       Alert.alert('Spotify Connection', err?.message ?? 'Something went wrong');
     } finally {
       setLoading(false);
@@ -64,7 +82,10 @@ const ConnectSpotifyScreen: React.FC = () => {
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Welcome' }] })}
+          onPress={() => {
+            trackEvent('spotify_connect_abandoned');
+            navigation.reset({ index: 0, routes: [{ name: 'Welcome' }] });
+          }}
           activeOpacity={0.7}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
@@ -78,7 +99,7 @@ const ConnectSpotifyScreen: React.FC = () => {
 
           <Text style={styles.title}>Connect Spotify</Text>
           <Text style={styles.subtitle}>
-            TuneMatch uses your listening taste to surface songs you'll actually love — including
+            Optional. Connect and TuneMatch tunes every match to your listening taste - including
             hidden gems you haven't heard yet.
           </Text>
 
@@ -111,8 +132,18 @@ const ConnectSpotifyScreen: React.FC = () => {
             )}
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={styles.skipButton}
+            onPress={handleSkip}
+            disabled={loading}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.skipButtonText}>Skip for now</Text>
+          </TouchableOpacity>
+
           <Text style={styles.footnote}>
-            Required to personalize your recommendations. You can disconnect by deleting the app.
+            No Spotify? Skip - matching works without it, and you can connect any time from your
+            profile. Read-only either way.
           </Text>
         </View>
       </SafeAreaView>
@@ -215,6 +246,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  skipButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  skipButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.75)',
   },
   footnote: {
     fontSize: 12,

@@ -17,9 +17,11 @@ export const creditPackages: CreditPackage[] = [
 
 export const creditProductIds = creditPackages.map((pkg) => pkg.productId);
 
-// Free trial constants
-export const FREE_CREDITS_ON_SIGNUP = 1;
-export const FIRST_ANALYSIS_FREE = true;
+// Free trial amounts live in ./utils/freeCredits (GUEST_FREE_CREDITS /
+// REGISTERED_FREE_CREDITS), which is what actually grants them. Duplicates
+// used to sit here unreferenced - FIRST_ANALYSIS_FREE in particular made free
+// first scans look intentional, which is why the ungated onboarding path went
+// unnoticed.
 
 // Local storage key for credits (Apple 5.1.1 compliance - allow purchases without registration)
 const LOCAL_CREDITS_KEY = '@tunematch_local_credits';

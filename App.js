@@ -169,7 +169,7 @@ function AppContent() {
         <Stack.Screen name="SignUp" component={SignUpScreen} />
         <Stack.Screen name="SignIn" component={SignInScreen} />
 
-        {/* Required Spotify connect gate */}
+        {/* Optional Spotify connect prompt - skippable, matching works without it */}
         <Stack.Screen
           name="ConnectSpotify"
           component={ConnectSpotifyScreen}

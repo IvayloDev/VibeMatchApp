@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
-import { deductCredits, refundCredits } from '../../../lib/credits';
+import { deductCredits, getUserCredits } from '../../../lib/credits';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
@@ -304,13 +304,45 @@ const AnalyzingScreen = () => {
       });
     }, 1200);
 
+    // Both the `Analyzing` and `OnboardingAnalyzing` routes render this screen.
+    // The callers used to own the credit check and only VibeSelectionScreen did
+    // it, so the onboarding path handed out free scans. The gate lives here now,
+    // at the one point both routes pass through, and before any upload or model
+    // call so a blocked scan costs nothing.
+    const leaveOnBlocked = fromOnboarding
+      ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
+      : () => (navigation as any).navigate('Dashboard');
+
     const analyzePhoto = async () => {
       let uploadedFilePath: string | null = null;
       const scanStartTime = Date.now();
+      // Balance before this scan's deduction. `is_last_credit` marks the scan
+      // that leaves the user at zero - the moment the credit model stops them.
+      const creditsBefore = await getUserCredits();
+
+      if (creditsBefore < 1) {
+        trackEvent('out_of_credits', {
+          source: 'analyzing_gate',
+          credits_balance: creditsBefore,
+          from_onboarding: !!fromOnboarding,
+        });
+        Alert.alert(
+          'No Credits Available',
+          'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: leaveOnBlocked },
+            { text: 'Buy Credits', onPress: () => (navigation as any).navigate('Payment') },
+          ]
+        );
+        return;
+      }
+
       trackEvent('scan_started', {
         vibe: selectedVibe,
         from_onboarding: !!fromOnboarding,
         signed_in: !!userId,
+        credits_before: creditsBefore,
+        is_last_credit: creditsBefore === 1,
       });
 
       try {
@@ -470,11 +502,39 @@ const AnalyzingScreen = () => {
           song_count: songs.length,
           from_onboarding: !!fromOnboarding,
           duration_ms: Date.now() - scanStartTime,
+          credits_before: creditsBefore,
         });
 
         const deductionSuccess = await deductCredits(1);
-        if (deductionSuccess) {
-          console.log('✅ Credit deducted successfully');
+        if (!deductionSuccess) {
+          // The gate above already passed, so reaching here means the balance
+          // changed underneath us (another device, or a failed write). Don't
+          // hand over a result that wasn't paid for - the model call is already
+          // spent either way, but the user doesn't get a free match out of it.
+          console.warn('⚠️ Credit deduction failed after a successful match - withholding result');
+          trackEvent('scan_not_charged', {
+            vibe: selectedVibe,
+            credits_before: creditsBefore,
+            from_onboarding: !!fromOnboarding,
+          });
+          Alert.alert(
+            'Couldn\'t Complete',
+            'We couldn\'t confirm your credit balance, so this match wasn\'t saved. Please check your credits and try again.',
+            [{ text: 'OK', onPress: leaveOnBlocked }]
+          );
+          return;
+        }
+        console.log('✅ Credit deducted successfully');
+
+        // Hit zero on the back of a successful match - peak delight, no way to
+        // continue. This is the event that tells you whether the credit model
+        // is what's capping activation.
+        if (creditsBefore === 1) {
+          trackEvent('out_of_credits', {
+            source: 'scan_completed',
+            credits_balance: 0,
+            from_onboarding: !!fromOnboarding,
+          });
         }
 
         if (currentUserId && filePath && songs) {

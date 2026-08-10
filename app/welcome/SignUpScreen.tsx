@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
+import { trackEvent } from '../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -50,25 +51,40 @@ const SignUpScreen = () => {
       return;
     }
     setLoading(true);
+    trackEvent('registration_started', { method: 'email' });
     const { data, error } = await supabase.auth.signUp({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
+      trackEvent('registration_failed', { method: 'email', error: error.message });
       Alert.alert('Sign Up Error', error.message);
     } else if (data?.user) {
+      // With email confirmation on, the user row exists but there's no session
+      // yet - that's a different outcome from a fully completed signup.
+      trackEvent('registration_completed', {
+        method: 'email',
+        needs_confirmation: !data.session,
+      });
       await routeAfterAuth();
     }
   };
 
   const handleGoogleSignUp = async () => {
     setSocialLoading('google');
+    trackEvent('registration_started', { method: 'google' });
     try {
       const result = await signInWithGoogle();
       if (result.success) {
+        trackEvent('registration_completed', { method: 'google' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('registration_failed', { method: 'google', error: result.error });
         Alert.alert('Google Sign-Up Error', result.error);
+      } else {
+        // No success, no error - the user backed out of the provider sheet.
+        trackEvent('registration_cancelled', { method: 'google' });
       }
     } catch (error) {
+      trackEvent('registration_failed', { method: 'google', error: (error as Error)?.message ?? 'exception' });
       console.error('Google sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
@@ -77,14 +93,20 @@ const SignUpScreen = () => {
 
   const handleAppleSignUp = async () => {
     setSocialLoading('apple');
+    trackEvent('registration_started', { method: 'apple' });
     try {
       const result = await signInWithApple();
       if (result.success) {
+        trackEvent('registration_completed', { method: 'apple' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('registration_failed', { method: 'apple', error: result.error });
         Alert.alert('Apple Sign-Up Error', result.error);
+      } else {
+        trackEvent('registration_cancelled', { method: 'apple' });
       }
     } catch (error) {
+      trackEvent('registration_failed', { method: 'apple', error: (error as Error)?.message ?? 'exception' });
       console.error('Apple sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
