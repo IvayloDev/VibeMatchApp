@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "52",
+      "buildNumber": "53",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
