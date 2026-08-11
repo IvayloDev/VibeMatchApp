@@ -18,7 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { supabase } from '../../lib/supabase';
-import { loadGuestTasteProfile, syncTasteProfile } from '../../lib/spotify';
+import { loadGuestTasteProfile, syncTasteProfile, getSpotifyConnectionStatus } from '../../lib/spotify';
 import { useAuth } from '../../lib/AuthContext';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { trackEvent, registerSuperProperties } from '../../lib/posthog';
@@ -682,6 +682,21 @@ const OnboardingScreen: React.FC = () => {
   // Load taste profile on mount
   useEffect(() => {
     const fetchProfile = async (): Promise<TasteProfile | null> => {
+      // A stored taste profile outlives the connection that produced it: the
+      // guest cache in AsyncStorage and the spotify_taste_profiles row both
+      // survive a skip, a disconnect, and a hand-off to the next person on the
+      // device. Reading either one without checking the live connection shows
+      // somebody else's "your #1 genre" to a user who just skipped Spotify.
+      // Connection status is the source of truth; the profile is only a cache.
+      try {
+        const status = await getSpotifyConnectionStatus();
+        if (!status.connected) return null;
+      } catch {
+        // Status unknown - treat as not connected rather than risk showing
+        // taste data to someone who never connected.
+        return null;
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         const { data } = await supabase

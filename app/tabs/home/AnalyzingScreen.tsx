@@ -16,6 +16,7 @@ import { deductCredits, getUserCredits } from '../../../lib/credits';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
+import { addGuestHistoryItem } from '../../../lib/guestHistory';
 
 const { width, height } = Dimensions.get('window');
 
@@ -541,6 +542,11 @@ const AnalyzingScreen = () => {
           await supabase.from('history').insert([
             { user_id: currentUserId, image_url: filePath, songs: songs },
           ]);
+        } else if (filePath && songs) {
+          // Guests have no user_id, so the insert above skips them and their
+          // match used to vanish the moment they left the results screen.
+          // Keep it locally instead - HistoryScreen merges this into the Vault.
+          await addGuestHistoryItem(filePath, songs);
         }
 
         // Count this genuine fresh match (drives the once-ever review prompt).

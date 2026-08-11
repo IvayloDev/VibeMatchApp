@@ -199,6 +199,12 @@ const PaymentScreen = () => {
         }));
         setPackages(mockDisplayPackages);
         setIsUsingMockData(true);
+        // Mock packages cannot be bought - the user is looking at a dead
+        // paywall. Without this event the failure is invisible in analytics.
+        trackEvent('paywall_packages_unavailable', {
+          reason: 'empty_offering',
+          is_authenticated: isAuthenticated,
+        });
       }
     } catch (error) {
       console.error('Error loading payment data:', error);
@@ -211,6 +217,11 @@ const PaymentScreen = () => {
       }));
       setPackages(mockDisplayPackages);
       setIsUsingMockData(true);
+      trackEvent('paywall_packages_unavailable', {
+        reason: 'load_error',
+        error_message: error instanceof Error ? error.message : String(error),
+        is_authenticated: isAuthenticated,
+      });
     } finally {
       setLoading(false);
     }
@@ -236,7 +247,14 @@ const PaymentScreen = () => {
     // NEVER grant credits without actual payment validation
     if (pkg.isMock) {
       triggerHaptic('error');
-      
+
+      // A real purchase intent that we cannot fulfil - the strongest signal
+      // that the store is misconfigured, so it must reach analytics.
+      trackEvent('purchase_blocked_no_store', {
+        product_id: pkg.productId,
+        is_authenticated: isAuthenticated,
+      });
+
       // Check if this is a BlueStacks/billing unavailable issue
       const isBillingUnavailable = false; // Could check error state here if needed
       

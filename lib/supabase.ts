@@ -350,11 +350,13 @@ export async function signOutFromGoogle(): Promise<void> {
 // Function to get a fresh signed URL for an image
 export async function getImageSignedUrl(filePath: string): Promise<string | null> {
   try {
-    // Check if user is authenticated
+    // Guests legitimately have no session - their uploads live under
+    // anonymous/ and their matches are kept in local history, so bailing out
+    // here left every guest Vault thumbnail blank. Try the signing call and
+    // let storage decide; a rejection still returns null below.
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
-      console.warn('⚠️ No session when creating signed URL');
-      return null;
+      console.log('ℹ️ Creating signed URL without a session (guest)');
     }
 
     // Validate file path

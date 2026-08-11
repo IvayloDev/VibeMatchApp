@@ -14,6 +14,7 @@ import { triggerHaptic } from '../../../lib/utils/haptics';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
 import { startLaunchOffer } from '../../../lib/launchOffer';
+import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
 import { trackEvent } from '../../../lib/posthog';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
@@ -107,6 +108,12 @@ const ResultsScreen = () => {
   // Entrance animation for the redesigned results screen.
   const heroEnter = useRef(new Animated.Value(0)).current;
   const listEnter = useRef(new Animated.Value(0)).current;
+  // Slow pulse on the floating Start Exploring pill.
+  const explorePulse = useRef(new Animated.Value(0)).current;
+  const explorePulseScale = explorePulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.06],
+  });
   
   // Staggered animations for alternative songs (max 2 alternatives)
   const alternativeAnimations = useRef([
@@ -137,6 +144,32 @@ const ResultsScreen = () => {
     }, 3500);
     return () => clearTimeout(t);
   }, []);
+
+  // The first result is a one-way step: hide the tab bar so Start Exploring is
+  // the only way forward. The paywall it opens still has its own back arrow,
+  // so this narrows the path without trapping anyone. Restored on unmount.
+  useEffect(() => {
+    if (!fromOnboarding) return;
+    const tabNavigation = navigation.getParent();
+    tabNavigation?.setOptions({ tabBarStyle: { display: 'none' } });
+    return () => {
+      // Clearing the override lets the navigator's own screenOptions apply again.
+      tabNavigation?.setOptions({ tabBarStyle: undefined });
+    };
+  }, [fromOnboarding, navigation]);
+
+  // Slow pulse so the pill reads as the live action on the screen.
+  useEffect(() => {
+    if (!fromOnboarding) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(explorePulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+        Animated.timing(explorePulse, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [fromOnboarding]);
 
   // Smooth entrance: hero rises + fades in, alternatives follow with a slight stagger.
   useEffect(() => {
@@ -546,11 +579,29 @@ const ResultsScreen = () => {
     }
   };
 
-  const handleStartExploring = () => {
-    // Kick off the launch offer before resetting navigation
-    startLaunchOffer().catch(() => {});
-    trackEvent('launch_offer_started');
-    handleBackPress();
+  const handleStartExploring = async () => {
+    // The offer is one-time per device. When this tap is the one that starts it,
+    // show the paywall right here - at the peak of the first match - instead of
+    // running a 30-minute countdown the user never sees. Previously this only
+    // set the timer and navigated away, so the offer expired unseen unless the
+    // user happened to open Payment on their own.
+    let started = false;
+    try {
+      started = await startLaunchOffer();
+    } catch {
+      started = false;
+    }
+
+    if (started) {
+      trackEvent('launch_offer_started');
+      navigation.navigate('Payment');
+      return;
+    }
+
+    // Offer already used (second tap, or a returning guest): send them to the
+    // Vault rather than Discover. Discover is a 0-credit upload prompt - a dead
+    // end - while the Vault now holds the match they just made, guest or not.
+    navigation.navigate('History', { screen: 'History' });
   };
 
   const handleContinueToResults = () => {
@@ -634,8 +685,18 @@ const ResultsScreen = () => {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Guest items live only in local storage - they have no row to
+              // delete and no session to check, so handle them before the
+              // Supabase path (which would reject them for being unauthed).
+              if (isGuestHistoryId(historyItemId)) {
+                await removeGuestHistoryItem(historyItemId!);
+                console.log('Deleted local history item:', historyItemId);
+                navigation.goBack();
+                return;
+              }
+
               console.log('Deleting from Supabase with ID:', historyItemId);
-              
+
               // Check if user is authenticated
               const { data: { session } } = await supabase.auth.getSession();
               if (!session) {
@@ -833,26 +894,31 @@ const ResultsScreen = () => {
             </View>
           </Animated.View>
 
-          {/* Start Exploring lives inside the scroll content so it is never
-              clipped by the bottom tab bar and is always reachable. */}
-          {fromOnboarding && (
+        </ScrollView>
+
+        {/* Start Exploring floats over the photo instead of sitting at the end
+            of the scroll content. Only 89 of 215 users ever reached it down
+            there - most never scrolled past the first match. It pulses because
+            it is now the only way forward on this screen: the tab bar is
+            hidden while the first result is showing. */}
+        {fromOnboarding && (
+          <Animated.View
+            style={[
+              styles.exploreFloating,
+              { top: insets.top + Spacing.sm, transform: [{ scale: explorePulseScale }] },
+            ]}
+          >
             <TouchableOpacity
-              style={styles.exploreButtonWrapper}
+              style={styles.exploreFloatingInner}
               onPress={handleStartExploring}
               activeOpacity={0.85}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-              <LinearGradient
-                colors={['#FF3B30', '#FF2D55']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.exploreButton}
-              >
-                <Text style={styles.exploreButtonText}>Start Exploring</Text>
-                <MaterialCommunityIcons name="arrow-right" size={22} color="#FFFFFF" />
-              </LinearGradient>
+              <Text style={styles.exploreFloatingText}>Start Exploring</Text>
+              <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
             </TouchableOpacity>
-          )}
-        </ScrollView>
+          </Animated.View>
+        )}
       </View>
 
       {/* Full-Screen Image Modal */}
@@ -1222,6 +1288,35 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
     zIndex: 100,
+  },
+  exploreFloating: {
+    position: 'absolute',
+    right: Layout.screenPadding,
+    // Red glow so the pill holds its own over a bright photo.
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.65,
+    shadowRadius: 14,
+    elevation: 10,
+  },
+  exploreFloatingInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: Spacing.md + 2,
+    paddingVertical: Spacing.sm + 3,
+    borderRadius: BorderRadius.round,
+    // Still slightly translucent, but opaque enough to stay legible on a
+    // washed-out sky - 0.55 was borderline against light photos.
+    backgroundColor: 'rgba(255, 59, 48, 0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.55)',
+  },
+  exploreFloatingText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+    letterSpacing: 0.2,
   },
   exploreButtonWrapper: {
     marginHorizontal: Layout.screenPadding,

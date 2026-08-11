@@ -32,19 +32,24 @@ async function getOfferKey(): Promise<string> {
  * Start the 30-minute launch offer for this device.
  * One-time only per device (shared between guest and registered usage) -
  * no-op if the offer was already started.
+ *
+ * Returns true only when this call actually started the offer, so the caller
+ * can surface it once. A repeat tap returns false and must stay silent.
  */
-export async function startLaunchOffer(): Promise<void> {
+export async function startLaunchOffer(): Promise<boolean> {
   try {
     const key = await getOfferKey();
     const existing = await SecureStore.getItemAsync(key);
     if (existing) {
       // Already started on this device - never restart
-      return;
+      return false;
     }
     await SecureStore.setItemAsync(key, String(Date.now()));
     console.log('🚀 Launch offer started for this device');
+    return true;
   } catch (error) {
     console.error('Error starting launch offer:', error);
+    return false;
   }
 }
 
