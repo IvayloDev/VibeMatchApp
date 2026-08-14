@@ -3,12 +3,14 @@ import { View, StyleSheet, Image, Animated, Dimensions, Alert, TouchableOpacity,
 import { Text } from 'react-native-paper';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
+import CreditsModal from '../../../lib/components/CreditsModal';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Crypto from 'expo-crypto';
 import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
@@ -66,17 +68,38 @@ type AnalyzingNavigationProp = CompositeNavigationProp<
   >
 >;
 
-async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
+/**
+ * Upload the photo and return the storage path.
+ *
+ * Guests get `anonymous/<uuid>/<uuid>.jpg`. The random nested uuid matters:
+ * `anon` now has INSERT-only on the bucket with no read access, so the path
+ * itself is the capability that lets the guest's own thumbnail be signed later
+ * (via the sign-image function). The old `anonymous/<ms>.jpg` scheme was
+ * guessable and is gone.
+ *
+ * Only signed-in users get a signed URL here - they own their folder under RLS.
+ * Guests hand the path to the server instead and it reads the object for them.
+ */
+function buildImagePath(userId?: string): string {
+  if (userId) return `${userId}/${Date.now()}.jpg`;
+  // Lowercase explicitly: the storage INSERT policy and both edge functions match
+  // this path with a strict lowercase-hex pattern, so an uppercase uuid would be
+  // rejected at upload. randomUUID is already lowercase per spec; this pins it.
+  const seg = () => Crypto.randomUUID().toLowerCase();
+  return `anonymous/${seg()}/${seg()}.jpg`;
+}
+
+async function uploadImageAndGetSignedUrl(localUri: string, userId?: string) {
   const response = await fetch(localUri);
   const blob = await response.blob();
   const reader = new FileReader();
-  
-  return new Promise<{ filePath: string; signedUrl: string }>((resolve, reject) => {
+
+  return new Promise<{ filePath: string; signedUrl: string | null }>((resolve, reject) => {
     reader.onload = async () => {
       try {
         const base64 = reader.result as string;
         const file = base64.split(',')[1];
-        const filePath = `${userId}/${Date.now()}.jpg`;
+        const filePath = buildImagePath(userId);
         const byteArray = Uint8Array.from(atob(file), c => c.charCodeAt(0));
 
         console.log('📤 [Upload] Attempting to upload file to path:', filePath);
@@ -85,7 +108,13 @@ async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
           .from('images')
           .upload(filePath, byteArray, {
             contentType: 'image/jpeg',
-            upsert: true,
+            // Guests must NOT upsert. Upsert makes storage do INSERT ... ON
+            // CONFLICT DO UPDATE, which needs an UPDATE policy, and `anon` is
+            // deliberately INSERT-only now - it used to hold a blanket UPDATE
+            // that let anyone overwrite any user's photo. Guest paths are random
+            // uuids, so there is nothing to overwrite anyway. Signed-in users
+            // own their folder and keep the original behaviour.
+            upsert: !!userId,
           });
 
         if (uploadError) {
@@ -98,6 +127,16 @@ async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
         
         // Use the actual path returned from upload (in case it was modified)
         const actualFilePath = uploadData?.path || filePath;
+
+        // Guests have no read policy on the bucket, so there is nothing to sign
+        // client-side. The path alone is enough: recommend-songs reads the
+        // object server-side, and the results screen shows the local image.
+        if (!userId) {
+          console.log('✅ [Upload] Guest upload complete, skipping client-side signing');
+          resolve({ filePath: actualFilePath, signedUrl: null });
+          return;
+        }
+
         console.log('🔗 [Upload] Creating signed URL for path:', actualFilePath);
 
         const { data, error: signedUrlError } = await supabase.storage
@@ -171,6 +210,7 @@ const AnalyzingScreen = () => {
 
   // "Match found" reveal
   const [matchSong, setMatchSong] = useState<any>(null);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
   const revealBackdrop = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0.4)).current;
   const checkOpacity = useRef(new Animated.Value(0)).current;
@@ -327,14 +367,7 @@ const AnalyzingScreen = () => {
           credits_balance: creditsBefore,
           from_onboarding: !!fromOnboarding,
         });
-        Alert.alert(
-          'No Credits Available',
-          'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
-          [
-            { text: 'Cancel', style: 'cancel', onPress: leaveOnBlocked },
-            { text: 'Buy Credits', onPress: () => (navigation as any).navigate('Payment') },
-          ]
-        );
+        setShowCreditsModal(true);
         return;
       }
 
@@ -348,7 +381,15 @@ const AnalyzingScreen = () => {
 
       try {
         setProgress(5);
-        const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(image, userId || 'anonymous');
+        // Derive the owner from the live session rather than the `userId` route
+        // param. The server checks the upload path against the identity in the
+        // Authorization header, so if the param is stale (session expired since
+        // navigation) the two would disagree and the scan would 403.
+        const { data: { session: uploadSession } } = await supabase.auth.getSession();
+        const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(
+          image,
+          uploadSession?.user?.id
+        );
         uploadedFilePath = filePath;
         setProgress(25);
 
@@ -365,8 +406,11 @@ const AnalyzingScreen = () => {
           console.warn('Could not load guest taste profile:', err);
         }
 
+        // Send the storage path, not a signed URL. The function reads the object
+        // with the service role, so the client needs no read access to storage -
+        // which is what lets guests work with an INSERT-only anon role.
         const payload = {
-          imageUrl: signedUrl,
+          imagePath: filePath,
           vibe: selectedVibe,
           tasteProfile: guestTasteProfile ?? undefined,
         };
@@ -404,12 +448,7 @@ const AnalyzingScreen = () => {
         }
 
         if (__DEV__) {
-          console.log('[recommend-songs] request', {
-            ...payload,
-            imageUrl: payload.imageUrl
-              ? `${payload.imageUrl.substring(0, 72)}…`
-              : undefined,
-          });
+          console.log('[recommend-songs] request', payload);
         }
 
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
@@ -578,7 +617,9 @@ const AnalyzingScreen = () => {
                   params: {
                     screen: 'HistoryResults',
                     params: {
-                      image: signedUrl,
+                      // Guests get no signed URL; the local photo is already on
+                      // screen and is what the results view should show.
+                      image: signedUrl ?? image,
                       songs,
                       imagePath: uploadedFilePath ?? undefined,
                       fromOnboarding: true,
@@ -592,7 +633,7 @@ const AnalyzingScreen = () => {
             (navigation as any).navigate('History', {
               screen: 'HistoryResults',
               params: {
-                image: signedUrl,
+                image: signedUrl ?? image,
                 songs: songs,
                 imagePath: uploadedFilePath ?? undefined,
                 fromFreshMatch: true,
@@ -775,7 +816,7 @@ const AnalyzingScreen = () => {
             {/* Title and Description */}
             <View style={styles.textContainer}>
               <Text style={styles.mainTitle}>Analyzing the Vibe...</Text>
-              <Text style={styles.subtitle}>Reading the mood and atmosphere</Text>
+              <Text style={styles.subtitle}>Matching the mood and atmosphere</Text>
             </View>
 
             {/* Cycling Tags */}
@@ -876,6 +917,23 @@ const AnalyzingScreen = () => {
           </View>
         </Animated.View>
       )}
+
+      <CreditsModal
+        visible={showCreditsModal}
+        onCancel={() => {
+          setShowCreditsModal(false);
+          // Same "leave the blocked scan" behavior the native alert used.
+          if (fromOnboarding) {
+            (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+          } else {
+            (navigation as any).navigate('Dashboard');
+          }
+        }}
+        onBuy={() => {
+          setShowCreditsModal(false);
+          (navigation as any).navigate('Payment');
+        }}
+      />
     </View>
   );
 };

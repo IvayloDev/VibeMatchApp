@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image, Linking, Platform } from 'react-native';
+import * as Application from 'expo-application';
 import { Text } from 'react-native-paper';
 import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -19,6 +20,9 @@ import { trackEvent } from '../../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
+// Where bug reports land.
+const SUPPORT_EMAIL = 'contact@paltechstudio.com';
+
 type RootStackParamList = {
   Payment: undefined;
   Welcome: undefined;
@@ -32,6 +36,35 @@ const ProfileScreen = () => {
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Bug reports arrive useless without build context, so the diagnostics the
+  // user can't be expected to know are prefilled into the body.
+  const handleReportBug = async () => {
+    trackEvent('report_bug_tapped', { signed_in: !!user, credits_balance: credits });
+
+    const diagnostics = [
+      `App version: ${Application.nativeApplicationVersion ?? 'unknown'} (${Application.nativeBuildVersion ?? '?'})`,
+      `Platform: ${Platform.OS} ${Platform.Version}`,
+      `User ID: ${user?.id ?? 'guest'}`,
+      `Credits: ${credits}`,
+    ].join('\n');
+
+    const subject = 'TuneMatch bug report';
+    const body = `Describe what happened:\n\n\n\nWhat did you expect instead?\n\n\n\n---\nDiagnostics (please keep)\n${diagnostics}\n`;
+    const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) throw new Error('No mail client');
+      await Linking.openURL(url);
+    } catch {
+      // No mail app configured - give them the address rather than a dead tap.
+      Alert.alert(
+        'No mail app found',
+        `Email us at ${SUPPORT_EMAIL} and include:\n\n${diagnostics}`
+      );
+    }
+  };
 
   const loadUserCredits = async () => {
     try {
@@ -340,6 +373,16 @@ const ProfileScreen = () => {
           </TouchableOpacity>
         )}
 
+        {/* Report a Bug - available to guests and signed-in users alike */}
+        <TouchableOpacity
+          style={styles.reportBugButton}
+          onPress={handleReportBug}
+          activeOpacity={0.8}
+        >
+          <MaterialCommunityIcons name="bug-outline" size={20} color="rgba(255,255,255,0.75)" />
+          <Text style={styles.reportBugButtonText}>Report a Bug</Text>
+        </TouchableOpacity>
+
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
       </ScrollView>
@@ -562,6 +605,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FF453A',
+  },
+  reportBugButton: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.md,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  reportBugButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.75)',
   },
   bottomSpacing: {
     height: 20,

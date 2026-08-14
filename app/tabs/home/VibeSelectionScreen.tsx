@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getUserCredits } from '../../../lib/credits';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
+import CreditsModal from '../../../lib/components/CreditsModal';
 
 const { width, height } = Dimensions.get('window');
 
@@ -45,6 +46,7 @@ const VibeSelectionScreen = () => {
 
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -61,14 +63,7 @@ const VibeSelectionScreen = () => {
       setLoading(true);
       const currentCredits = await getUserCredits();
       if (currentCredits < 1) {
-        Alert.alert(
-          'No Credits Available',
-          'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Buy Credits', onPress: () => navigation.navigate('Payment') },
-          ]
-        );
+        setShowCreditsModal(true);
         return;
       }
       navigation.navigate('Analyzing', { image, selectedVibe });
@@ -168,6 +163,15 @@ const VibeSelectionScreen = () => {
           </View>
         </Animated.View>
       </SafeAreaView>
+
+      <CreditsModal
+        visible={showCreditsModal}
+        onCancel={() => setShowCreditsModal(false)}
+        onBuy={() => {
+          setShowCreditsModal(false);
+          navigation.navigate('Payment');
+        }}
+      />
     </View>
   );
 };

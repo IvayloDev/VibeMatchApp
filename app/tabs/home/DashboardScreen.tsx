@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -14,6 +14,7 @@ import { getUserCredits } from '../../../lib/credits';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
+import CreditsModal from '../../../lib/components/CreditsModal';
 
 const { width, height } = Dimensions.get('window');
 
@@ -36,6 +37,7 @@ const DashboardScreen = () => {
   const { user } = useAuth();
   const [credits, setCredits] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -80,19 +82,7 @@ const DashboardScreen = () => {
   const pickImage = async () => {
     if (credits < 1) {
       trackEvent('out_of_credits', { source: 'dashboard_picker', credits_balance: credits });
-      Alert.alert(
-        'No Credits Available',
-        'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Buy Credits',
-            onPress: () => {
-              navigation.navigate('Payment');
-            }
-          }
-        ]
-      );
+      setShowCreditsModal(true);
       return;
     }
 
@@ -331,6 +321,15 @@ const DashboardScreen = () => {
           </Animated.View>
         </ScrollView>
       </SafeAreaView>
+
+      <CreditsModal
+        visible={showCreditsModal}
+        onCancel={() => setShowCreditsModal(false)}
+        onBuy={() => {
+          setShowCreditsModal(false);
+          navigation.navigate('Payment');
+        }}
+      />
     </View>
   );
 };

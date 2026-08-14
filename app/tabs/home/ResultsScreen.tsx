@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, Image, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator, ScrollView } from 'react-native';
 import { Text, Card } from 'react-native-paper';
-import { useRoute, useNavigation } from '@react-navigation/native';
+import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -147,16 +147,25 @@ const ResultsScreen = () => {
 
   // The first result is a one-way step: hide the tab bar so Start Exploring is
   // the only way forward. The paywall it opens still has its own back arrow,
-  // so this narrows the path without trapping anyone. Restored on unmount.
-  useEffect(() => {
-    if (!fromOnboarding) return;
-    const tabNavigation = navigation.getParent();
-    tabNavigation?.setOptions({ tabBarStyle: { display: 'none' } });
-    return () => {
-      // Clearing the override lets the navigator's own screenOptions apply again.
-      tabNavigation?.setOptions({ tabBarStyle: undefined });
-    };
-  }, [fromOnboarding, navigation]);
+  // so this narrows the path without trapping anyone.
+  //
+  // Restore on BLUR, not unmount. Start Exploring can end in
+  // `navigate('History', { screen: 'History' })`, which moves within this same
+  // stack - the screen does not reliably unmount, so an unmount-only cleanup
+  // left the user on the History list with no tab bar and no back button, i.e.
+  // a dead end only an app restart escaped. useFocusEffect's cleanup runs on
+  // blur, which covers both navigating away and unmounting.
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!fromOnboarding) return;
+      const tabNavigation = navigation.getParent();
+      tabNavigation?.setOptions({ tabBarStyle: { display: 'none' } });
+      return () => {
+        // Clearing the override lets the navigator's own screenOptions apply again.
+        tabNavigation?.setOptions({ tabBarStyle: undefined });
+      };
+    }, [fromOnboarding, navigation])
+  );
 
   // Slow pulse so the pill reads as the live action on the screen.
   useEffect(() => {

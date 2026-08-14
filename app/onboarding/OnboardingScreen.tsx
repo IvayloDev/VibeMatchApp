@@ -8,11 +8,12 @@ import {
   Alert,
   Image,
   ScrollView,
+  BackHandler,
 } from 'react-native';
 import { Text } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -454,7 +455,7 @@ const CraftingPage: React.FC<{ hasTaste: boolean; onNext: () => void }> = ({ has
       <Animated.View style={{ opacity: titleOpacity, transform: [{ translateY: titleY }], alignItems: 'center' }}>
         <Text style={styles.statLabel}>{hasTaste ? 'BUILDING YOUR PROFILE' : 'GETTING SET UP'}</Text>
         <Text style={styles.craftTitle}>
-          {hasTaste ? 'Crafting your\nsound identity' : 'Getting ready to\nread your photos'}
+          {hasTaste ? 'Crafting your\nsound identity' : 'Getting ready to\nmatch your photo'}
         </Text>
         <Text style={styles.craftSubtitle}>
           {hasTaste
@@ -583,6 +584,15 @@ const PhotoPage: React.FC<{
         </Animated.View>
       )}
 
+      {!selectedImage && (
+        <View style={styles.privacyNote}>
+          <MaterialCommunityIcons name="lock-outline" size={13} color={C.dim} />
+          <Text style={styles.privacyNoteText}>
+            Only the photo you pick is analyzed by AI. We never scan the rest of your library.
+          </Text>
+        </View>
+      )}
+
       {selectedImage && (
         <TouchableOpacity
           style={[styles.nextBtn, styles.goLiveBtn]}
@@ -671,6 +681,8 @@ const OnboardingScreen: React.FC = () => {
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [goLiveLoading, setGoLiveLoading] = useState(false);
+  // Set once the user launches a scan; onboarding is finished from then on.
+  const completedRef = useRef(false);
 
   // Slide animation
   const slideX = useRef(new Animated.Value(0)).current;
@@ -807,6 +819,35 @@ const OnboardingScreen: React.FC = () => {
 
   const handlePickPhoto = (uri: string) => setPhotoUri(uri);
 
+  // Coming back from OnboardingAnalyzing (blocked scan, or a plain back press)
+  // used to leave goLiveLoading stuck at true, so the CTA stayed "Preparing..."
+  // and disabled forever - a dead end with no way forward.
+  useFocusEffect(
+    useCallback(() => {
+      setGoLiveLoading(false);
+    }, [])
+  );
+
+  // Onboarding is the root of its stack, so Android back used to close the app.
+  // Once the user has launched a scan, onboarding is already marked complete -
+  // backing out of the analysis belongs in the app, not outside it.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (completedRef.current) {
+          navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+          return true;
+        }
+        if (page > 0) {
+          goToPage(page - 1);
+          return true;
+        }
+        return false;
+      });
+      return () => sub.remove();
+    }, [page, goToPage, navigation])
+  );
+
   const handleGoLive = async (vibeId: string) => {
     if (!photoUri) return;
     setGoLiveLoading(true);
@@ -821,6 +862,7 @@ const OnboardingScreen: React.FC = () => {
 
       // Mark onboarding complete before launching analysis
       await markOnboardingComplete();
+      completedRef.current = true;
 
       const { data: { session } } = await supabase.auth.getSession();
       navigation.navigate('OnboardingAnalyzing', {
@@ -1287,6 +1329,21 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: Spacing.sm,
     paddingHorizontal: Spacing.sm,
+  },
+  privacyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+  },
+  privacyNoteText: {
+    flexShrink: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    color: C.dim,
+    textAlign: 'center',
   },
   pickPhotoBtn: {
     borderRadius: BorderRadius.xl,

@@ -18,3 +18,11 @@ entrypoint = "./functions/spotify-auth/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/sync-spotify-profile/index.ts"
+
+# Guests have no Supabase session, so this cannot require a JWT. Access control
+# lives in the function: it only signs unguessable anonymous/<uuid>/<uuid>.jpg
+# guest paths.
+[functions.sign-image]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/sign-image/index.ts"

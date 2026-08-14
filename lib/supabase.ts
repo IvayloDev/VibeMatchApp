@@ -350,19 +350,35 @@ export async function signOutFromGoogle(): Promise<void> {
 // Function to get a fresh signed URL for an image
 export async function getImageSignedUrl(filePath: string): Promise<string | null> {
   try {
-    // Guests legitimately have no session - their uploads live under
-    // anonymous/ and their matches are kept in local history, so bailing out
-    // here left every guest Vault thumbnail blank. Try the signing call and
-    // let storage decide; a rejection still returns null below.
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      console.log('ℹ️ Creating signed URL without a session (guest)');
-    }
-
     // Validate file path
     if (!filePath || filePath.trim().length === 0) {
       console.warn('⚠️ Invalid file path for signed URL');
       return null;
+    }
+
+    // Guests legitimately have no session. The `anon` role is INSERT-only on the
+    // images bucket now (it used to be able to read and sign ANY user's photo),
+    // so a guest cannot sign even its own thumbnail client-side. Ask the server,
+    // which will only sign an unguessable anonymous/<uuid>/<uuid>.jpg path.
+    //
+    // Guest items created before that path scheme existed cannot be signed at
+    // all - accepting the old anonymous/<ms>.jpg form would make the endpoint
+    // brute-forceable. Those legacy thumbnails stay blank.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      try {
+        const { data, error } = await supabase.functions.invoke('sign-image', {
+          body: { path: filePath },
+        });
+        if (error || !data?.signedUrl) {
+          console.warn('⚠️ Guest signing failed for path:', filePath);
+          return null;
+        }
+        return data.signedUrl as string;
+      } catch (err) {
+        console.warn('⚠️ Guest signing request failed:', err);
+        return null;
+      }
     }
 
     const { data, error } = await supabase.storage

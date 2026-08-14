@@ -31,6 +31,62 @@ async function toBase64DataURL(url: string): Promise<string> {
   return `data:${mime};base64,${b64}`;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const CHUNK = 0x8000; // avoid blowing the argument limit on large images
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Guest uploads live at anonymous/<uuid>/<uuid>.jpg. The nested random uuid is
+ * what keeps the object unreachable: `anon` has INSERT-only on the bucket and
+ * cannot list, so the path is the capability. The old flat anonymous/<ms>.jpg
+ * scheme is deliberately NOT accepted - a 13-digit timestamp is guessable, and
+ * accepting it would turn this function into an enumeration oracle.
+ */
+const GUEST_IMAGE_PATH =
+  /^anonymous\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/;
+
+/**
+ * Decide whether a caller may have this object read on their behalf.
+ *
+ * The service-role client below bypasses RLS, so without this check the
+ * function would hand anyone who can guess a path a read primitive over the
+ * whole bucket - re-opening, through the back door, the hole the storage
+ * policies just closed. Signed-in callers get their own folder; guests get
+ * only their own unguessable guest path.
+ */
+function isAllowedImagePath(path: string, userId?: string): boolean {
+  if (!path || path.includes("..") || path.startsWith("/")) return false;
+  if (userId && path.startsWith(`${userId}/`)) return true;
+  return GUEST_IMAGE_PATH.test(path);
+}
+
+/**
+ * Read an object out of the `images` bucket with the service role and return it
+ * as a base64 data URL. Guests have no session and no read policy, so the
+ * client can no longer mint a signed URL itself - the server does it here.
+ */
+async function storagePathToBase64DataURL(path: string): Promise<string> {
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    ?? Deno.env.get('SERVICE_ROLE_KEY')
+    ?? '';
+  if (!serviceKey) throw new Error("Service role key not configured");
+
+  const sb = createClient(Deno.env.get('SUPABASE_URL') ?? '', serviceKey);
+  const { data, error } = await sb.storage.from('images').download(path);
+  if (error || !data) {
+    throw new Error(`Failed to download image: ${error?.message ?? 'no data'}`);
+  }
+
+  const bytes = new Uint8Array(await data.arrayBuffer());
+  const mime = path.endsWith(".png") ? "image/png" : "image/jpeg";
+  return `data:${mime};base64,${bytesToBase64(bytes)}`;
+}
+
 /**
  * Get Spotify access token using client credentials
  */
@@ -520,6 +576,7 @@ serve(async (req) => {
 
   // 1) Parse incoming JSON
   let imageUrl: string;
+  let imagePath: string | undefined;
   let vibe: string | undefined;
   let avoidTracks: string[] = [];
   let avoidArtists: string[] = [];
@@ -528,6 +585,7 @@ serve(async (req) => {
   try {
     const body = await req.json();
     imageUrl = body.imageUrl;
+    imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
     // Only use userId from body if we didn't get it from auth header
     if (!userId) {
@@ -542,16 +600,26 @@ serve(async (req) => {
 
     console.log("📥 Body:", {
       imageUrl: imageUrl ? `${imageUrl.substring(0, 50)}...` : 'N/A',
+      imagePath: imagePath || 'N/A',
       vibe,
       userId: userId || 'N/A',
       avoidTracks: avoidTracks.length,
       avoidArtists: avoidArtists.length
     });
 
-    if (!imageUrl) {
+    if (!imagePath && !imageUrl) {
       return jsonResponse({
-        error: "imageUrl is required"
+        error: "imagePath is required"
       }, 400);
+    }
+
+    // imagePath is the path clients use now. Reject anything the caller has no
+    // business reading before the service-role download below ever runs.
+    if (imagePath && !isAllowedImagePath(imagePath, userId)) {
+      console.warn("🚫 Rejected imagePath:", imagePath, "userId:", userId || 'guest');
+      return jsonResponse({
+        error: "Forbidden image path"
+      }, 403);
     }
   } catch (err) {
     console.error("❌ Bad request JSON:", err);
@@ -654,9 +722,14 @@ serve(async (req) => {
   }
 
   // 4) Convert image to base64 data URL
+  // Prefer imagePath: the object is read server-side with the service role, so
+  // the client never needs read access to storage. imageUrl is only still here
+  // for app builds shipped before that change.
   let dataUrl: string;
   try {
-    dataUrl = await toBase64DataURL(imageUrl);
+    dataUrl = imagePath
+      ? await storagePathToBase64DataURL(imagePath)
+      : await toBase64DataURL(imageUrl);
     console.log("🔗 Data URL length:", dataUrl.length);
   } catch (err) {
     console.error("❌ Image conversion failed:", err);
