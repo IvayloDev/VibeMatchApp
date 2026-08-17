@@ -201,23 +201,38 @@ const DashboardScreen = () => {
             <Text style={styles.subtitle}>AI-curated songs from any photo you take.</Text>
           </Animated.View>
 
-          {/* Guest register prompt: create an account for an extra free credit */}
+          {/* Guest monetization: the loud banner sells credits (the paywall is
+              where revenue happens); account creation is a quiet secondary line
+              underneath rather than the thing we shout about. */}
           {!user && (
             <Animated.View style={{ opacity: fadeAnim }}>
               <TouchableOpacity
                 style={styles.guestRegisterBanner}
                 onPress={() => {
-                  trackEvent('register_cta_tapped', { source: 'dashboard' });
-                  navigation.navigate('SignUp');
+                  trackEvent('paywall_cta_tapped', { source: 'dashboard_banner', credits_balance: credits });
+                  navigation.navigate('Payment');
                 }}
                 activeOpacity={0.85}
               >
-                <MaterialCommunityIcons name="gift-outline" size={20} color="#FFFFFF" />
+                <MaterialCommunityIcons name="lightning-bolt" size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
-                  <Text style={styles.guestRegisterTitle}>Create a free account</Text>
-                  <Text style={styles.guestRegisterSubtitle}>Get 1 free credit to keep matching</Text>
+                  <Text style={styles.guestRegisterTitle}>Get Credits</Text>
+                  <Text style={styles.guestRegisterSubtitle}>Top up and keep matching</Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.guestRegisterLink}
+                onPress={() => {
+                  trackEvent('register_cta_tapped', { source: 'dashboard' });
+                  navigation.navigate('SignUp');
+                }}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+              >
+                <Text style={styles.guestRegisterLinkText}>
+                  or create a free account for 1 bonus credit
+                </Text>
               </TouchableOpacity>
             </Animated.View>
           )}
@@ -486,6 +501,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: 'rgba(255,255,255,0.85)',
     marginTop: 1,
+  },
+  guestRegisterLink: {
+    alignSelf: 'center',
+    marginTop: Spacing.sm,
+  },
+  guestRegisterLinkText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.55)',
+    textDecorationLine: 'underline',
   },
   uploadCardContainer: {
     paddingHorizontal: Spacing.lg,
