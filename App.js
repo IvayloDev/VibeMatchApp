@@ -50,7 +50,7 @@ const PaperTheme = {
 };
 
 function AppContent() {
-  const { user, loading, spotifyConnected, spotifyChecking, onboardingComplete, onboardingChecking } = useAuth();
+  const { user, loading, spotifyConnected, spotifyChecking, onboardingComplete, guestOnboardingComplete, onboardingChecking } = useAuth();
   const navigationRef = React.useRef(null);
   const routeNameRef = React.useRef(null);
 
@@ -58,8 +58,15 @@ function AppContent() {
   const onboardingCompleteRef = React.useRef(onboardingComplete);
   React.useEffect(() => { onboardingCompleteRef.current = onboardingComplete; }, [onboardingComplete]);
 
+  const guestOnboardingCompleteRef = React.useRef(guestOnboardingComplete);
+  React.useEffect(() => { guestOnboardingCompleteRef.current = guestOnboardingComplete; }, [guestOnboardingComplete]);
+
   const getTarget = React.useCallback(() => {
-    if (!user) return 'Welcome';
+    // A guest who already finished onboarding on this device goes straight to
+    // the app. Returning them to Welcome sent them through the whole flow again
+    // on every cold start - and since onboarding only exits by completing a
+    // scan, a guest out of credits could never get past it.
+    if (!user) return guestOnboardingCompleteRef.current ? 'MainTabs' : 'Welcome';
     if (!spotifyConnected) return 'ConnectSpotify';
     if (!onboardingCompleteRef.current) return 'Onboarding';
     return 'MainTabs';

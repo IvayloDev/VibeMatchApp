@@ -672,7 +672,7 @@ const VibePage: React.FC<{
 // ─── Main OnboardingScreen ────────────────────────────────────────────────────
 const OnboardingScreen: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user, markOnboardingComplete } = useAuth();
+  const { user, markOnboardingComplete, markGuestOnboardingComplete } = useAuth();
 
   const [page, setPage] = useState(0);
   const [profile, setProfile] = useState<TasteProfile | null>(null);
@@ -865,6 +865,13 @@ const OnboardingScreen: React.FC = () => {
       completedRef.current = true;
 
       const { data: { session } } = await supabase.auth.getSession();
+
+      // Guests are routed by a device-scoped flag, since they have no Supabase
+      // user for `onboardingComplete` to hang off. Without this a guest lands
+      // back on Welcome every cold start and repeats onboarding forever.
+      if (!session?.user) {
+        await markGuestOnboardingComplete();
+      }
       navigation.navigate('OnboardingAnalyzing', {
         image: photoUri,
         selectedVibe: vibeId,

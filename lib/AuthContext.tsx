@@ -12,6 +12,11 @@ import {
 } from './spotify';
 
 const ONBOARDING_KEY = 'tunematch_onboarding_complete';
+// Guests have no Supabase user, so `onboardingComplete` (which is scoped to a
+// registered session on purpose) cannot answer "has this device already been
+// through onboarding?". Without a device-scoped flag every cold start sent a
+// guest back to Welcome -> Onboarding, forcing them to re-onboard forever.
+const GUEST_ONBOARDING_KEY = 'tunematch_guest_onboarding_complete';
 export const HAD_ACCOUNT_KEY = 'tunematch_had_account';
 
 type AuthContextType = {
@@ -21,9 +26,11 @@ type AuthContextType = {
   spotifyConnected: boolean;
   spotifyChecking: boolean;
   onboardingComplete: boolean;
+  guestOnboardingComplete: boolean;
   onboardingChecking: boolean;
   refreshSpotifyStatus: () => Promise<void>;
   markOnboardingComplete: () => Promise<void>;
+  markGuestOnboardingComplete: () => Promise<void>;
   signOut: () => Promise<void>;
   clearSession: () => void;
 };
@@ -49,6 +56,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [spotifyChecking, setSpotifyChecking] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [guestOnboardingComplete, setGuestOnboardingComplete] = useState(false);
   const [onboardingChecking, setOnboardingChecking] = useState(true);
 
   const clearSession = () => {
@@ -61,6 +69,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const markOnboardingComplete = async () => {
     await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
     setOnboardingComplete(true);
+  };
+
+  const markGuestOnboardingComplete = async () => {
+    await SecureStore.setItemAsync(GUEST_ONBOARDING_KEY, 'true');
+    setGuestOnboardingComplete(true);
   };
 
   const refreshSpotifyStatus = useCallback(async () => {
@@ -80,11 +93,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, []);
 
-  // Load onboarding state from SecureStore (fast, runs independently)
+  // Load onboarding state from SecureStore (fast, runs independently).
+  // Both flags must resolve before onboardingChecking flips, because App.js
+  // computes its initial route from them the moment the loading screen clears.
   useEffect(() => {
-    SecureStore.getItemAsync(ONBOARDING_KEY)
-      .then(val => setOnboardingComplete(val === 'true'))
-      .catch(() => setOnboardingComplete(false))
+    Promise.all([
+      SecureStore.getItemAsync(ONBOARDING_KEY).catch(() => null),
+      SecureStore.getItemAsync(GUEST_ONBOARDING_KEY).catch(() => null),
+    ])
+      .then(([registered, guest]) => {
+        setOnboardingComplete(registered === 'true');
+        setGuestOnboardingComplete(guest === 'true');
+      })
+      .catch(() => {
+        setOnboardingComplete(false);
+        setGuestOnboardingComplete(false);
+      })
       .finally(() => setOnboardingChecking(false));
   }, []);
 
@@ -233,9 +257,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     spotifyConnected,
     spotifyChecking,
     onboardingComplete,
+    guestOnboardingComplete,
     onboardingChecking,
     refreshSpotifyStatus,
     markOnboardingComplete,
+    markGuestOnboardingComplete,
     signOut,
     clearSession,
   };
