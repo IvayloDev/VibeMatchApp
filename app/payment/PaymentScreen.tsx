@@ -161,24 +161,26 @@ const PaymentScreen = () => {
       <View style={styles.backgroundBlur1} />
       <View style={styles.backgroundBlur2} />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={goBack} style={styles.closeButton}>
-          <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
-        <View style={styles.headerTitle}>
-          <Text style={styles.headerSubtitle}>TUNEMATCH</Text>
+      {/* Native header only for the native states (loading/entitled/error).
+          In the paywall state the RC paywall must fit whole screens as small
+          as the iPhone SE without scrolling, so it gets the full height and
+          brings its own overlay close button instead. */}
+      {screenState !== 'paywall' && (
+        <View style={styles.header}>
+          <TouchableOpacity onPress={goBack} style={styles.closeButton}>
+            <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
           <Text style={styles.headerMainTitle}>TuneMatch Pro</Text>
+          {currentCredits > 0 ? (
+            <View style={styles.creditsPill}>
+              <MaterialCommunityIcons name="lightning-bolt" size={14} color={DesignColors.primary} />
+              <Text style={styles.creditsPillText}>{currentCredits}</Text>
+            </View>
+          ) : (
+            <View style={styles.headerSpacer} />
+          )}
         </View>
-        {currentCredits > 0 ? (
-          <View style={styles.creditsPill}>
-            <MaterialCommunityIcons name="lightning-bolt" size={14} color={DesignColors.primary} />
-            <Text style={styles.creditsPillText}>{currentCredits}</Text>
-          </View>
-        ) : (
-          <View style={styles.headerSpacer} />
-        )}
-      </View>
+      )}
 
       {screenState === 'loading' && (
         <View style={styles.centerContent}>
@@ -270,6 +272,15 @@ const PaymentScreen = () => {
               </Text>
             </TouchableOpacity>
           )}
+          {/* Overlay close: zero height cost, unlike a header row, and unlike
+              RC's built-in close button it respects the top safe-area inset. */}
+          <TouchableOpacity
+            onPress={goBack}
+            style={styles.paywallClose}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <MaterialCommunityIcons name="close" size={20} color="#FFFFFF" />
+          </TouchableOpacity>
         </View>
       )}
     </SafeAreaView>
@@ -306,33 +317,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.sm,
+    paddingTop: Spacing.xs,
     paddingBottom: Spacing.xs,
   },
   closeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: {
-    alignItems: 'center',
-  },
-  headerSubtitle: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: DesignColors.primary,
-    letterSpacing: 2,
-  },
   headerMainTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
     color: '#FFFFFF',
   },
   headerSpacer: {
-    width: 40,
+    width: 36,
   },
   creditsPill: {
     flexDirection: 'row',
@@ -426,7 +428,18 @@ const styles = StyleSheet.create({
   },
   registerLink: {
     alignSelf: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  paywallClose: {
+    position: 'absolute',
+    top: Spacing.xs,
+    left: Spacing.md,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   registerLinkText: {
     fontSize: 12,
