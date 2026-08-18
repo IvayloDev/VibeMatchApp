@@ -17,6 +17,8 @@ import {
 } from '../../lib/revenuecat';
 import { getProScansToday, PRO_DAILY_LIMIT } from '../../lib/proQuota';
 import { getUserCredits, getLocalCredits } from '../../lib/credits';
+import { loadGuestHistory } from '../../lib/guestHistory';
+import { supabase } from '../../lib/supabase';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
@@ -29,6 +31,35 @@ const DesignColors = {
 };
 
 type ScreenState = 'loading' | 'entitled' | 'paywall' | 'error';
+
+/**
+ * Matches this person has actually made, remote rows plus anything still in the
+ * guest cache (guest matches never reach the `history` table - the insert needs
+ * a user id). Used only to show real progress on the paywall, so any failure
+ * degrades to 0 and the strip simply does not render.
+ */
+async function countMatchesMade(isAuthenticated: boolean): Promise<number> {
+  let remote = 0;
+  if (isAuthenticated) {
+    try {
+      const { count } = await supabase
+        .from('history')
+        .select('id', { count: 'exact', head: true });
+      remote = count ?? 0;
+    } catch {
+      remote = 0;
+    }
+  }
+
+  let local = 0;
+  try {
+    local = (await loadGuestHistory()).length;
+  } catch {
+    local = 0;
+  }
+
+  return remote + local;
+}
 
 /**
  * Subscription paywall. The purchase UI itself is RevenueCat's remotely
@@ -48,6 +79,7 @@ const PaymentScreen = () => {
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
   const [currentCredits, setCurrentCredits] = useState<number>(0);
   const [proScansToday, setProScansToday] = useState<number>(0);
+  const [matchesMade, setMatchesMade] = useState<number>(0);
   const paywallTracked = useRef(false);
 
   const loadData = useCallback(async () => {
@@ -73,7 +105,12 @@ const PaymentScreen = () => {
       return;
     }
 
-    const proOffering = await getProOffering();
+    const [proOffering, matches] = await Promise.all([
+      getProOffering(),
+      countMatchesMade(isAuthenticated),
+    ]);
+    setMatchesMade(matches);
+
     if (proOffering) {
       setOffering(proOffering);
       setScreenState('paywall');
@@ -222,6 +259,36 @@ const PaymentScreen = () => {
 
       {screenState === 'paywall' && offering && (
         <View style={styles.paywallWrap}>
+          {/*
+            Real progress, not decoration: the numerator is matches this person
+            has actually made and the denominator is what a single Pro day gives
+            them. Someone who has never matched anything sees nothing, because
+            there is no progress to show. The fill is floored so a first match
+            still reads as a visible sliver rather than an empty bar.
+          */}
+          {matchesMade > 0 && (
+            <View style={styles.progressCard}>
+              <View style={styles.progressRow}>
+                <Text style={styles.progressLabel}>
+                  {matchesMade} match{matchesMade === 1 ? '' : 'es'} made
+                </Text>
+                <Text style={styles.progressCount}>{matchesMade} / {PRO_DAILY_LIMIT}</Text>
+              </View>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.min(100, Math.max(8, (matchesMade / PRO_DAILY_LIMIT) * 100))}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={styles.progressHint}>
+                Pro gives you {PRO_DAILY_LIMIT} matches every day.
+              </Text>
+            </View>
+          )}
           <RevenueCatUI.Paywall
             style={styles.paywall}
             options={{ offering, displayCloseButton: false }}
@@ -420,6 +487,47 @@ const styles = StyleSheet.create({
   },
   paywallWrap: {
     flex: 1,
+  },
+  progressCard: {
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.sm,
+  },
+  progressLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  progressCount: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: DesignColors.primary,
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: DesignColors.primary,
+  },
+  progressHint: {
+    marginTop: Spacing.sm,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.55)',
   },
   paywall: {
     flex: 1,
