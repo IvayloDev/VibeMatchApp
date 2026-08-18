@@ -1,229 +1,90 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Dimensions, TouchableOpacity } from 'react-native';
-import { Text, Button, IconButton, ActivityIndicator } from 'react-native-paper';
+import { View, StyleSheet, Alert, TouchableOpacity, Linking, ActivityIndicator } from 'react-native';
+import { Text } from 'react-native-paper';
 import { useNavigation, CommonActions } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import type { PurchasesPackage } from 'react-native-purchases';
+import type { PurchasesOffering, CustomerInfo } from 'react-native-purchases';
+import RevenueCatUI from 'react-native-purchases-ui';
 import {
-  getAvailablePackages,
-  purchasePackage,
-  getCreditsForProduct,
+  getProOffering,
+  hasProEntitlement,
+  refreshProStatus,
+  getCustomerInfo,
+  getManagementURL,
+  restorePurchases,
+  PRO_ENTITLEMENT_ID,
 } from '../../lib/revenuecat';
-import { getUserCredits, getLocalCredits, addLocalCredits, storeLocalPurchase } from '../../lib/credits';
-import { validatePurchaseWithRetry } from '../../lib/supabase';
-import { storePendingValidation, removePendingValidation } from '../../lib/credits';
-import { getLaunchOfferState, getOfferBonus } from '../../lib/launchOffer';
+import { getProScansToday, PRO_DAILY_LIMIT } from '../../lib/proQuota';
+import { getUserCredits, getLocalCredits } from '../../lib/credits';
 import { trackEvent } from '../../lib/posthog';
-import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
+import { Spacing, BorderRadius } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { useAuth } from '../../lib/AuthContext';
 
-const { width, height } = Dimensions.get('window');
-
-// Package display configuration
-const PACKAGE_CONFIG: Record<string, {
-  label: string;
-  price: string;
-  bonus?: string;
-  isMostPopular?: boolean;
-  icon?: string;
-  description?: string;
-}> = {
-  'tunematch_credits_5': {
-    label: '5 Credits',
-    price: '€0.99',
-    icon: '🎵',
-    description: 'Perfect for trying out',
-  },
-  'tunematch_credits_18': {
-    label: '18 Credits',
-    price: '€4.99',
-    bonus: '+3 bonus',
-    icon: '🎸',
-    description: 'Great value',
-  },
-  'tunematch_credits_60': {
-    label: '60 Credits',
-    price: '€12.99',
-    bonus: '+10 bonus',
-    isMostPopular: true,
-    icon: '🎹',
-    description: 'Best value - Most popular',
-  },
-  'tunematch_credits_150': {
-    label: '150 Credits',
-    price: '€24.99',
-    bonus: '+30 bonus',
-    icon: '🎤',
-    description: 'Maximum savings',
-  },
+const DesignColors = {
+  primary: '#f4258c',
+  accentPurple: '#8b5cf6',
+  backgroundDark: '#221019',
 };
 
-// Mock packages for when RevenueCat isn't available (Expo Go)
-const MOCK_PACKAGES = [
-  { id: 'tunematch_credits_5', productId: 'tunematch_credits_5' },
-  { id: 'tunematch_credits_18', productId: 'tunematch_credits_18' },
-  { id: 'tunematch_credits_60', productId: 'tunematch_credits_60' },
-  { id: 'tunematch_credits_150', productId: 'tunematch_credits_150' },
-];
+type ScreenState = 'loading' | 'entitled' | 'paywall' | 'error';
 
-type DisplayPackage = {
-  id: string;
-  productId: string;
-  priceString: string;
-  isMock?: boolean;
-};
-
+/**
+ * Subscription paywall. The purchase UI itself is RevenueCat's remotely
+ * configured Paywall ("TuneMatch Pro v1" on the pro_v1 offering) embedded
+ * below a thin native header; this screen owns loading/entitled/error chrome,
+ * analytics, and navigation. Legacy credit-pack purchasing (validate-purchase,
+ * local credit grants, mock packages, the 30-min launch offer) is gone - old
+ * builds keep their own copy of that flow against the untouched `default`
+ * offering.
+ */
 const PaymentScreen = () => {
   const navigation = useNavigation();
   const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [processingPackage, setProcessingPackage] = useState<string | null>(null);
-  const [packages, setPackages] = useState<DisplayPackage[]>([]);
-  const [currentCredits, setCurrentCredits] = useState<number>(0);
-  const [isUsingMockData, setIsUsingMockData] = useState(false);
-  const [offerActive, setOfferActive] = useState(false);
-  const [offerRemainingMs, setOfferRemainingMs] = useState(0);
-  const offerShownTracked = useRef(false);
-  const paywallTracked = useRef(false);
   const isAuthenticated = !!user;
 
-  // Launch offer countdown - read state on mount, tick every second while active
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-    let cancelled = false;
-
-    const initOffer = async () => {
-      const state = await getLaunchOfferState();
-      if (cancelled || !state.active) return;
-
-      const deadline = Date.now() + state.remainingMs;
-      setOfferActive(true);
-      setOfferRemainingMs(state.remainingMs);
-
-      if (!offerShownTracked.current) {
-        offerShownTracked.current = true;
-        trackEvent('launch_offer_shown');
-      }
-
-      interval = setInterval(() => {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          // Offer expired while the screen is mounted - hide banner and revert labels
-          setOfferActive(false);
-          setOfferRemainingMs(0);
-          trackEvent('launch_offer_expired');
-          if (interval) {
-            clearInterval(interval);
-            interval = null;
-          }
-        } else {
-          setOfferRemainingMs(remaining);
-        }
-      }, 1000);
-    };
-
-    initOffer();
-
-    return () => {
-      cancelled = true;
-      if (interval) clearInterval(interval);
-    };
-  }, []);
-
-  const formatCountdown = (ms: number): string => {
-    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  };
+  const [screenState, setScreenState] = useState<ScreenState>('loading');
+  const [offering, setOffering] = useState<PurchasesOffering | null>(null);
+  const [currentCredits, setCurrentCredits] = useState<number>(0);
+  const [proScansToday, setProScansToday] = useState<number>(0);
+  const paywallTracked = useRef(false);
 
   const loadData = useCallback(async () => {
-    try {
-      setLoading(true);
-      
-      // Load user credits - account credits if authenticated, local credits if not
-      // Apple Guideline 5.1.1: Allow purchases without registration
-      let credits: number;
-      if (isAuthenticated) {
-        credits = await getUserCredits();
-      } else {
-        // Load local credits for non-authenticated users
-        credits = await getLocalCredits();
-      }
-      setCurrentCredits(credits);
+    setScreenState('loading');
 
-      // Fires on every paywall view. `launch_offer_shown` only covers the
-      // window when an offer happens to be running, so on its own it can't
-      // measure paywall -> purchase conversion.
-      if (!paywallTracked.current) {
-        paywallTracked.current = true;
-        trackEvent('paywall_viewed', {
-          credits_balance: credits,
-          is_out_of_credits: credits === 0,
-          is_authenticated: isAuthenticated,
-        });
-      }
+    const credits = isAuthenticated ? await getUserCredits() : await getLocalCredits();
+    setCurrentCredits(credits);
 
-      // Load available packages from RevenueCat
-      const availablePackages = await getAvailablePackages();
-      
-      if (availablePackages.length > 0) {
-        // Real packages from RevenueCat
-        const displayPackages: DisplayPackage[] = availablePackages.map(pkg => ({
-          id: pkg.identifier,
-          productId: pkg.product.identifier,
-          priceString: pkg.product.priceString,
-          isMock: false,
-        }));
-        
-        // Sort packages by credits amount
-        const sortOrder = ['tunematch_credits_5', 'tunematch_credits_18', 'tunematch_credits_60', 'tunematch_credits_150'];
-        displayPackages.sort((a, b) => {
-          const aIndex = sortOrder.indexOf(a.productId);
-          const bIndex = sortOrder.indexOf(b.productId);
-          return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
-        });
-        
-        setPackages(displayPackages);
-        setIsUsingMockData(false);
-      } else {
-        // Use mock packages (Expo Go or no products configured)
-        const mockDisplayPackages: DisplayPackage[] = MOCK_PACKAGES.map(pkg => ({
-          id: pkg.id,
-          productId: pkg.productId,
-          priceString: PACKAGE_CONFIG[pkg.productId]?.price || '€0.00',
-          isMock: true,
-        }));
-        setPackages(mockDisplayPackages);
-        setIsUsingMockData(true);
-        // Mock packages cannot be bought - the user is looking at a dead
-        // paywall. Without this event the failure is invisible in analytics.
-        trackEvent('paywall_packages_unavailable', {
-          reason: 'empty_offering',
-          is_authenticated: isAuthenticated,
-        });
-      }
-    } catch (error) {
-      console.error('Error loading payment data:', error);
-      // Fallback to mock packages on error
-      const mockDisplayPackages: DisplayPackage[] = MOCK_PACKAGES.map(pkg => ({
-        id: pkg.id,
-        productId: pkg.productId,
-        priceString: PACKAGE_CONFIG[pkg.productId]?.price || '€0.00',
-        isMock: true,
-      }));
-      setPackages(mockDisplayPackages);
-      setIsUsingMockData(true);
+    if (!paywallTracked.current) {
+      paywallTracked.current = true;
+      trackEvent('paywall_viewed', {
+        credits_balance: credits,
+        is_out_of_credits: credits === 0,
+        is_authenticated: isAuthenticated,
+        paywall_type: 'subscription',
+      });
+    }
+
+    // Already-subscribed users get a manage screen, not a sales pitch.
+    if (await hasProEntitlement()) {
+      setProScansToday(await getProScansToday());
+      setScreenState('entitled');
+      return;
+    }
+
+    const proOffering = await getProOffering();
+    if (proOffering) {
+      setOffering(proOffering);
+      setScreenState('paywall');
+    } else {
+      // Honest failure state. The old screen showed fake packages here whose
+      // Buy button dead-ended - that path is deliberately dead.
       trackEvent('paywall_packages_unavailable', {
-        reason: 'load_error',
-        error_message: error instanceof Error ? error.message : String(error),
+        reason: 'offering_missing',
         is_authenticated: isAuthenticated,
       });
-    } finally {
-      setLoading(false);
+      setScreenState('error');
     }
   }, [isAuthenticated]);
 
@@ -231,714 +92,347 @@ const PaymentScreen = () => {
     loadData();
   }, [loadData]);
 
-  const navigateToSignIn = () => {
-    // Navigate to sign in screen
-    navigation.dispatch(
-      CommonActions.navigate({
-        name: 'SignIn',
-      })
-    );
+  const goBack = () => (navigation as any).goBack();
+
+  const navigateToSignUp = () => {
+    trackEvent('register_cta_tapped', { source: 'paywall' });
+    navigation.dispatch(CommonActions.navigate({ name: 'SignUp' }));
   };
 
-  const handlePurchase = async (pkg: DisplayPackage) => {
-    triggerHaptic('medium');
-    
-    // If using mock data (RevenueCat not available), show helpful error
-    // NEVER grant credits without actual payment validation
-    if (pkg.isMock) {
-      triggerHaptic('error');
-
-      // A real purchase intent that we cannot fulfil - the strongest signal
-      // that the store is misconfigured, so it must reach analytics.
-      trackEvent('purchase_blocked_no_store', {
-        product_id: pkg.productId,
-        is_authenticated: isAuthenticated,
-      });
-
-      // Check if this is a BlueStacks/billing unavailable issue
-      const isBillingUnavailable = false; // Could check error state here if needed
-      
-      Alert.alert(
-        __DEV__ ? 'Cannot Test Purchases' : 'Store Unavailable',
-        __DEV__ 
-          ? 'Real purchases are not available on this device/emulator.\n\nPossible reasons:\n• BlueStacks doesn\'t support Google Play Billing\n• Products not configured in RevenueCat Offerings\n• Using unsupported emulator\n\n✅ To test real purchases:\n• Use a real Android device, OR\n• Use Android Studio emulator with Google Play services\n\nNote: RevenueCat is configured correctly, but billing services are unavailable.'
-          : 'In-app purchases are temporarily unavailable. Please try again later.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
+  const handleManageSubscription = async () => {
     try {
-      setProcessingPackage(pkg.id);
-
-      // Snapshot launch offer state at tap time so a mid-purchase expiry
-      // doesn't change what the user was promised
-      const offerSnapshot = await getLaunchOfferState();
-
-      // Need to get the actual package for purchase
-      const availablePackages = await getAvailablePackages();
-      const actualPackage = availablePackages.find(p => p.identifier === pkg.id);
-      
-      if (!actualPackage) {
-        Alert.alert('Error', 'Package not found. Please try again.');
-        return;
-      }
-      
-      trackEvent('purchase_started', {
-        product_id: actualPackage.product?.identifier ?? pkg.id,
-        package_id: pkg.id,
-        offer_active: offerSnapshot.active,
-        credits_balance: currentCredits,
-        is_authenticated: isAuthenticated,
-      });
-
-      const result = await purchasePackage(actualPackage);
-
-      if (result.success && result.transactionId && result.productId) {
-        const creditsAmount = getCreditsForProduct(result.productId) || 0;
-        const offerBonus = offerSnapshot.active ? getOfferBonus(result.productId) : 0;
-
-        if (isAuthenticated) {
-          // User is authenticated - validate server-side and add to account
-          // Use retry logic to handle transient network/server errors
-          // The launch offer bonus is passed to the server, which caps and grants it
-          const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3, offerBonus);
-
-          if (validation.success && validation.creditsGranted) {
-            // Remove from pending if it was there
-            await removePendingValidation(result.transactionId);
-
-            triggerHaptic('success');
-            trackEvent('purchase_completed', {
-              product_id: result.productId,
-              credits_granted: validation.creditsGranted,
-              offer_active: offerSnapshot.active,
-            });
-            setCurrentCredits(validation.newBalance || currentCredits + validation.creditsGranted);
-            Alert.alert(
-              '🎉 Purchase Successful!',
-              `You received ${validation.creditsGranted} credits!\n\nYour new balance: ${validation.newBalance || currentCredits + validation.creditsGranted} credits`,
-              [{ text: 'Awesome!', onPress: () => navigation.goBack() }]
-            );
-          } else {
-            // Validation failed even after retries
-            // Store as pending validation so it can be retried later
-            await storePendingValidation(result.transactionId, result.productId, creditsAmount + offerBonus);
-            
-            triggerHaptic('warning');
-            
-            // Check if it was already processed (duplicate)
-            if (validation.error?.includes('already') || validation.error?.includes('duplicate')) {
-              Alert.alert(
-                'Purchase Already Processed',
-                'This purchase has already been processed. Your credits should be available. If not, please contact support.',
-                [
-                  { text: 'Check Credits', onPress: () => loadData() },
-                  { text: 'OK', onPress: () => navigation.goBack() }
-                ]
-              );
-            } else {
-              Alert.alert(
-                'Purchase Successful - Validation Pending',
-                `Your purchase was successful and you were charged. However, we couldn't immediately validate the purchase due to: ${validation.error || 'network error'}.\n\nYour credits will be added automatically when validation completes. You can also try again later.\n\nTransaction ID: ${result.transactionId.substring(0, 20)}...`,
-                [
-                  { 
-                    text: 'Retry Now', 
-                    onPress: async () => {
-                      setLoading(true);
-                      const retryValidation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3, offerBonus);
-                      if (retryValidation.success && retryValidation.creditsGranted) {
-                        await removePendingValidation(result.transactionId);
-                        await loadData();
-                        triggerHaptic('success');
-                        Alert.alert('Success!', `Credits added! Your balance: ${retryValidation.newBalance} credits`);
-                        navigation.goBack();
-                      } else {
-                        triggerHaptic('error');
-                        Alert.alert('Still Pending', 'Validation is still pending. Your credits will be added automatically. Please check back later or contact support.');
-                      }
-                      setLoading(false);
-                    }
-                  },
-                  { text: 'OK', style: 'cancel', onPress: () => navigation.goBack() }
-                ]
-              );
-            }
-          }
-        } else {
-          // Apple Guideline 5.1.1: Allow purchases WITHOUT registration
-          // Store credits locally on device (base + launch offer bonus)
-          const totalCredits = creditsAmount + offerBonus;
-          await addLocalCredits(totalCredits);
-          await storeLocalPurchase(result.transactionId, result.productId, totalCredits);
-
-          const newLocalCredits = currentCredits + totalCredits;
-          setCurrentCredits(newLocalCredits);
-
-          triggerHaptic('success');
-          trackEvent('purchase_completed', {
-            product_id: result.productId,
-            credits_granted: totalCredits,
-            offer_active: offerSnapshot.active,
-          });
-
-          // Offer OPTIONAL registration for cross-device access
-          Alert.alert(
-            '🎉 Purchase Successful!',
-            `You received ${totalCredits} credits!${offerBonus > 0 ? ` (includes ${offerBonus} launch offer bonus)` : ''}\n\nYour balance: ${newLocalCredits} credits\n\nWant to access your credits from any device? Sign up for free to enable cross-device sync.`,
-            [
-              { 
-                text: 'Maybe Later', 
-                style: 'cancel',
-                onPress: () => navigation.goBack()
-              },
-              { 
-                text: 'Sign Up (Free)', 
-                onPress: () => {
-                  navigation.goBack();
-                  setTimeout(() => navigateToSignIn(), 100);
-                }
-              }
-            ]
-          );
-        }
-      } else if (result.userCancelled) {
-        trackEvent('purchase_cancelled', {
-          package_id: pkg.id,
-          offer_active: offerSnapshot.active,
-          credits_balance: currentCredits,
-        });
+      await RevenueCatUI.presentCustomerCenter();
+      // Status may have changed (cancellation, refund request) - refresh.
+      refreshProStatus().catch(() => {});
+    } catch {
+      // Customer Center unavailable - deep-link to the store's management page.
+      const info = await getCustomerInfo();
+      const url = info ? getManagementURL(info) : null;
+      if (url) {
+        Linking.openURL(url).catch(() => {});
       } else {
-        trackEvent('purchase_failed', {
-          package_id: pkg.id,
-          offer_active: offerSnapshot.active,
-          error: result.error || 'unknown',
-        });
-        triggerHaptic('error');
-        Alert.alert('Purchase Failed', result.error || 'Please try again.');
+        Alert.alert('Manage Subscription', 'Open your device Settings > Subscriptions to manage your plan.');
       }
-    } catch (error: any) {
-      trackEvent('purchase_failed', {
-        package_id: pkg.id,
-        error: error?.message ?? 'exception',
-      });
-      console.error('Purchase error:', error);
-      triggerHaptic('error');
-      Alert.alert('Error', 'Unable to complete purchase. Please try again.');
-    } finally {
-      setProcessingPackage(null);
     }
   };
 
-  const getPackageConfig = (productId: string) => {
-    return PACKAGE_CONFIG[productId] || { 
-      label: `${getCreditsForProduct(productId)} Credits`, 
-      price: '€0.00',
-      icon: '🎵',
-    };
+  const handleRestore = async () => {
+    const result = await restorePurchases();
+    if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
+      await refreshProStatus(result.customerInfo);
+      trackEvent('subscription_restored', { is_authenticated: isAuthenticated });
+      triggerHaptic('success');
+      Alert.alert('Restored', 'Your TuneMatch Pro subscription is active again.', [
+        { text: 'OK', onPress: goBack },
+      ]);
+    } else {
+      Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+    }
+  };
+
+  const handlePurchaseCompleted = async ({ customerInfo, storeTransaction }: {
+    customerInfo: CustomerInfo;
+    storeTransaction: { productIdentifier?: string } | null;
+  }) => {
+    await refreshProStatus(customerInfo);
+    const entitlement = customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+    const productId = storeTransaction?.productIdentifier
+      ?? entitlement?.productIdentifier
+      ?? 'unknown';
+    const isTrial = entitlement?.periodType === 'TRIAL';
+
+    trackEvent('purchase_completed', {
+      product_id: productId,
+      paywall_type: 'subscription',
+      is_authenticated: isAuthenticated,
+    });
+    trackEvent('subscription_started', {
+      product_id: productId,
+      is_trial: isTrial,
+      is_authenticated: isAuthenticated,
+    });
+
+    triggerHaptic('success');
+    goBack();
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#221019' }}>
-      {/* Background Blur Effects */}
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.backgroundBlur1} />
       <View style={styles.backgroundBlur2} />
+
       {/* Header */}
       <View style={styles.header}>
-        <IconButton 
-          icon="arrow-left" 
-          size={24} 
-          iconColor={Colors.textPrimary}
-          onPress={() => {
-            triggerHaptic('light');
-            navigation.goBack();
-          }} 
-        />
-        <Text variant="titleLarge" style={styles.headerTitle}>Buy Credits</Text>
-        <View style={{ width: 48 }} />
-      </View>
-
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Launch Offer Countdown Banner */}
-        {offerActive && (
-          <View style={styles.offerBanner}>
-            <LinearGradient
-              colors={['#FF3B30', '#FF3B30DD']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.offerBannerGradient}
-            >
-              <MaterialCommunityIcons name="rocket-launch" size={18} color="#FFF" />
-              <Text style={styles.offerBannerText}>
-                Launch offer - extra credits! Ends in {formatCountdown(offerRemainingMs)}
-              </Text>
-            </LinearGradient>
-          </View>
-        )}
-
-        {/* Guest Register CTA */}
-        {!isAuthenticated && (
-          <TouchableOpacity
-            style={styles.registerCta}
-            activeOpacity={0.8}
-            onPress={() => {
-              triggerHaptic('light');
-              trackEvent('register_cta_tapped', { source: 'paywall' });
-              navigation.dispatch(CommonActions.navigate({ name: 'SignUp' }));
-            }}
-          >
-            <MaterialCommunityIcons name="account-plus" size={18} color="#FF3B30" />
-            <Text style={styles.registerCtaText}>Create account - get 1 free credit</Text>
-            <MaterialCommunityIcons name="chevron-right" size={18} color="#FF3B30" />
-          </TouchableOpacity>
-        )}
-
-        {/* Hero Section - Current Credits */}
-        <View style={styles.heroSection}>
-          <LinearGradient
-            colors={['#FF3B3020', '#FF3B3010', 'transparent']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.heroGradient}
-          >
-            <View style={styles.creditsDisplay}>
-              <MaterialCommunityIcons 
-                name="diamond-stone" 
-                size={40} 
-                color="#FF3B30" 
-              />
-              <Text style={styles.creditsValue}>{currentCredits}</Text>
-              <Text style={styles.creditsLabel}>Credits Available</Text>
-              {!isAuthenticated && currentCredits > 0 && (
-                <Text style={styles.creditsHint}>Sign up to sync across devices</Text>
-              )}
-            </View>
-          </LinearGradient>
+        <TouchableOpacity onPress={goBack} style={styles.closeButton}>
+          <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+        <View style={styles.headerTitle}>
+          <Text style={styles.headerSubtitle}>TUNEMATCH</Text>
+          <Text style={styles.headerMainTitle}>TuneMatch Pro</Text>
         </View>
-
-        {/* Packages List */}
-        {loading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#FF3B30" />
-            <Text style={styles.loadingText}>Loading packages...</Text>
+        {currentCredits > 0 ? (
+          <View style={styles.creditsPill}>
+            <MaterialCommunityIcons name="lightning-bolt" size={14} color={DesignColors.primary} />
+            <Text style={styles.creditsPillText}>{currentCredits}</Text>
           </View>
         ) : (
-          <View style={styles.packagesList}>
-            {packages.map((pkg, index) => {
-              const config = getPackageConfig(pkg.productId);
-              const isMostPopular = config.isMostPopular;
-              const credits = getCreditsForProduct(pkg.productId);
-              const offerBonus = offerActive ? getOfferBonus(pkg.productId) : 0;
-              const displayCredits = (credits || 0) + offerBonus;
-
-              return (
-                <View 
-                  key={pkg.id} 
-                  style={[
-                    styles.packageCard,
-                    isMostPopular && styles.popularPackageCard,
-                  ]}
-                >
-                  {isMostPopular && (
-                    <View style={styles.popularRibbon}>
-                      <LinearGradient
-                        colors={['#FF3B30', '#FF3B30DD']}
-                        style={styles.ribbonGradient}
-                      >
-                        <MaterialCommunityIcons name="star" size={12} color="#FFF" />
-                        <Text style={styles.popularText}>MOST POPULAR</Text>
-                      </LinearGradient>
-                    </View>
-                  )}
-                  
-                  <View style={styles.packageContent}>
-                    <View style={styles.packageMainRow}>
-                      {/* Left: Icon & Credits */}
-                      <View style={styles.packageLeft}>
-                        <Text style={styles.packageIcon}>{config.icon || '🎵'}</Text>
-                        <View style={styles.creditsInfo}>
-                          {offerBonus > 0 ? (
-                            <View style={styles.boostedCreditsRow}>
-                              <Text style={styles.strikethroughCredits}>{credits}</Text>
-                              <Text style={styles.packageCredits}>{displayCredits}</Text>
-                            </View>
-                          ) : (
-                            <Text style={styles.packageCredits}>{credits}</Text>
-                          )}
-                          <Text style={styles.packageCreditsLabel}>Credits</Text>
-                          {config.bonus && (
-                            <View style={styles.bonusContainer}>
-                              <LinearGradient
-                                colors={['#4CAF50', '#45A049']}
-                                style={styles.bonusGradient}
-                              >
-                                <MaterialCommunityIcons name="gift" size={12} color="#FFF" />
-                                <Text style={styles.bonusText}>{config.bonus}</Text>
-                              </LinearGradient>
-                            </View>
-                          )}
-                          {offerBonus > 0 && (
-                            <View style={styles.bonusContainer}>
-                              <LinearGradient
-                                colors={['#FF3B30', '#FF3B30DD']}
-                                style={styles.bonusGradient}
-                              >
-                                <MaterialCommunityIcons name="rocket-launch" size={12} color="#FFF" />
-                                <Text style={styles.bonusText}>+{offerBonus} bonus</Text>
-                              </LinearGradient>
-                            </View>
-                          )}
-                        </View>
-                      </View>
-
-                      {/* Right: Price & Button */}
-                      <View style={styles.packageRight}>
-                        <Text style={styles.price}>{pkg.priceString}</Text>
-                        <Button
-                          mode={isMostPopular ? 'contained' : 'outlined'}
-                          onPress={() => handlePurchase(pkg)}
-                          disabled={processingPackage !== null}
-                          loading={processingPackage === pkg.id}
-                          style={[
-                            styles.purchaseButton,
-                            isMostPopular && styles.popularButton,
-                          ]}
-                          labelStyle={[
-                            styles.purchaseButtonLabel,
-                            isMostPopular && styles.popularButtonLabel,
-                          ]}
-                          contentStyle={styles.purchaseButtonContent}
-                          compact
-                        >
-                          {processingPackage === pkg.id ? 'Processing...' : 'Buy Now'}
-                        </Button>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
+          <View style={styles.headerSpacer} />
         )}
+      </View>
 
-        {/* Compact Info Section */}
-        <View style={styles.infoSection}>
-          <MaterialCommunityIcons name="check-circle" size={14} color="#FF3B30" />
-          <Text style={styles.infoText}>1 credit = 1 analysis • In-app purchase only • Credits never expire</Text>
+      {screenState === 'loading' && (
+        <View style={styles.centerContent}>
+          <ActivityIndicator size="large" color={DesignColors.primary} />
         </View>
-      </ScrollView>
+      )}
+
+      {screenState === 'entitled' && (
+        <View style={styles.centerContent}>
+          <View style={styles.proBadge}>
+            <MaterialCommunityIcons name="crown" size={42} color="#FFD700" />
+          </View>
+          <Text style={styles.proTitle}>You're Pro</Text>
+          <Text style={styles.proSubtitle}>
+            {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+          </Text>
+          {currentCredits > 0 && (
+            <Text style={styles.proCreditsNote}>
+              Plus {currentCredits} bonus credit{currentCredits === 1 ? '' : 's'} if you ever need more
+            </Text>
+          )}
+          <TouchableOpacity style={styles.manageButton} onPress={handleManageSubscription}>
+            <Text style={styles.manageButtonText}>Manage Subscription</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {screenState === 'error' && (
+        <View style={styles.centerContent}>
+          <MaterialCommunityIcons name="cloud-off-outline" size={48} color="rgba(255,255,255,0.4)" />
+          <Text style={styles.errorTitle}>Plans couldn't be loaded</Text>
+          <Text style={styles.errorSubtitle}>Check your connection and try again.</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={loadData}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleRestore} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Text style={styles.restoreLink}>Restore Purchases</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {screenState === 'paywall' && offering && (
+        <View style={styles.paywallWrap}>
+          <RevenueCatUI.Paywall
+            style={styles.paywall}
+            options={{ offering, displayCloseButton: false }}
+            onPurchaseStarted={({ packageBeingPurchased }: any) => {
+              trackEvent('purchase_started', {
+                product_id: packageBeingPurchased?.product?.identifier,
+                package_id: packageBeingPurchased?.identifier,
+                paywall_type: 'subscription',
+                credits_balance: currentCredits,
+                is_authenticated: isAuthenticated,
+              });
+            }}
+            onPurchaseCompleted={handlePurchaseCompleted}
+            onPurchaseCancelled={() => {
+              trackEvent('purchase_cancelled', {
+                paywall_type: 'subscription',
+                credits_balance: currentCredits,
+              });
+            }}
+            onPurchaseError={({ error }: any) => {
+              trackEvent('purchase_failed', {
+                paywall_type: 'subscription',
+                error: error?.message ?? String(error),
+              });
+            }}
+            onRestoreCompleted={async ({ customerInfo }: { customerInfo: CustomerInfo }) => {
+              const isPro = await refreshProStatus(customerInfo);
+              if (isPro) {
+                trackEvent('subscription_restored', { is_authenticated: isAuthenticated });
+                triggerHaptic('success');
+                goBack();
+              } else {
+                Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+              }
+            }}
+            onDismiss={goBack}
+          />
+          {!isAuthenticated && (
+            <TouchableOpacity
+              style={styles.registerLink}
+              onPress={navigateToSignUp}
+              hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+            >
+              <Text style={styles.registerLinkText}>
+                or create a free account for 1 bonus credit
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: DesignColors.backgroundDark,
+  },
+  backgroundBlur1: {
+    position: 'absolute',
+    top: -120,
+    left: -80,
+    width: 300,
+    height: 300,
+    borderRadius: 9999,
+    backgroundColor: DesignColors.primary + '20',
+    opacity: 0.3,
+  },
+  backgroundBlur2: {
+    position: 'absolute',
+    bottom: -120,
+    right: -80,
+    width: 300,
+    height: 300,
+    borderRadius: 9999,
+    backgroundColor: DesignColors.accentPurple + '20',
+    opacity: 0.3,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    fontSize: 18,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.md,
-  },
-  
-  // Launch Offer Banner
-  offerBanner: {
-    marginBottom: Spacing.sm,
-    borderRadius: BorderRadius.md,
-    overflow: 'hidden',
-    ...Shadows.card,
-  },
-  offerBannerGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    gap: Spacing.xs,
-  },
-  offerBannerText: {
-    color: '#FFF',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-
-  // Guest Register CTA
-  registerCta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.sm,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: '#FF3B30',
-    backgroundColor: '#FF3B3015',
-  },
-  registerCtaText: {
-    color: '#FF3B30',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-
-  // Boosted credits (launch offer)
-  boostedCreditsRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 6,
-  },
-  strikethroughCredits: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-    textDecorationLine: 'line-through',
-  },
-
-  // Hero Section
-  heroSection: {
-    marginBottom: Spacing.lg,
-    borderRadius: BorderRadius.lg,
-    overflow: 'hidden',
-  },
-  heroGradient: {
-    paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
-    borderRadius: BorderRadius.lg,
-  },
-  creditsDisplay: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  creditsValue: {
-    fontSize: 48,
-    fontWeight: '800',
-    color: Colors.textPrimary,
-    marginTop: Spacing.xs,
-    letterSpacing: -1,
-  },
-  creditsLabel: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 4,
-    fontWeight: '500',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  creditsHint: {
-    fontSize: 11,
-    color: '#FF3B30',
-    marginTop: 6,
-    fontWeight: '500',
-  },
-
-  // Packages List - Compact Vertical
-  packagesList: {
-    flexDirection: 'column',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xs,
-  },
-  packageCard: {
-    width: '100%',
-    backgroundColor: Colors.cardBackground,
-    borderRadius: BorderRadius.lg,
-    overflow: 'hidden',
-    ...Shadows.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  popularPackageCard: {
-    borderWidth: 2,
-    borderColor: '#FF3B30',
-    ...Shadows.prominent,
-  },
-  popularRibbon: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    zIndex: 10,
-    borderTopRightRadius: BorderRadius.lg,
-    borderBottomLeftRadius: BorderRadius.md,
-    overflow: 'hidden',
-  },
-  ribbonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.xs,
-    paddingVertical: 3,
-    gap: 3,
-  },
-  popularText: {
-    color: '#FFF',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  packageContent: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm + 10,
-  },
-  packageMainRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.md,
-  },
-  packageLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    gap: Spacing.md,
-  },
-  packageRight: {
-    alignItems: 'flex-end',
-    gap: Spacing.sm,
-    minWidth: 95,
-  },
-  packageIcon: {
-    fontSize: 32,
-  },
-  creditsInfo: {
-    flex: 1,
-    gap: 4,
-  },
-  packageCredits: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    lineHeight: 28,
-  },
-  packageCreditsLabel: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  bonusContainer: {
-    borderRadius: BorderRadius.round,
-    overflow: 'hidden',
-    marginTop: 6,
-    alignSelf: 'flex-start',
-  },
-  bonusGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 4,
-    gap: 4,
-  },
-  bonusText: {
-    color: '#FFF',
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  price: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FF3B30',
-    letterSpacing: -0.3,
-    marginBottom: 4,
-  },
-  purchaseButton: {
-    borderRadius: BorderRadius.md,
-    height: 32,
-    borderWidth: 0,
-    borderColor: '#FF3B30',
-    minWidth: 85,
-    backgroundColor: '#FF3B30',
-  },
-  popularButton: {
-    backgroundColor: '#FF3B30',
-    borderColor: '#FF3B30',
-  },
-  purchaseButtonContent: {
-    height: 32,
-    paddingHorizontal: Spacing.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  purchaseButtonLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFF',
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    includeFontPadding: false,
-    marginTop: 4,
-  },
-  popularButtonLabel: {
-    color: '#FFF',
-  },
-
-  // Info Section
-  infoSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    paddingTop: Spacing.xs,
+    paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
   },
-  infoText: {
-    fontSize: 10,
-    color: Colors.textSecondary,
-    flex: 1,
+  closeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-
-  // Loading
-  loadingContainer: {
+  headerTitle: {
+    alignItems: 'center',
+  },
+  headerSubtitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: DesignColors.primary,
+    letterSpacing: 2,
+  },
+  headerMainTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  headerSpacer: {
+    width: 40,
+  },
+  creditsPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 9999,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  creditsPillText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  centerContent: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
+    gap: Spacing.sm,
   },
-  loadingText: {
+  proBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: 'rgba(255, 215, 0, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.sm,
+  },
+  proTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  proSubtitle: {
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.7)',
+  },
+  proCreditsNote: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.5)',
+  },
+  manageButton: {
+    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  manageButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
     marginTop: Spacing.sm,
-    color: Colors.textSecondary,
+  },
+  errorSubtitle: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.xl * 1.5,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: DesignColors.primary,
+  },
+  retryButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  restoreLink: {
+    marginTop: Spacing.md,
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.55)',
+    textDecorationLine: 'underline',
+  },
+  paywallWrap: {
+    flex: 1,
+  },
+  paywall: {
+    flex: 1,
+  },
+  registerLink: {
+    alignSelf: 'center',
+    paddingVertical: Spacing.sm,
+  },
+  registerLinkText: {
     fontSize: 12,
-  },
-  backgroundBlur1: {
-    position: 'absolute',
-    top: -height * 0.1,
-    left: -width * 0.2,
-    width: width * 0.8,
-    height: height * 0.5,
-    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
-    borderRadius: 9999,
-    opacity: 0.3,
-    zIndex: 0,
-  },
-  backgroundBlur2: {
-    position: 'absolute',
-    bottom: -height * 0.1,
-    right: -width * 0.2,
-    width: width * 0.8,
-    height: height * 0.5,
-    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
-    borderRadius: 9999,
-    opacity: 0.3,
-    zIndex: 0,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.55)',
+    textDecorationLine: 'underline',
   },
 });
 

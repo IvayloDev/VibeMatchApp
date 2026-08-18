@@ -13,7 +13,11 @@ import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
-import { startLaunchOffer } from '../../../lib/launchOffer';
+import * as SecureStore from 'expo-secure-store';
+import { hasProEntitlement } from '../../../lib/revenuecat';
+
+// Once-ever flag for the post-first-scan paywall pitch (device-scoped).
+const RESULTS_PAYWALL_SHOWN_KEY = 'tunematch_results_paywall_shown';
 import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
 import { trackEvent } from '../../../lib/posthog';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
@@ -589,27 +593,31 @@ const ResultsScreen = () => {
   };
 
   const handleStartExploring = async () => {
-    // The offer is one-time per device. When this tap is the one that starts it,
-    // show the paywall right here - at the peak of the first match - instead of
-    // running a 30-minute countdown the user never sees. Previously this only
-    // set the timer and navigated away, so the offer expired unseen unless the
-    // user happened to open Payment on their own.
-    let started = false;
+    // Show the subscription paywall exactly once per device, at the peak of
+    // the first match (this replaces the retired 30-min launch offer). Every
+    // later tap goes to the Vault - the paywall stays reachable from the
+    // Dashboard banner, the credits pill and the out-of-credits gate, so this
+    // moment is a single pitch, not a toll booth. Subscribers skip it.
+    let showPaywall = false;
     try {
-      started = await startLaunchOffer();
+      const alreadyShown = await SecureStore.getItemAsync(RESULTS_PAYWALL_SHOWN_KEY);
+      if (!alreadyShown && !(await hasProEntitlement())) {
+        await SecureStore.setItemAsync(RESULTS_PAYWALL_SHOWN_KEY, 'true');
+        showPaywall = true;
+      }
     } catch {
-      started = false;
+      showPaywall = false;
     }
 
-    if (started) {
-      trackEvent('launch_offer_started');
+    if (showPaywall) {
+      trackEvent('paywall_cta_tapped', { source: 'results_explore' });
       navigation.navigate('Payment');
       return;
     }
 
-    // Offer already used (second tap, or a returning guest): send them to the
-    // Vault rather than Discover. Discover is a 0-credit upload prompt - a dead
-    // end - while the Vault now holds the match they just made, guest or not.
+    // Send them to the Vault rather than Discover. Discover is a 0-credit
+    // upload prompt - a dead end - while the Vault now holds the match they
+    // just made, guest or not.
     navigation.navigate('History', { screen: 'History' });
   };
 

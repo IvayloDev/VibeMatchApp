@@ -10,6 +10,16 @@ import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFa
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
+import {
+  hasProEntitlement,
+  subscribeToProStatus,
+  refreshProStatus,
+  restorePurchases,
+  getCustomerInfo,
+  getManagementURL,
+  PRO_ENTITLEMENT_ID,
+} from '../../../lib/revenuecat';
+import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -33,6 +43,7 @@ type RootStackParamList = {
 const ProfileScreen = () => {
   const { user, signOut } = useAuth();
   const [credits, setCredits] = useState(0);
+  const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -70,6 +81,7 @@ const ProfileScreen = () => {
     try {
       const userCredits = await getUserCredits();
       setCredits(userCredits);
+      setIsPro(await hasProEntitlement());
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -77,16 +89,50 @@ const ProfileScreen = () => {
     }
   };
 
+  // Customer Center is RevenueCat's native manage-subscription sheet; the
+  // store deep link is the fallback when it cannot present.
+  const handleManageSubscription = async () => {
+    try {
+      await RevenueCatUI.presentCustomerCenter();
+      refreshProStatus().catch(() => {});
+    } catch {
+      const info = await getCustomerInfo();
+      const url = info ? getManagementURL(info) : null;
+      if (url) {
+        Linking.openURL(url).catch(() => {});
+      } else {
+        Alert.alert('Manage Subscription', 'Open your device Settings > Subscriptions to manage your plan.');
+      }
+    }
+  };
+
+  const handleRestorePurchases = async () => {
+    const result = await restorePurchases();
+    if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
+      await refreshProStatus(result.customerInfo);
+      setIsPro(true);
+      trackEvent('subscription_restored', { is_authenticated: !!user });
+      Alert.alert('Restored', 'Your TuneMatch Pro subscription is active again.');
+    } else {
+      Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+    }
+  };
+
   // Load credits on mount
   useEffect(() => {
     loadUserCredits();
-    
+
+    // Keep the Pro card live across purchases/renewals/expirations.
+    const unsubscribe = subscribeToProStatus(setIsPro);
+
     // Animate on mount
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
     }).start();
+
+    return unsubscribe;
   }, []);
 
   // Refresh credits when screen comes into focus
@@ -307,33 +353,51 @@ const ProfileScreen = () => {
             <View style={styles.creditCardContent}>
               <View style={styles.creditCardHeader}>
                 <View style={styles.creditCardText}>
-                  <Text style={styles.creditBalanceLabel}>Credit Balance</Text>
-                  <View style={styles.creditBalanceValue}>
-                    {loading ? (
-                      <View style={styles.skeletonCredits} />
-                    ) : (
-                      <AnimatedCounter 
-                        value={credits} 
-                        duration={800}
-                        style={styles.creditNumber}
-                      />
-                    )}
-                  </View>
+                  {isPro ? (
+                    <>
+                      <Text style={styles.creditBalanceLabel}>TuneMatch Pro</Text>
+                      <Text style={styles.proCardText}>10 matches every day</Text>
+                      {credits > 0 && (
+                        <Text style={styles.proCardCredits}>
+                          + {credits} bonus credit{credits === 1 ? '' : 's'}
+                        </Text>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.creditBalanceLabel}>Credit Balance</Text>
+                      <View style={styles.creditBalanceValue}>
+                        {loading ? (
+                          <View style={styles.skeletonCredits} />
+                        ) : (
+                          <AnimatedCounter
+                            value={credits}
+                            duration={800}
+                            style={styles.creditNumber}
+                          />
+                        )}
+                      </View>
+                    </>
+                  )}
                 </View>
                 <View style={styles.creditCardIcon}>
-                  <MaterialCommunityIcons name="auto-fix" size={28} color="#FFFFFF" />
+                  <MaterialCommunityIcons name={isPro ? 'crown' : 'auto-fix'} size={28} color="#FFFFFF" />
                 </View>
               </View>
 
               <TouchableOpacity
                 style={styles.topUpButton}
                 onPress={() => {
-                  navigation.navigate('Payment');
+                  if (isPro) {
+                    handleManageSubscription();
+                  } else {
+                    navigation.navigate('Payment');
+                  }
                 }}
                 activeOpacity={0.9}
               >
-                <MaterialCommunityIcons name="plus-circle" size={16} color="#FF3B30" />
-                <Text style={styles.topUpButtonText}>Top Up Balance</Text>
+                <MaterialCommunityIcons name={isPro ? 'cog' : 'plus-circle'} size={16} color="#FF3B30" />
+                <Text style={styles.topUpButtonText}>{isPro ? 'Manage Subscription' : 'Go Pro'}</Text>
               </TouchableOpacity>
             </View>
           </LinearGradient>
@@ -382,6 +446,33 @@ const ProfileScreen = () => {
           <MaterialCommunityIcons name="bug-outline" size={20} color="rgba(255,255,255,0.75)" />
           <Text style={styles.reportBugButtonText}>Report a Bug</Text>
         </TouchableOpacity>
+
+        {/* Subscription housekeeping + the legal links Apple requires
+            alongside auto-renewable subscriptions. */}
+        <TouchableOpacity
+          style={styles.reportBugButton}
+          onPress={handleRestorePurchases}
+          activeOpacity={0.8}
+        >
+          <MaterialCommunityIcons name="restore" size={20} color="rgba(255,255,255,0.75)" />
+          <Text style={styles.reportBugButtonText}>Restore Purchases</Text>
+        </TouchableOpacity>
+
+        <View style={styles.legalRow}>
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.legalLinkText}>Terms of Use</Text>
+          </TouchableOpacity>
+          <Text style={styles.legalDivider}>·</Text>
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://ivaylodev.github.io/vibematch-privacy-policy/')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.legalLinkText}>Privacy Policy</Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
@@ -623,6 +714,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: 'rgba(255,255,255,0.75)',
+  },
+  proCardText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginTop: 2,
+  },
+  proCardCredits: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 2,
+  },
+  legalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: Spacing.md,
+  },
+  legalLinkText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.5)',
+    textDecorationLine: 'underline',
+  },
+  legalDivider: {
+    color: 'rgba(255,255,255,0.35)',
+    fontSize: 12,
   },
   bottomSpacing: {
     height: 20,

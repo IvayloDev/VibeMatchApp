@@ -32,8 +32,8 @@ export default function CreditsModal({
   onCancel,
   onBuy,
   title = "You're out of credits",
-  message = 'You need at least 1 credit to match a photo. Grab a few more to keep discovering songs.',
-  buyLabel = 'Get Credits',
+  message = 'Go Pro for 10 song matches every day - with a 3-day free trial.',
+  buyLabel = 'Try TuneMatch Pro',
   cancelLabel = 'Not now',
 }: CreditsModalProps) {
   return (
@@ -61,7 +61,7 @@ export default function CreditsModal({
               end={{ x: 1, y: 1 }}
               style={styles.buyGradient}
             >
-              <MaterialCommunityIcons name="lightning-bolt" size={18} color="#FFF" />
+              <MaterialCommunityIcons name="crown" size={18} color="#FFF" />
               <Text style={styles.buyText}>{buyLabel}</Text>
             </LinearGradient>
           </TouchableOpacity>

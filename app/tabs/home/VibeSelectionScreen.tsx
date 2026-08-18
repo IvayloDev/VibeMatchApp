@@ -15,6 +15,8 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getUserCredits } from '../../../lib/credits';
+import { hasProEntitlement } from '../../../lib/revenuecat';
+import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
 import CreditsModal from '../../../lib/components/CreditsModal';
@@ -61,10 +63,24 @@ const VibeSelectionScreen = () => {
     if (!selectedVibe) return;
     try {
       setLoading(true);
-      const currentCredits = await getUserCredits();
-      if (currentCredits < 1) {
-        setShowCreditsModal(true);
-        return;
+      // Same gate order as AnalyzingScreen: pro-with-quota passes free, a pro
+      // at the daily cap falls back to credits, and only non-pros see the
+      // paywall modal. AnalyzingScreen re-checks; this is just the early exit.
+      const isPro = await hasProEntitlement();
+      const proQuotaLeft = isPro ? await canProScanToday() : false;
+      if (!proQuotaLeft) {
+        const currentCredits = await getUserCredits();
+        if (currentCredits < 1) {
+          if (isPro) {
+            Alert.alert(
+              `That's ${PRO_DAILY_LIMIT} for today!`,
+              'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.'
+            );
+          } else {
+            setShowCreditsModal(true);
+          }
+          return;
+        }
       }
       navigation.navigate('Analyzing', { image, selectedVibe });
     } catch (error) {

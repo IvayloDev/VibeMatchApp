@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -11,6 +11,8 @@ import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFa
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
+import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
+import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -36,6 +38,7 @@ type RootStackParamList = {
 const DashboardScreen = () => {
   const { user } = useAuth();
   const [credits, setCredits] = useState(0);
+  const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -47,6 +50,7 @@ const DashboardScreen = () => {
     try {
       const userCredits = await getUserCredits();
       setCredits(userCredits);
+      setIsPro(await hasProEntitlement());
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -56,7 +60,11 @@ const DashboardScreen = () => {
 
   useEffect(() => {
     loadUserCredits();
-    
+
+    // Purchases, renewals and expirations land here live, so the PRO badge
+    // and gates flip without a screen re-entry.
+    const unsubscribe = subscribeToProStatus(setIsPro);
+
     // Animate on mount
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -71,6 +79,8 @@ const DashboardScreen = () => {
         useNativeDriver: true,
       }),
     ]).start();
+
+    return unsubscribe;
   }, []);
 
   useFocusEffect(
@@ -80,7 +90,18 @@ const DashboardScreen = () => {
   );
 
   const pickImage = async () => {
-    if (credits < 1) {
+    // Pro subscribers with quota left skip the credit gate entirely; the
+    // stricter per-scan check (including the daily cap) lives in
+    // AnalyzingScreen, which every scan path funnels through.
+    const proCanScan = isPro && (await canProScanToday());
+    if (!proCanScan && credits < 1) {
+      if (isPro) {
+        Alert.alert(
+          `That's ${PRO_DAILY_LIMIT} for today!`,
+          'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.'
+        );
+        return;
+      }
       trackEvent('out_of_credits', { source: 'dashboard_picker', credits_balance: credits });
       setShowCreditsModal(true);
       return;
@@ -110,7 +131,7 @@ const DashboardScreen = () => {
   };
 
   const handleButtonPress = () => {
-    if (credits < 1) {
+    if (!isPro && credits < 1) {
       trackEvent('out_of_credits', { source: 'dashboard_cta', credits_balance: credits });
       navigation.navigate('Payment');
     } else {
@@ -169,7 +190,8 @@ const DashboardScreen = () => {
                 <View style={styles.titleUnderline} />
               </View>
               
-              {/* Right: Credits Badge */}
+              {/* Right: PRO badge for subscribers, credits count otherwise.
+                  Both open Payment - which shows manage-subscription to pros. */}
               {!loading && (
                 <Pressable
                   onPress={() => {
@@ -178,8 +200,17 @@ const DashboardScreen = () => {
                   style={styles.creditsBadge}
                 >
                   <View style={styles.creditsTextContainer}>
-                    <Text style={styles.creditsValue}>{credits}</Text>
-                    <Text style={styles.creditsText}> CREDITS</Text>
+                    {isPro ? (
+                      <>
+                        <MaterialCommunityIcons name="crown" size={14} color="#FFD700" />
+                        <Text style={styles.creditsText}> PRO</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.creditsValue}>{credits}</Text>
+                        <Text style={styles.creditsText}> CREDITS</Text>
+                      </>
+                    )}
                   </View>
                 </Pressable>
               )}
@@ -204,7 +235,7 @@ const DashboardScreen = () => {
           {/* Guest monetization: the loud banner sells credits (the paywall is
               where revenue happens); account creation is a quiet secondary line
               underneath rather than the thing we shout about. */}
-          {!user && (
+          {!user && !isPro && (
             <Animated.View style={{ opacity: fadeAnim }}>
               <TouchableOpacity
                 style={styles.guestRegisterBanner}
@@ -214,10 +245,10 @@ const DashboardScreen = () => {
                 }}
                 activeOpacity={0.85}
               >
-                <MaterialCommunityIcons name="lightning-bolt" size={20} color="#FFFFFF" />
+                <MaterialCommunityIcons name="crown" size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
-                  <Text style={styles.guestRegisterTitle}>Get Credits</Text>
-                  <Text style={styles.guestRegisterSubtitle}>Top up and keep matching</Text>
+                  <Text style={styles.guestRegisterTitle}>Try TuneMatch Pro free</Text>
+                  <Text style={styles.guestRegisterSubtitle}>10 matches a day. 3-day free trial.</Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
               </TouchableOpacity>
