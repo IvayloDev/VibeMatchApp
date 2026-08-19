@@ -19,6 +19,7 @@ import {
   getManagementURL,
   PRO_ENTITLEMENT_ID,
 } from '../../../lib/revenuecat';
+import { getProScansToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { connectSpotify } from '../../../lib/spotify';
 import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
@@ -44,6 +45,7 @@ type RootStackParamList = {
 const ProfileScreen = () => {
   const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus } = useAuth();
   const [connectingSpotify, setConnectingSpotify] = useState(false);
+  const [proScansToday, setProScansToday] = useState(0);
   const [credits, setCredits] = useState(0);
   const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -83,7 +85,9 @@ const ProfileScreen = () => {
     try {
       const userCredits = await getUserCredits();
       setCredits(userCredits);
-      setIsPro(await hasProEntitlement());
+      const pro = await hasProEntitlement();
+      setIsPro(pro);
+      if (pro) setProScansToday(await getProScansToday());
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -387,7 +391,11 @@ const ProfileScreen = () => {
                   {isPro ? (
                     <>
                       <Text style={styles.creditBalanceLabel}>TuneMatch Pro</Text>
-                      <Text style={styles.proCardText}>10 matches every day</Text>
+                      {/* The plan line alone left subscribers with no idea how
+                          much of today's allowance was still available. */}
+                      <Text style={styles.proCardText}>
+                        {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+                      </Text>
                       {credits > 0 && (
                         <Text style={styles.proCardCredits}>
                           + {credits} bonus credit{credits === 1 ? '' : 's'}

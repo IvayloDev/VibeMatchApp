@@ -153,7 +153,12 @@ const PaymentScreen = () => {
     });
 
     triggerHaptic('success');
-    goBack();
+    // Do NOT goBack() here. The paywall can be opened from ResultsScreen, and
+    // going back dropped a brand new subscriber onto the results of an old
+    // scan, which reads like the purchase did nothing. Send them into the app.
+    navigation.dispatch(
+      CommonActions.reset({ index: 0, routes: [{ name: 'MainTabs' }] })
+    );
   };
 
   return (

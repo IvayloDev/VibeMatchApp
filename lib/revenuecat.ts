@@ -583,6 +583,46 @@ export async function initRevenueCat(userId?: string): Promise<void> {
 /**
  * Identify user when they log in (links purchases to user account)
  */
+/**
+ * Make sure a subscription bought as a guest survives creating an account.
+ *
+ * A guest's purchase is attached to RevenueCat's ANONYMOUS app user id. Signing
+ * up calls logIn() with the Supabase user id, and the entitlement has to move
+ * across. When it does not, the app correctly reports "not pro" while the App
+ * Store still says subscribed - the user has paid and lost access, which is the
+ * worst failure this screen has.
+ *
+ * identifyUser() alone was not enough: it logs in and returns customerInfo, but
+ * nothing re-read the entitlement afterwards, and nothing recovered the receipt
+ * if the transfer did not happen. syncPurchases() re-sends the StoreKit receipt
+ * under the now-identified id, which (with the project set to "Transfer to new
+ * App User ID") reattaches the subscription.
+ *
+ * Safe to call on every sign-in: when the entitlement is already present it
+ * costs one getCustomerInfo and returns immediately.
+ */
+export async function reconcileProAfterLogin(userId: string): Promise<boolean> {
+  if (!isRevenueCatAvailable() || !isConfigured) return false;
+
+  await identifyUser(userId);
+
+  let isPro = await refreshProStatus();
+  if (isPro) return true;
+
+  // Not pro after logging in. If StoreKit still holds a receipt, resending it
+  // attaches the purchase to this user id instead of the orphaned anonymous one.
+  try {
+    console.log('[RevenueCat] not pro after logIn - syncing purchases to recover a guest subscription');
+    const info = await syncPurchases();
+    isPro = await refreshProStatus(info);
+    if (isPro) console.log('[RevenueCat] ✅ recovered entitlement via syncPurchases');
+  } catch (error) {
+    console.warn('[RevenueCat] syncPurchases during login reconcile failed:', error);
+  }
+
+  return isPro;
+}
+
 export async function identifyUser(userId: string): Promise<CustomerInfo | null> {
   if (!isRevenueCatAvailable() || !isConfigured) {
     console.warn('[RevenueCat] Not configured, skipping user identification');

@@ -12,7 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
-import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
+import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -39,6 +39,7 @@ const DashboardScreen = () => {
   const { user } = useAuth();
   const [credits, setCredits] = useState(0);
   const [isPro, setIsPro] = useState(false);
+  const [proScansToday, setProScansToday] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -50,7 +51,10 @@ const DashboardScreen = () => {
     try {
       const userCredits = await getUserCredits();
       setCredits(userCredits);
-      setIsPro(await hasProEntitlement());
+      const pro = await hasProEntitlement();
+      setIsPro(pro);
+      // Refreshed alongside credits so the badge is right after every scan.
+      if (pro) setProScansToday(await getProScansToday());
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -203,7 +207,11 @@ const DashboardScreen = () => {
                     {isPro ? (
                       <>
                         <MaterialCommunityIcons name="crown" size={14} color="#FFD700" />
-                        <Text style={styles.creditsText}> PRO</Text>
+                        {/* Subscribers were shown only "PRO", with no way to see
+                            how much of the daily allowance was left. */}
+                        <Text style={styles.creditsText}>
+                          {' '}{Math.max(0, PRO_DAILY_LIMIT - proScansToday)}/{PRO_DAILY_LIMIT} TODAY
+                        </Text>
                       </>
                     ) : (
                       <>

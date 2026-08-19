@@ -17,7 +17,7 @@ import { AuthProvider, useAuth } from './lib/AuthContext';
 import DebugCreditsButton from './lib/components/DebugCreditsButton';
 import LoadingScreen from './lib/LoadingScreen';
 import { Colors } from './lib/designSystem';
-import { initRevenueCat, identifyUser, logOutUser } from './lib/revenuecat';
+import { initRevenueCat, identifyUser, logOutUser, reconcileProAfterLogin } from './lib/revenuecat';
 import { identifyUser as posthogIdentify, resetUser as posthogReset, trackScreen } from './lib/posthog';
 import { rescheduleEngagementReminders } from './lib/notifications';
 
@@ -86,8 +86,12 @@ function AppContent() {
         
         // Initialize with user ID if available
         await initRevenueCat(user?.id);
-        
+
         if (user?.id) {
+          // Carry a guest's subscription across to the new account. Without this
+          // a user who subscribes as a guest and then signs up loses Pro while
+          // still being charged.
+          await reconcileProAfterLogin(user.id);
           prevUserIdRef.current = user.id;
           posthogIdentify(user.id, { email: user.email });
         } else if (prevUserIdRef.current) {
