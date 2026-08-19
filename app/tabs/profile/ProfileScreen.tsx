@@ -50,6 +50,9 @@ const ProfileScreen = () => {
   const [proScansToday, setProScansToday] = useState(0);
   const [proPlan, setProPlan] = useState<ProPlanSummary | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Gates the Spotify card until this screen has confirmed the status itself,
+  // so a connected user never sees "Connect Spotify" flash first.
+  const [spotifyResolved, setSpotifyResolved] = useState(false);
   const [resetIn, setResetIn] = useState(formatQuotaReset());
   const [credits, setCredits] = useState(0);
   const [isPro, setIsPro] = useState(false);
@@ -90,6 +93,13 @@ const ProfileScreen = () => {
     try {
       const userCredits = await getUserCredits();
       setCredits(userCredits);
+      // Onboarding deliberately skips the non-silent refresh for guests (it
+      // would bounce them to the splash), so AuthContext can still say
+      // "not connected" for someone who just linked Spotify. Re-read silently.
+      refreshSpotifyStatus({ silent: true })
+        .catch(() => {})
+        .finally(() => setSpotifyResolved(true));
+
       const pro = await hasProEntitlement();
       setIsPro(pro);
       if (pro) {
@@ -146,7 +156,7 @@ const ProfileScreen = () => {
     trackEvent('spotify_connect_tapped', { source: 'profile', is_authenticated: !!user });
     try {
       const result = await connectSpotify();
-      await refreshSpotifyStatus();
+      await refreshSpotifyStatus({ silent: true });
       if (result.success) {
         trackEvent('spotify_connected', { source: 'profile', is_authenticated: !!user });
         Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
@@ -170,7 +180,10 @@ const ProfileScreen = () => {
     try {
       await refreshProStatus().catch(() => {});
       await loadUserCredits();
-      await refreshSpotifyStatus().catch(() => {});
+      // Silent: a plain refresh flips spotifyChecking, and App.js swaps the
+      // NavigationContainer for LoadingScreen when that is true - which threw
+      // the user from Profile onto Discover mid-pull.
+      await refreshSpotifyStatus({ silent: true }).catch(() => {});
       setResetIn(formatQuotaReset());
     } finally {
       setRefreshing(false);
@@ -530,7 +543,7 @@ const ProfileScreen = () => {
         {/* Spotify link, shown only to people who skipped it in onboarding.
             Hidden while the status is still resolving so it cannot flash in
             front of someone who is already connected. */}
-        {!spotifyChecking && !spotifyConnected && (
+        {spotifyResolved && !spotifyChecking && !spotifyConnected && (
           <TouchableOpacity
             style={styles.spotifyConnectCard}
             onPress={handleConnectSpotify}

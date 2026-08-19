@@ -62,6 +62,12 @@ const ConnectSpotifyScreen: React.FC = () => {
       // their getTarget-based routing reflects the new connection.
       if (user) {
         await refreshSpotifyStatus();
+      } else {
+        // Guests still need AuthContext to know they are connected, or screens
+        // that read spotifyConnected (e.g. the Profile prompt) keep asking them
+        // to connect. The silent variant leaves spotifyChecking alone, so it
+        // updates the flag without the unmount/bounce described above.
+        await refreshSpotifyStatus({ silent: true });
       }
       const target = nextTarget();
       console.log('[ConnectSpotify] user:', !!user, 'onboardingComplete:', onboardingComplete, '→', target);

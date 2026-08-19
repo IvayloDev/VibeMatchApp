@@ -28,7 +28,7 @@ type AuthContextType = {
   onboardingComplete: boolean;
   guestOnboardingComplete: boolean;
   onboardingChecking: boolean;
-  refreshSpotifyStatus: () => Promise<void>;
+  refreshSpotifyStatus: (options?: { silent?: boolean }) => Promise<void>;
   markOnboardingComplete: () => Promise<void>;
   markGuestOnboardingComplete: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -76,8 +76,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setGuestOnboardingComplete(true);
   };
 
-  const refreshSpotifyStatus = useCallback(async () => {
-    setSpotifyChecking(true);
+  /**
+   * Re-read the Spotify connection.
+   *
+   * `spotifyChecking` is not a harmless loading flag: App.js renders
+   * LoadingScreen while it is true, which UNMOUNTS the NavigationContainer and
+   * remounts it at getTarget() - throwing away the current screen and landing
+   * on the initial tab. So any caller that is not doing first-run routing must
+   * pass { silent: true }, which updates `spotifyConnected` without touching
+   * `spotifyChecking` and therefore without disturbing navigation.
+   */
+  const refreshSpotifyStatus = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setSpotifyChecking(true);
     try {
       const status = await getSpotifyConnectionStatus();
       setSpotifyConnected(status.connected);
@@ -89,7 +100,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.warn('Spotify status check failed:', err);
       setSpotifyConnected(false);
     } finally {
-      setSpotifyChecking(false);
+      if (!silent) setSpotifyChecking(false);
     }
   }, []);
 
