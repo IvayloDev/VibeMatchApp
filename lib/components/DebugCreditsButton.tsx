@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   getLocalCredits,
@@ -9,6 +9,7 @@ import {
 } from '../credits';
 import { useAuth } from '../AuthContext';
 import { DEBUG_TOOLS_ENABLED } from '../debugTools';
+import { resetAppToFreshInstall } from '../debugReset';
 
 /**
  * Floating "+1 credit" button for testing.
@@ -81,6 +82,34 @@ const DebugCreditsButton: React.FC = () => {
     }
   };
 
+  const confirmReset = () => {
+    Alert.alert(
+      'Reset app?',
+      'Wipes credits, history, onboarding, Spotify link and the free-credit marker, and signs out. The app must be fully closed and reopened afterwards.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset', style: 'destructive', onPress: runReset },
+      ]
+    );
+  };
+
+  const runReset = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { steps } = await resetAppToFreshInstall();
+      await readCredits();
+      Alert.alert(
+        'Reset done',
+        `${steps.join('\n')}\n\nNow fully quit and reopen the app - onboarding and the free credit are decided at launch.`
+      );
+    } catch (error: any) {
+      Alert.alert('Reset failed', error?.message ?? String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <View style={[styles.wrap, { top: insets.top + 4 }]} pointerEvents="box-none">
       <TouchableOpacity
@@ -89,9 +118,20 @@ const DebugCreditsButton: React.FC = () => {
         onLongPress={zero}
         delayLongPress={600}
         activeOpacity={0.7}
+        disabled={busy}
       >
         <Text style={styles.text}>
           DEBUG +1{credits === null ? '' : `  (${credits})`}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.pill, styles.resetPill]}
+        onPress={confirmReset}
+        activeOpacity={0.7}
+        disabled={busy}
+      >
+        <Text style={[styles.text, styles.resetText]}>
+          {busy ? '...' : 'RESET'}
         </Text>
       </TouchableOpacity>
     </View>
@@ -102,6 +142,8 @@ const styles = StyleSheet.create({
   wrap: {
     position: 'absolute',
     right: 8,
+    flexDirection: 'row',
+    gap: 6,
     zIndex: 9999,
     elevation: 9999,
   },
@@ -112,6 +154,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,193,7,0.92)',
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.35)',
+  },
+  resetPill: {
+    backgroundColor: 'rgba(255,59,48,0.92)',
+  },
+  resetText: {
+    color: '#FFFFFF',
   },
   text: {
     fontSize: 11,
