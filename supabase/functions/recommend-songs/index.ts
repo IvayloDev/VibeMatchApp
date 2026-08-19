@@ -162,22 +162,95 @@ function stripDecor(s: string): string {
  * (>=20) AND some artist match (>=30), so we never return a different song by the
  * right artist when the exact title isn't on Spotify.
  */
+/**
+ * Fold a title/artist down to comparable words.
+ *
+ * Raw string comparison rejects far too much: Spotify ships "Don't Stop Me Now
+ * - Remastered 2011", "Beat It (Single Version)", "Bohemien Rhapsody" with
+ * accents, and "Tom & Jerry" where the model wrote "and". None of those are
+ * substrings of what the model asked for, so a plain includes() check drops a
+ * perfectly correct track.
+ */
+function normalizeForMatch(value: string): string {
+  return (value || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")   // strip diacritics
+    .replace(/\s*[([][^)\]]*[)\]]/g, " ")               // "(Remastered)", "[Live]"
+    .replace(/\s+-\s+.*$/, " ")                          // " - Radio Edit", " - 2011 Mix"
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")                         // punctuation, apostrophes
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/** Shared words as a fraction of the shorter side. 1 = one side contains all of the other's words. */
+function tokenOverlap(a: string, b: string): number {
+  const left = new Set(a.split(" ").filter(Boolean));
+  const right = new Set(b.split(" ").filter(Boolean));
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared++;
+  return shared / Math.min(left.size, right.size);
+}
+
+/**
+ * Pick the Spotify track that really is the requested song, or nothing.
+ *
+ * The point of the gate is that a hallucinated title must NOT silently resolve
+ * to a different song by the right artist - that used to happen and shipped
+ * wrong (occasionally explicit) tracks. That guarantee is kept: a title with no
+ * word overlap still scores 0 and is rejected.
+ *
+ * What changed is tolerance for formatting. Comparison now happens on
+ * normalized forms and accepts strong word overlap, so remaster suffixes,
+ * accents, "&" vs "and" and apostrophes no longer throw away a correct match
+ * and push the whole request toward a "No matches found" 404.
+ *
+ * Ties break toward the more popular track, which favours the canonical studio
+ * cut over a random live or karaoke upload.
+ */
 function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): any | null {
+  const wantTitle = normalizeForMatch(normTitle);
+  const wantArtist = normalizeForMatch(normArtist);
+
   let best: any = null;
   let bestScore = 0;
+
   for (const track of tracks) {
-    const tt = track.name?.toLowerCase().trim() || "";
-    const ta = track.artists?.[0]?.name?.toLowerCase().trim() || "";
-    if (tt === normTitle && ta === normArtist) return track;
+    const rawTitle = track.name?.toLowerCase().trim() || "";
+    // No early return on an exact raw hit: Spotify search often lists a live or
+    // karaoke upload above the studio original, and returning the first exact
+    // string match picked those. Scoring every candidate lets the popularity
+    // tie-break below choose the canonical recording.
+    const gotTitle = normalizeForMatch(rawTitle);
+    // Any credited artist may be the match - the model often names the featured
+    // artist, and Spotify only puts one of them first.
+    const gotArtists: string[] = (track.artists || [])
+      .map((a: any) => normalizeForMatch(a?.name || ""))
+      .filter(Boolean);
+
     let titleScore = 0;
-    if (tt === normTitle) titleScore = 40;
-    else if (tt.includes(normTitle) || normTitle.includes(tt)) titleScore = 20;
+    if (gotTitle && gotTitle === wantTitle) titleScore = 40;
+    else if (gotTitle && wantTitle && (gotTitle.includes(wantTitle) || wantTitle.includes(gotTitle))) titleScore = 25;
+    else if (tokenOverlap(gotTitle, wantTitle) >= 0.6) titleScore = 20;
+
     let artistScore = 0;
-    if (ta === normArtist) artistScore = 60;
-    else if (ta.includes(normArtist) || normArtist.includes(ta)) artistScore = 30;
-    if (titleScore < 20 || artistScore < 30) continue; // demand a real title + artist match
+    for (const got of gotArtists) {
+      let candidate = 0;
+      if (got === wantArtist) candidate = 60;
+      else if (wantArtist && (got.includes(wantArtist) || wantArtist.includes(got))) candidate = 35;
+      else if (tokenOverlap(got, wantArtist) >= 0.5) candidate = 30;
+      if (candidate > artistScore) artistScore = candidate;
+    }
+
+    if (titleScore < 20 || artistScore < 30) continue; // still demand a real title + artist match
+
     const score = titleScore + artistScore;
-    if (score > bestScore) { bestScore = score; best = track; }
+    const popularity = track.popularity ?? 0;
+    if (score > bestScore || (score === bestScore && popularity > (best?.popularity ?? -1))) {
+      bestScore = score;
+      best = track;
+    }
   }
   return best;
 }
