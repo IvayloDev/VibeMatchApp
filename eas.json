@@ -6,10 +6,7 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_DEBUG_TOOLS": "1"
-      }
+      "distribution": "internal"
     },
     "preview": {
       "distribution": "internal",
@@ -30,10 +27,7 @@
         "buildConfiguration": "Release"
       },
       "distribution": "store",
-      "channel": "preview",
-      "env": {
-        "EXPO_PUBLIC_DEBUG_TOOLS": "1"
-      }
+      "channel": "preview"
     }
   },
   "submit": {

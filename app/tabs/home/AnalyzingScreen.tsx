@@ -17,6 +17,7 @@ import { triggerHaptic } from '../../../lib/utils/haptics';
 import { deductCredits, getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement } from '../../../lib/revenuecat';
 import { getProScansToday, recordProScan, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
+import { describeScanFailure, noMatchFailure, networkScanFailure } from '../../../lib/scanErrors';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
@@ -506,9 +507,14 @@ const AnalyzingScreen = () => {
         setProgress(90);
 
         if (!response.ok || data.error || !data.songs) {
+          // Not every failure is a missing match: quota exhaustion, Spotify auth
+          // and 5xx all landed here and were reported as "No Matches Found",
+          // blaming the photo for an outage.
+          const failure = describeScanFailure(response.status, data);
           trackEvent('scan_failed', {
-            reason: 'no_matches',
+            reason: failure.reason,
             http_status: response.status,
+            error_code: data?.code ?? data?.details?.error?.code ?? null,
             vibe: selectedVibe,
             duration_ms: Date.now() - scanStartTime,
           });
@@ -523,8 +529,8 @@ const AnalyzingScreen = () => {
                 ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
                 : () => (navigation as any).navigate('Dashboard');
               Alert.alert(
-                'No Matches Found',
-                data.message || 'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
+                failure.title,
+                failure.message,
                 [{ text: 'OK', onPress: fallbackNav }]
               );
             }, 300);
@@ -552,9 +558,10 @@ const AnalyzingScreen = () => {
               const fallbackNav2 = fromOnboarding
                 ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
                 : () => (navigation as any).navigate('Dashboard');
+              // This one really is a miss: the call succeeded, too little came back.
               Alert.alert(
-                'No Matches Found',
-                'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
+                noMatchFailure().title,
+                noMatchFailure().message,
                 [{ text: 'OK', onPress: fallbackNav2 }]
               );
             }, 300);
@@ -701,8 +708,9 @@ const AnalyzingScreen = () => {
         });
       } catch (error) {
         console.log('Error during analysis:', error);
+        const netFailure = networkScanFailure();
         trackEvent('scan_failed', {
-          reason: 'error',
+          reason: netFailure.reason,
           error_message: error instanceof Error ? error.message : String(error),
           vibe: selectedVibe,
           duration_ms: Date.now() - scanStartTime,
@@ -723,8 +731,8 @@ const AnalyzingScreen = () => {
               );
             } else {
               Alert.alert(
-                'Analysis Failed',
-                'Sorry, we encountered an error while analyzing your photo. Your credit has not been charged. Please try again.',
+                netFailure.title,
+                netFailure.message,
                 [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
               );
             }
