@@ -14,6 +14,7 @@ import AnalyzingScreen from './app/tabs/home/AnalyzingScreen';
 import MainTabs from './app/tabs/MainTabs';
 import PaymentScreen from './app/payment/PaymentScreen';
 import { AuthProvider, useAuth } from './lib/AuthContext';
+import DebugCreditsButton from './lib/components/DebugCreditsButton';
 import LoadingScreen from './lib/LoadingScreen';
 import { Colors } from './lib/designSystem';
 import { initRevenueCat, identifyUser, logOutUser } from './lib/revenuecat';
@@ -231,6 +232,9 @@ export default function App() {
       <PaperProvider theme={PaperTheme}>
         <AuthProvider>
           <AppContent />
+          {/* Testing affordance, absent from App Store builds. Mounted here so
+              it floats above every screen. */}
+          <DebugCreditsButton />
         </AuthProvider>
       </PaperProvider>
     </SafeAreaProvider>
