@@ -19,6 +19,7 @@ import {
   getManagementURL,
   PRO_ENTITLEMENT_ID,
 } from '../../../lib/revenuecat';
+import { connectSpotify } from '../../../lib/spotify';
 import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
@@ -41,7 +42,8 @@ type RootStackParamList = {
 };
 
 const ProfileScreen = () => {
-  const { user, signOut } = useAuth();
+  const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus } = useAuth();
+  const [connectingSpotify, setConnectingSpotify] = useState(false);
   const [credits, setCredits] = useState(0);
   const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -115,6 +117,35 @@ const ProfileScreen = () => {
       Alert.alert('Restored', 'Your TuneMatch Pro subscription is active again.');
     } else {
       Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+    }
+  };
+
+  /**
+   * Second chance at the Spotify link for anyone who skipped it in onboarding.
+   * The taste profile is what makes matches personal, so this is the one piece
+   * of setup worth surfacing again rather than leaving buried in a flow the
+   * user already dismissed.
+   */
+  const handleConnectSpotify = async () => {
+    if (connectingSpotify) return;
+    setConnectingSpotify(true);
+    trackEvent('spotify_connect_tapped', { source: 'profile', is_authenticated: !!user });
+    try {
+      const result = await connectSpotify();
+      await refreshSpotifyStatus();
+      if (result.success) {
+        trackEvent('spotify_connected', { source: 'profile', is_authenticated: !!user });
+        Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
+      } else if (result.error) {
+        // A user-cancelled OAuth is not an error worth alerting about.
+        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error });
+        Alert.alert("Couldn't Connect", result.error);
+      }
+    } catch (error: any) {
+      trackEvent('spotify_connect_failed', { source: 'profile', error: error?.message ?? String(error) });
+      Alert.alert("Couldn't Connect", 'Something went wrong reaching Spotify. Please try again.');
+    } finally {
+      setConnectingSpotify(false);
     }
   };
 
@@ -437,6 +468,37 @@ const ProfileScreen = () => {
           </TouchableOpacity>
         )}
 
+        {/* Spotify link, shown only to people who skipped it in onboarding.
+            Hidden while the status is still resolving so it cannot flash in
+            front of someone who is already connected. */}
+        {!spotifyChecking && !spotifyConnected && (
+          <TouchableOpacity
+            style={styles.spotifyConnectCard}
+            onPress={handleConnectSpotify}
+            activeOpacity={0.85}
+            disabled={connectingSpotify}
+          >
+            <View style={styles.spotifyIconWrap}>
+              <MaterialCommunityIcons name="spotify" size={22} color="#1DB954" />
+            </View>
+            <View style={styles.spotifyTextWrap}>
+              <Text style={styles.spotifyConnectTitle}>
+                {connectingSpotify ? 'Connecting...' : 'Connect Spotify'}
+              </Text>
+              <Text style={styles.spotifyConnectSubtitle}>
+                Use the full power of TuneMatch AI and get matches tuned to your music taste.
+              </Text>
+            </View>
+            {!connectingSpotify && (
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={22}
+                color="rgba(255,255,255,0.5)"
+              />
+            )}
+          </TouchableOpacity>
+        )}
+
         {/* Report a Bug - available to guests and signed-in users alike */}
         <TouchableOpacity
           style={styles.reportBugButton}
@@ -696,6 +758,40 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FF453A',
+  },
+  spotifyConnectCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(29,185,84,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(29,185,84,0.35)',
+  },
+  spotifyIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  spotifyTextWrap: {
+    flex: 1,
+  },
+  spotifyConnectTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  spotifyConnectSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: 'rgba(255,255,255,0.65)',
   },
   reportBugButton: {
     marginHorizontal: Spacing.md,
