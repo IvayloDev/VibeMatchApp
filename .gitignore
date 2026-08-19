@@ -37,3 +37,6 @@ yarn-error.*
 *.tsbuildinfo
 ios/Pods/
 ios/Podfile.lock
+
+# Supabase CLI scratch (version check cache)
+supabase/.temp/
