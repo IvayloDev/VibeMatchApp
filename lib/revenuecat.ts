@@ -766,6 +766,44 @@ export function subscribeToProStatus(cb: (isPro: boolean) => void): () => void {
  * Fetch the subscription offering for the paywall. Returns null when it cannot
  * be loaded - the caller shows an honest error/retry state, never mock data.
  */
+export type ProPlanSummary = {
+  productIdentifier: string;
+  /** "Monthly" / "Annual", or the raw id if an unknown product ever appears. */
+  planLabel: string;
+  /** True while the store still intends to renew - false once cancelled. */
+  willRenew: boolean;
+  /** True during a free trial. */
+  isTrial: boolean;
+  expirationDate: string | null;
+};
+
+/**
+ * Which plan the subscriber is actually on.
+ *
+ * The app gates purely on the `pro` entitlement, which both products grant, so
+ * monthly and annual are deliberately identical in capability. That is correct,
+ * but it also meant switching plans produced no visible change anywhere and
+ * looked like the switch had failed. This is what lets the UI name the plan.
+ */
+export async function getProPlanSummary(): Promise<ProPlanSummary | null> {
+  const info = await getCustomerInfo();
+  const entitlement = info?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+  if (!entitlement) return null;
+
+  const productIdentifier = entitlement.productIdentifier ?? '';
+  // Match loosely: the Play ids carry a `:base-plan` suffix.
+  const isAnnual = /annual|yearly|p1y/i.test(productIdentifier);
+  const isMonthly = /monthly|p1m/i.test(productIdentifier);
+
+  return {
+    productIdentifier,
+    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : productIdentifier || 'Pro',
+    willRenew: !!entitlement.willRenew,
+    isTrial: entitlement.periodType === 'TRIAL',
+    expirationDate: entitlement.expirationDate ?? null,
+  };
+}
+
 export async function getProOffering(): Promise<PurchasesOffering | null> {
   if (!isConfigured) {
     try {

@@ -16,7 +16,7 @@ import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { deductCredits, getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement } from '../../../lib/revenuecat';
-import { getProScansToday, recordProScan, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
+import { getProScansToday, recordProScan, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
@@ -379,7 +379,7 @@ const AnalyzingScreen = () => {
           });
           Alert.alert(
             `That's ${PRO_DAILY_LIMIT} for today!`,
-            'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.',
+            `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`,
             [{ text: 'OK', onPress: leaveOnBlocked }]
           );
         } else {

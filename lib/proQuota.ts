@@ -26,6 +26,31 @@ function todayKey(): string {
   return `${KEY_PREFIX}${d.getFullYear()}-${m}-${day}`;
 }
 
+/**
+ * Milliseconds until the counter resets.
+ *
+ * There is no timer anywhere - the reset is implicit, because `todayKey()`
+ * simply names a different key once the local date rolls over. This just
+ * measures the distance to the next local midnight so the UI can say when.
+ */
+export function msUntilQuotaReset(): number {
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  return Math.max(0, midnight.getTime() - now.getTime());
+}
+
+/** "4h 12m" / "38m" / "under a minute" - for telling someone when the next batch lands. */
+export function formatQuotaReset(ms: number = msUntilQuotaReset()): string {
+  const totalMinutes = Math.floor(ms / 60000);
+  if (totalMinutes < 1) return 'under a minute';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+}
+
 /** Scans a pro subscriber has used today (0 on any read error). */
 export async function getProScansToday(): Promise<number> {
   try {

@@ -15,7 +15,7 @@ import {
   restorePurchases,
   PRO_ENTITLEMENT_ID,
 } from '../../lib/revenuecat';
-import { getProScansToday, PRO_DAILY_LIMIT } from '../../lib/proQuota';
+import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../lib/proQuota';
 import { getUserCredits, getLocalCredits } from '../../lib/credits';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
@@ -201,6 +201,9 @@ const PaymentScreen = () => {
           <Text style={styles.proTitle}>You're Pro</Text>
           <Text style={styles.proSubtitle}>
             {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+          </Text>
+          <Text style={styles.proCreditsNote}>
+            Next {PRO_DAILY_LIMIT} in {formatQuotaReset()}
           </Text>
           {currentCredits > 0 && (
             <Text style={styles.proCreditsNote}>

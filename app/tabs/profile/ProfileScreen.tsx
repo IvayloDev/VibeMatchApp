@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image, Linking, Platform } from 'react-native';
+import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image, Linking, Platform, RefreshControl } from 'react-native';
 import * as Application from 'expo-application';
 import { Text } from 'react-native-paper';
 import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
@@ -17,9 +17,11 @@ import {
   restorePurchases,
   getCustomerInfo,
   getManagementURL,
+  getProPlanSummary,
   PRO_ENTITLEMENT_ID,
 } from '../../../lib/revenuecat';
-import { getProScansToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
+import type { ProPlanSummary } from '../../../lib/revenuecat';
+import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { connectSpotify } from '../../../lib/spotify';
 import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
@@ -46,6 +48,9 @@ const ProfileScreen = () => {
   const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus } = useAuth();
   const [connectingSpotify, setConnectingSpotify] = useState(false);
   const [proScansToday, setProScansToday] = useState(0);
+  const [proPlan, setProPlan] = useState<ProPlanSummary | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [resetIn, setResetIn] = useState(formatQuotaReset());
   const [credits, setCredits] = useState(0);
   const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -87,7 +92,12 @@ const ProfileScreen = () => {
       setCredits(userCredits);
       const pro = await hasProEntitlement();
       setIsPro(pro);
-      if (pro) setProScansToday(await getProScansToday());
+      if (pro) {
+        setProScansToday(await getProScansToday());
+        setProPlan(await getProPlanSummary());
+      } else {
+        setProPlan(null);
+      }
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -152,6 +162,27 @@ const ProfileScreen = () => {
       setConnectingSpotify(false);
     }
   };
+
+  // Pull to refresh: the screen previously only reloaded on focus, so a user
+  // sitting on it after a purchase or a scan had no way to update it.
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshProStatus().catch(() => {});
+      await loadUserCredits();
+      await refreshSpotifyStatus().catch(() => {});
+      setResetIn(formatQuotaReset());
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshSpotifyStatus]);
+
+  // Keep the "next batch in ..." line honest without a heavy timer.
+  useEffect(() => {
+    if (!isPro) return;
+    const id = setInterval(() => setResetIn(formatQuotaReset()), 30000);
+    return () => clearInterval(id);
+  }, [isPro]);
 
   // Load credits on mount
   useEffect(() => {
@@ -324,6 +355,14 @@ const ProfileScreen = () => {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#FFFFFF"
+            colors={['#FFFFFF']}
+          />
+        }
       >
         {/* Header */}
         <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
@@ -395,6 +434,18 @@ const ProfileScreen = () => {
                           much of today's allowance was still available. */}
                       <Text style={styles.proCardText}>
                         {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+                      </Text>
+                      {/* Both plans grant the same entitlement, so naming the
+                          plan is the only way a switch is visible at all. */}
+                      {proPlan && (
+                        <Text style={styles.proCardCredits}>
+                          {proPlan.planLabel} plan
+                          {proPlan.isTrial ? ' - free trial' : ''}
+                          {!proPlan.willRenew ? ' - ends, will not renew' : ''}
+                        </Text>
+                      )}
+                      <Text style={styles.proCardCredits}>
+                        Next {PRO_DAILY_LIMIT} in {resetIn}
                       </Text>
                       {credits > 0 && (
                         <Text style={styles.proCardCredits}>

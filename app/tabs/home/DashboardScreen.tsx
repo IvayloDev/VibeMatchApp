@@ -12,7 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
-import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
+import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -102,7 +102,7 @@ const DashboardScreen = () => {
       if (isPro) {
         Alert.alert(
           `That's ${PRO_DAILY_LIMIT} for today!`,
-          'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.'
+          `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`
         );
         return;
       }
