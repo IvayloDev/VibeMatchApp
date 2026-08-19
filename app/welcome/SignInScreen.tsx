@@ -99,8 +99,31 @@ const SignInScreen = () => {
     setShowGuestModal(true);
   };
 
+  // Reached from Welcome (back = Welcome) and from inside the app (back = where
+  // they came from). If neither is possible, land on the app rather than trap.
+  const handleDismiss = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.reset({ index: 0, routes: [{ name: 'MainTabs' as never }] });
+    }
+  };
+
   return (
     <View style={styles.container}>
+      {/* Escape hatch. These screens are reached from inside the app (Profile,
+          the paywall) as well as from Welcome, and with the stack header hidden
+          there was no way back at all - a dead end. goBack when there is
+          somewhere to go, otherwise drop into the app. */}
+      <SafeAreaView style={styles.authBackWrap} edges={['top']} pointerEvents="box-none">
+        <TouchableOpacity
+          onPress={handleDismiss}
+          style={styles.authBackButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </SafeAreaView>
       {/* Background Blur Effects */}
       <View style={styles.backgroundBlur1} />
       <View style={styles.backgroundBlur2} />
@@ -288,6 +311,22 @@ const SignInScreen = () => {
 };
 
 const styles = StyleSheet.create({
+  authBackWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    zIndex: 50,
+  },
+  authBackButton: {
+    marginTop: Spacing.sm,
+    marginLeft: Spacing.md,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { 
     flex: 1,
     backgroundColor: '#221019', // Matching app background
