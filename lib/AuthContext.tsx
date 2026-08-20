@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
@@ -86,8 +86,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
    * pass { silent: true }, which updates `spotifyConnected` without touching
    * `spotifyChecking` and therefore without disturbing navigation.
    */
+  // True once the Spotify connection has been resolved at least once.
+  const hasResolvedSpotifyOnce = useRef(false);
+
   const refreshSpotifyStatus = useCallback(async (options?: { silent?: boolean }) => {
-    const silent = options?.silent === true;
+    // `spotifyChecking` gates the FIRST resolution only. After boot it must
+    // never go true again: App.js renders LoadingScreen while it is set, which
+    // unmounts the NavigationContainer and remounts it at the initial route.
+    //
+    // A silent flag alone was not enough. getSpotifyConnectionStatus() calls
+    // supabase.auth.getSession(), which can emit an auth event, and the
+    // onAuthStateChange handler below then calls this function again - so a
+    // silent caller could still trigger a non-silent refresh indirectly and
+    // throw the user off whatever screen they were on. Latching the flag closes
+    // that loop for every caller, present and future.
+    const silent = options?.silent === true || hasResolvedSpotifyOnce.current;
     if (!silent) setSpotifyChecking(true);
     try {
       const status = await getSpotifyConnectionStatus();
@@ -100,6 +113,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.warn('Spotify status check failed:', err);
       setSpotifyConnected(false);
     } finally {
+      hasResolvedSpotifyOnce.current = true;
       if (!silent) setSpotifyChecking(false);
     }
   }, []);
@@ -236,7 +250,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
-        refreshSpotifyStatus();
+        // Silent: by this point the app has booted, and re-gating would tear
+        // down navigation under whatever screen the user is on.
+        refreshSpotifyStatus({ silent: true });
       }
     );
 
