@@ -28,6 +28,12 @@
       },
       "distribution": "store",
       "channel": "preview"
+    },
+    "preview-apk": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     }
   },
   "submit": {
