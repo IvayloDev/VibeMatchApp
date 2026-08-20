@@ -791,13 +791,20 @@ export async function getProPlanSummary(): Promise<ProPlanSummary | null> {
   if (!entitlement) return null;
 
   const productIdentifier = entitlement.productIdentifier ?? '';
-  // Match loosely: the Play ids carry a `:base-plan` suffix.
-  const isAnnual = /annual|yearly|p1y/i.test(productIdentifier);
-  const isMonthly = /monthly|p1m/i.test(productIdentifier);
+  // On Google Play the entitlement's productIdentifier is the SUBSCRIPTION id
+  // ("tunematch_pro") and the term lives in productPlanIdentifier
+  // ("pro-monthly" / "pro-annual"). Matching only on productIdentifier meant
+  // Android fell through to the raw id and the card read "tunematch_pro plan".
+  const planIdentifier = (entitlement as { productPlanIdentifier?: string | null })
+    .productPlanIdentifier ?? '';
+  const haystack = `${productIdentifier} ${planIdentifier}`;
+  const isAnnual = /annual|yearly|p1y/i.test(haystack);
+  const isMonthly = /monthly|p1m/i.test(haystack);
 
   return {
     productIdentifier,
-    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : productIdentifier || 'Pro',
+    // Never surface a raw store id to a user - fall back to the plan's name.
+    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : 'TuneMatch Pro',
     willRenew: !!entitlement.willRenew,
     isTrial: entitlement.periodType === 'TRIAL',
     expirationDate: entitlement.expirationDate ?? null,

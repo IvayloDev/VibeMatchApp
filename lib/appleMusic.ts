@@ -10,6 +10,7 @@
 // native build. `trackViewUrl` points at music.apple.com, which opens the Apple
 // Music app when installed and the web player otherwise.
 import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import { norm, artistMatches } from './utils/trackMatch';
 
 export type AppleMusicSong = {
@@ -69,11 +70,20 @@ export async function resolveAppleMusicUrl(song: AppleMusicSong): Promise<string
  * Resolve the Apple Music URL for a song. Returns null while loading and when
  * the track has no Apple Music match, so callers can simply hide the button.
  */
+/**
+ * Apple Music link for a song, or null.
+ *
+ * Android returns null on purpose: Apple Music is not a default there, the
+ * button read as an out-of-place iOS affordance, and skipping it also saves an
+ * iTunes Search lookup per track. Preview PLAYBACK is unaffected - that lives
+ * in trackPreview.tsx and has its own Deezer/iTunes fallback.
+ */
 export function useAppleMusicUrl(song: AppleMusicSong): string | null {
   const key = cacheKey(song);
   const [url, setUrl] = useState<string | null>(() => urlCache[key] ?? null);
 
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
     let cancelled = false;
     if (key in urlCache) {
       setUrl(urlCache[key]);
@@ -87,5 +97,5 @@ export function useAppleMusicUrl(song: AppleMusicSong): string | null {
     };
   }, [key]);
 
-  return url;
+  return Platform.OS === 'ios' ? url : null;
 }
