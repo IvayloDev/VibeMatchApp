@@ -12,9 +12,12 @@ WebBrowser.maybeCompleteAuthSession();
 
 const SPOTIFY_CLIENT_ID = '8d66896fc94d4418bd9721687af9421d'; // public id, ok to commit
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize';
+// Only what the code actually reads. `user-read-email` / `user-read-private`
+// were requested but never consumed: the sole /me fields used are `id` and
+// `display_name` (spotify-auth/index.ts), both public with no scope. They cost
+// a "See your email address" line on the consent screen, which 54% of users
+// were backing out of.
 const SPOTIFY_SCOPES = [
-  'user-read-email',
-  'user-read-private',
   'user-top-read',
   'user-read-recently-played',
   'user-library-read',
@@ -213,7 +216,7 @@ export async function getSpotifyConnectionStatus(): Promise<SpotifyConnectionSta
 /**
  * Launch Spotify OAuth (PKCE). On success persists tokens and syncs taste profile.
  */
-export async function connectSpotify(): Promise<{ success: boolean; error?: string }> {
+export async function connectSpotify(): Promise<{ success: boolean; error?: string; reason?: string }> {
   try {
     const redirectUri = buildRedirectUri();
     const verifier = randomCodeVerifier();
@@ -228,27 +231,31 @@ export async function connectSpotify(): Promise<{ success: boolean; error?: stri
     authUrl.searchParams.set('code_challenge_method', 'S256');
     authUrl.searchParams.set('code_challenge', challenge);
     authUrl.searchParams.set('state', state);
-    authUrl.searchParams.set('show_dialog', 'true');
+    // No show_dialog: forcing it re-prompted users who had already approved,
+    // turning a silent redirect back into a decision they could decline.
 
     console.log('🎵 Opening Spotify OAuth:', redirectUri);
     const result = await WebBrowser.openAuthSessionAsync(authUrl.toString(), redirectUri);
 
+    // `cancel` and `dismiss` mean different things (user closed the sheet vs the
+    // session was torn down without one). Same copy, distinct reason, so the two
+    // are separable in analytics.
     if (result.type === 'cancel' || result.type === 'dismiss') {
-      return { success: false, error: 'Sign-in was cancelled' };
+      return { success: false, error: 'Sign-in was cancelled', reason: result.type };
     }
     if (result.type !== 'success' || !('url' in result) || !result.url) {
-      return { success: false, error: 'Spotify sign-in failed' };
+      return { success: false, error: 'Spotify sign-in failed', reason: `no_redirect:${result.type}` };
     }
 
     const urlObj = new URL(result.url);
     const returnedState = urlObj.searchParams.get('state');
     if (returnedState !== state) {
-      return { success: false, error: 'State mismatch' };
+      return { success: false, error: 'State mismatch', reason: 'state_mismatch' };
     }
     const code = urlObj.searchParams.get('code');
     const error = urlObj.searchParams.get('error');
-    if (error) return { success: false, error: `Spotify error: ${error}` };
-    if (!code) return { success: false, error: 'No authorization code from Spotify' };
+    if (error) return { success: false, error: `Spotify error: ${error}`, reason: `spotify_${error}` };
+    if (!code) return { success: false, error: 'No authorization code from Spotify', reason: 'no_code' };
 
     const exchange = await callSpotifyAuth({
       action: 'exchange',
@@ -273,7 +280,7 @@ export async function connectSpotify(): Promise<{ success: boolean; error?: stri
     return { success: true };
   } catch (err: any) {
     console.error('connectSpotify error:', err);
-    return { success: false, error: err?.message ?? 'Spotify connect failed' };
+    return { success: false, error: err?.message ?? 'Spotify connect failed', reason: 'exception' };
   }
 }
 

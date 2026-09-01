@@ -213,32 +213,28 @@ export async function updatePendingValidationRetry(transactionId: string): Promi
 /**
  * Merge local credits into user account when they register/sign in
  * This enables cross-device access as mentioned in Apple's guidelines
- * NOTE: Guest free credits (1 credit) are NOT merged - only purchased credits are merged
+ * NOTE: guest FREE credits are never merged - only credits the guest paid for.
  */
 export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, creditsMerged: number }> {
   try {
     const localCredits = await getLocalCredits();
     const localPurchases = await getLocalPurchases();
-    
-    // Check if guest free credits were granted (we should NOT merge these)
-    const { hasGuestFreeCreditsBeenGranted } = await import('./utils/freeCredits');
-    const hadGuestFreeCredits = await hasGuestFreeCreditsBeenGranted();
-    
-    // Calculate credits to merge: exclude the guest free credit (1 credit) if it was granted
-    let creditsToMerge = localCredits;
-    if (hadGuestFreeCredits && localCredits >= 1) {
-      // Subtract the guest free credit - only merge purchased credits
-      creditsToMerge = localCredits - 1;
-      console.log(`ℹ️ Guest free credit (1) excluded from merge. Merging ${creditsToMerge} purchased credits instead of ${localCredits} total.`);
-    }
-    
-    if (creditsToMerge === 0 && localPurchases.length === 0) {
-      // No purchased credits to merge (only guest free credit or nothing)
-      if (hadGuestFreeCredits && localCredits > 0) {
-        // Clear local credits since we're not merging the guest free credit
+
+    // Only purchased credits may cross over. Derive that from the purchase log
+    // rather than subtracting the free grant from the balance: a guest who has
+    // already SPENT free credits would otherwise have real purchased credits
+    // deducted at signup (with GUEST_FREE_CREDITS=3, up to 3 destroyed).
+    // Clamped by the live balance so spent purchases aren't resurrected.
+    const purchasedEver = localPurchases.reduce((sum, p) => sum + (p.credits || 0), 0);
+    const creditsToMerge = Math.max(0, Math.min(localCredits, purchasedEver));
+
+    if (creditsToMerge === 0) {
+      // Nothing bought (or nothing left): drop the guest balance rather than
+      // carrying the free grant into the account on top of the signup credit.
+      if (localCredits > 0) {
         await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
         await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-        console.log(`ℹ️ Guest free credit not merged (registered users get their own signup credit, not 1+1)`);
+        console.log(`ℹ️ Guest free credits not merged (registered users get their own signup credit)`);
       }
       return { merged: false, creditsMerged: 0 };
     }

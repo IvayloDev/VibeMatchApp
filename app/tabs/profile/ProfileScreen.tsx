@@ -162,11 +162,11 @@ const ProfileScreen = () => {
         Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
       } else if (result.error) {
         // A user-cancelled OAuth is not an error worth alerting about.
-        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error });
+        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error, reason: result.reason ?? 'unknown' });
         Alert.alert("Couldn't Connect", result.error);
       }
     } catch (error: any) {
-      trackEvent('spotify_connect_failed', { source: 'profile', error: error?.message ?? String(error) });
+      trackEvent('spotify_connect_failed', { source: 'profile', error: error?.message ?? String(error), reason: 'screen_exception' });
       Alert.alert("Couldn't Connect", 'Something went wrong reaching Spotify. Please try again.');
     } finally {
       setConnectingSpotify(false);

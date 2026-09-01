@@ -16,8 +16,8 @@ function sanitizeKey(str: string): string {
 }
 
 // Free credit amounts
-export const GUEST_FREE_CREDITS = 1;
-export const REGISTERED_FREE_CREDITS = 1;
+export const GUEST_FREE_CREDITS: number = 3;
+export const REGISTERED_FREE_CREDITS: number = 1;
 
 /**
  * Get or create a unique device ID

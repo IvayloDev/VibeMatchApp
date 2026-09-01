@@ -49,7 +49,7 @@ const ConnectSpotifyScreen: React.FC = () => {
     try {
       const result = await connectSpotify();
       if (!result.success) {
-        trackEvent('spotify_connect_failed', { error: result.error ?? 'unknown' });
+        trackEvent('spotify_connect_failed', { error: result.error ?? 'unknown', reason: result.reason ?? 'unknown' });
         Alert.alert('Spotify Connection', result.error ?? 'Could not connect to Spotify');
         return;
       }
@@ -73,7 +73,7 @@ const ConnectSpotifyScreen: React.FC = () => {
       console.log('[ConnectSpotify] user:', !!user, 'onboardingComplete:', onboardingComplete, '→', target);
       navigation.reset({ index: 0, routes: [{ name: target }] });
     } catch (err: any) {
-      trackEvent('spotify_connect_failed', { error: err?.message ?? 'exception' });
+      trackEvent('spotify_connect_failed', { error: err?.message ?? 'exception', reason: 'screen_exception' });
       Alert.alert('Spotify Connection', err?.message ?? 'Something went wrong');
     } finally {
       setLoading(false);
