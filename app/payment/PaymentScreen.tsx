@@ -4,19 +4,33 @@ import { Text } from 'react-native-paper';
 import { useNavigation, CommonActions } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import type { PurchasesOffering, CustomerInfo } from 'react-native-purchases';
+import type { PurchasesOffering, PurchasesPackage, CustomerInfo } from 'react-native-purchases';
 import RevenueCatUI from 'react-native-purchases-ui';
 import {
   getProOffering,
+  getStarterPackPackage,
+  purchaseCreditPackage,
   hasProEntitlement,
   refreshProStatus,
   getCustomerInfo,
   getManagementURL,
   restorePurchases,
   PRO_ENTITLEMENT_ID,
+  CREDITS_PER_PRODUCT,
+  STARTER_PACK_PRODUCT_ID,
 } from '../../lib/revenuecat';
 import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../lib/proQuota';
-import { getUserCredits, getLocalCredits } from '../../lib/credits';
+import {
+  getUserCredits,
+  getLocalCredits,
+  addLocalCredits,
+  storeLocalPurchase,
+  storePendingValidation,
+  getPendingValidations,
+  removePendingValidation,
+  updatePendingValidationRetry,
+} from '../../lib/credits';
+import { validatePurchaseWithRetry } from '../../lib/supabase';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
@@ -46,6 +60,8 @@ const PaymentScreen = () => {
 
   const [screenState, setScreenState] = useState<ScreenState>('loading');
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
+  const [starterPack, setStarterPack] = useState<PurchasesPackage | null>(null);
+  const [buyingStarterPack, setBuyingStarterPack] = useState(false);
   const [currentCredits, setCurrentCredits] = useState<number>(0);
   const [proScansToday, setProScansToday] = useState<number>(0);
   const paywallTracked = useRef(false);
@@ -62,6 +78,24 @@ const PaymentScreen = () => {
 
   const loadData = useCallback(async () => {
     setScreenState('loading');
+
+    // A credit pack the store charged but validate-purchase never confirmed.
+    // Nothing else in the app retries these any more, so the paywall does, one
+    // attempt each, before it reads the balance.
+    if (isAuthenticated) {
+      try {
+        for (const pending of await getPendingValidations()) {
+          const v = await validatePurchaseWithRetry(pending.transactionId, pending.productId, 1);
+          if (v.success) {
+            await removePendingValidation(pending.transactionId);
+          } else {
+            await updatePendingValidationRetry(pending.transactionId);
+          }
+        }
+      } catch {
+        // Best effort - never block the paywall on it.
+      }
+    }
 
     const credits = isAuthenticated ? await getUserCredits() : await getLocalCredits();
     setCurrentCredits(credits);
@@ -96,6 +130,9 @@ const PaymentScreen = () => {
         seconds_loading: secondsSince(screenOpenedAt.current),
         is_authenticated: isAuthenticated,
       });
+      // Not awaited: the subscription paywall must not wait on a second
+      // offerings lookup. The row simply appears when the pack resolves.
+      getStarterPackPackage().then(setStarterPack).catch(() => {});
     } else {
       // Honest failure state. The old screen showed fake packages here whose
       // Buy button dead-ended - that path is deliberately dead.
@@ -160,6 +197,113 @@ const PaymentScreen = () => {
       ]);
     } else {
       Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+    }
+  };
+
+  /**
+   * Consumable path, outside RC's Paywall UI. Mirrors the pre-subscription
+   * flow: signed-in users are granted server-side by validate-purchase (which
+   * also dedupes), guests get local credits (Apple 5.1.1 - no forced sign-up).
+   */
+  const handleBuyStarterPack = async () => {
+    if (!starterPack || buyingStarterPack) return;
+    triggerHaptic('medium');
+    setBuyingStarterPack(true);
+
+    const productId = starterPack.product.identifier;
+    const packageId = starterPack.identifier;
+    const startedAt = Date.now();
+    trackEvent('purchase_started', {
+      product_id: productId,
+      package_id: packageId,
+      paywall_type: 'credit_pack',
+      credits_balance: currentCredits,
+      is_authenticated: isAuthenticated,
+      seconds_on_paywall: secondsSince(paywallRenderedAt.current),
+    });
+
+    try {
+      const result = await purchaseCreditPackage(starterPack);
+
+      if (result.userCancelled) {
+        trackEvent('purchase_cancelled', {
+          product_id: productId,
+          package_id: packageId,
+          paywall_type: 'credit_pack',
+          credits_balance: currentCredits,
+          is_authenticated: isAuthenticated,
+          seconds_since_start: secondsSince(startedAt),
+        });
+        return;
+      }
+      if (!result.success || !result.transactionId || !result.productId) {
+        trackEvent('purchase_failed', {
+          product_id: productId,
+          package_id: packageId,
+          paywall_type: 'credit_pack',
+          error: result.error ?? 'unknown',
+          error_code: result.errorCode,
+          underlying: result.underlying,
+          is_authenticated: isAuthenticated,
+          seconds_since_start: secondsSince(startedAt),
+        });
+        triggerHaptic('error');
+        Alert.alert('Purchase Failed', result.error || 'Please try again.');
+        return;
+      }
+
+      // Play reports the bare product id; App Store may too. Never grant 0.
+      const credits = CREDITS_PER_PRODUCT[result.productId]
+        ?? CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID];
+      let newBalance = currentCredits + credits;
+
+      if (isAuthenticated) {
+        const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
+        if (validation.success && validation.creditsGranted) {
+          newBalance = validation.newBalance ?? currentCredits + validation.creditsGranted;
+        } else {
+          // Charged but not yet granted - queue it; loadData retries queued
+          // validations the next time this screen opens. Tell the user plainly.
+          await storePendingValidation(result.transactionId, result.productId, credits);
+          triggerHaptic('warning');
+          Alert.alert(
+            'Purchase received',
+            "We couldn't confirm the purchase with our server yet. Your credits will be added the next time you open this screen.",
+            [{ text: 'OK', onPress: goBack }]
+          );
+          return;
+        }
+      } else {
+        await addLocalCredits(credits);
+        await storeLocalPurchase(result.transactionId, result.productId, credits);
+      }
+
+      setCurrentCredits(newBalance);
+      trackEvent('purchase_completed', {
+        product_id: result.productId,
+        paywall_type: 'credit_pack',
+        credits_granted: credits,
+        is_authenticated: isAuthenticated,
+      });
+      triggerHaptic('success');
+      Alert.alert(
+        `${credits} credits added`,
+        `Your balance: ${newBalance} credit${newBalance === 1 ? '' : 's'}`,
+        [{ text: 'Match a song', onPress: goBack }]
+      );
+    } catch (error: any) {
+      trackEvent('purchase_failed', {
+        product_id: productId,
+        package_id: packageId,
+        paywall_type: 'credit_pack',
+        error: error?.message ?? 'exception',
+        is_authenticated: isAuthenticated,
+        seconds_since_start: secondsSince(startedAt),
+      });
+      triggerHaptic('error');
+      Alert.alert('Error', 'Unable to complete purchase. Please try again.');
+    } finally {
+      setBuyingStarterPack(false);
     }
   };
 
@@ -321,6 +465,28 @@ const PaymentScreen = () => {
             }}
             onDismiss={() => dismissPaywall('rc_dismiss')}
           />
+          {/* The cheap exit for "I just want one more match". Most paywall
+              traffic arrives from the out-of-credits gate, and a yearly plan
+              is the wrong ask for that moment. */}
+          {starterPack && (
+            <TouchableOpacity
+              style={styles.starterPackRow}
+              onPress={handleBuyStarterPack}
+              disabled={buyingStarterPack}
+              activeOpacity={0.85}
+            >
+              {buyingStarterPack ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="lightning-bolt" size={16} color={DesignColors.primary} />
+                  <Text style={styles.starterPackText}>
+                    Just need a few? {CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID]} credits for {starterPack.product.priceString}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
           {!isAuthenticated && (
             <TouchableOpacity
               style={styles.registerLink}
@@ -485,6 +651,24 @@ const styles = StyleSheet.create({
   },
   paywall: {
     flex: 1,
+  },
+  starterPackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    alignSelf: 'center',
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    minHeight: 40,
+  },
+  starterPackText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   registerLink: {
     alignSelf: 'center',

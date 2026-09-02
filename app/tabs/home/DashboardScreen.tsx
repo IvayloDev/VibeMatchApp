@@ -259,8 +259,8 @@ const DashboardScreen = () => {
               >
                 <MaterialCommunityIcons name="crown" size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
-                  <Text style={styles.guestRegisterTitle}>Try TuneMatch Pro free</Text>
-                  <Text style={styles.guestRegisterSubtitle}>10 matches a day. 3-day free trial.</Text>
+                  <Text style={styles.guestRegisterTitle}>Get more matches</Text>
+                  <Text style={styles.guestRegisterSubtitle}>Go Pro for 10 a day, or grab a 5-credit pack.</Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
               </TouchableOpacity>

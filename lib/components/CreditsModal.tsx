@@ -32,8 +32,8 @@ export default function CreditsModal({
   onCancel,
   onBuy,
   title = "You're out of credits",
-  message = 'Go Pro for 10 song matches every day - with a 3-day free trial.',
-  buyLabel = 'Try TuneMatch Pro',
+  message = 'Go Pro for 10 song matches every day, or grab a 5-credit pack.',
+  buyLabel = 'See options',
   cancelLabel = 'Not now',
 }: CreditsModalProps) {
   return (

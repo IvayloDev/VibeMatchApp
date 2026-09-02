@@ -837,6 +837,82 @@ export async function getProOffering(): Promise<PurchasesOffering | null> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Starter pack (consumable) sold beside the subscription
+// ---------------------------------------------------------------------------
+
+/**
+ * The one credit pack the new paywall still sells. It is the cheapest SKU on
+ * both stores and already lives in the legacy `default` offering, so nothing
+ * has to be created store-side. Sold at the out-of-credits moment for users
+ * who want one more match, not a yearly plan - the Android funnel showed
+ * that is most of them.
+ */
+export const STARTER_PACK_PRODUCT_ID = 'tunematch_credits_5';
+
+export async function getStarterPackPackage(): Promise<PurchasesPackage | null> {
+  if (!isRevenueCatAvailable() || !isConfigured) {
+    return null;
+  }
+  try {
+    const offerings = await Purchases.getOfferings();
+    const all: PurchasesOffering[] = Object.values(offerings?.all ?? {});
+    for (const offering of all) {
+      const pkg = offering.availablePackages.find(
+        (p: PurchasesPackage) => p.product?.identifier?.startsWith(STARTER_PACK_PRODUCT_ID)
+      );
+      if (pkg) return pkg;
+    }
+    console.warn(`[RevenueCat] Product "${STARTER_PACK_PRODUCT_ID}" not found in any offering`);
+    return null;
+  } catch (error: any) {
+    console.warn('[RevenueCat] Error fetching starter pack:', error?.message || error);
+    return null;
+  }
+}
+
+/**
+ * Buys a consumable package directly (the RC Paywall UI only handles the
+ * subscription). Returns a transaction id for validate-purchase; falls back to
+ * a synthetic one when the store does not report it, same as the old flow.
+ */
+export async function purchaseCreditPackage(pkg: PurchasesPackage): Promise<{
+  success: boolean;
+  transactionId?: string;
+  productId?: string;
+  userCancelled?: boolean;
+  error?: string;
+  errorCode?: string;
+  underlying?: string;
+}> {
+  if (!isRevenueCatAvailable() || !isConfigured) {
+    return { success: false, error: 'RevenueCat not initialized' };
+  }
+  const productId = pkg.product.identifier;
+  try {
+    const { customerInfo } = await Purchases.purchasePackage(pkg);
+    const purchase = customerInfo?.nonSubscriptions?.find(
+      (p: any) => p.productIdentifier === productId
+    );
+    const transactionId =
+      purchase?.transactionIdentifier
+      ?? `rc_${Date.now()}_${productId}_${Math.random().toString(36).slice(2, 11)}`;
+    return { success: true, transactionId, productId };
+  } catch (error: any) {
+    if (error?.userCancelled) {
+      return { success: false, userCancelled: true, productId, error: 'Purchase cancelled' };
+    }
+    console.warn('[RevenueCat] Credit pack purchase error:', error?.message || error);
+    return {
+      success: false,
+      productId,
+      error: error?.message || 'Purchase failed',
+      errorCode: error?.code != null ? String(error.code) : undefined,
+      underlying: error?.underlyingErrorMessage,
+    };
+  }
+}
+
 /**
  * Restore previous purchases
  * Note: For consumables, restore typically doesn't re-grant credits
