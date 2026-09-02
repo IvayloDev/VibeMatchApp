@@ -494,6 +494,7 @@ const ProfileScreen = () => {
                   if (isPro) {
                     handleManageSubscription();
                   } else {
+                    trackEvent('paywall_cta_tapped', { source: 'profile_go_pro', credits_balance: credits });
                     navigation.navigate('Payment');
                   }
                 }}

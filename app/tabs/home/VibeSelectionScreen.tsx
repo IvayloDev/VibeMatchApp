@@ -15,6 +15,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getUserCredits } from '../../../lib/credits';
+import { trackEvent } from '../../../lib/posthog';
 import { hasProEntitlement } from '../../../lib/revenuecat';
 import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -185,6 +186,7 @@ const VibeSelectionScreen = () => {
         onCancel={() => setShowCreditsModal(false)}
         onBuy={() => {
           setShowCreditsModal(false);
+          trackEvent('paywall_cta_tapped', { source: 'vibe_credits_modal' });
           navigation.navigate('Payment');
         }}
       />

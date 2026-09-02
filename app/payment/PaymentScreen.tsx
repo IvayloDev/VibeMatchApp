@@ -49,6 +49,16 @@ const PaymentScreen = () => {
   const [currentCredits, setCurrentCredits] = useState<number>(0);
   const [proScansToday, setProScansToday] = useState<number>(0);
   const paywallTracked = useRef(false);
+  // Timing + package refs so cancel/dismiss events can say what the user was
+  // looking at and for how long. Android build 36 taught us that a cancel with
+  // no product and no timing is indistinguishable from a Play sheet that never
+  // rendered.
+  const screenOpenedAt = useRef(Date.now());
+  const paywallRenderedAt = useRef<number | null>(null);
+  const purchaseStartedAt = useRef<number | null>(null);
+  const packageInFlight = useRef<{ product_id?: string; package_id?: string }>({});
+
+  const secondsSince = (t: number | null) => (t ? Math.round((Date.now() - t) / 1000) : null);
 
   const loadData = useCallback(async () => {
     setScreenState('loading');
@@ -77,6 +87,15 @@ const PaymentScreen = () => {
     if (proOffering) {
       setOffering(proOffering);
       setScreenState('paywall');
+      // `paywall_viewed` fires on mount, before the offering resolves. This is
+      // the moment RC's UI actually gets to draw a price.
+      paywallRenderedAt.current = Date.now();
+      trackEvent('paywall_rendered', {
+        offering_id: proOffering.identifier,
+        package_count: proOffering.availablePackages?.length ?? 0,
+        seconds_loading: secondsSince(screenOpenedAt.current),
+        is_authenticated: isAuthenticated,
+      });
     } else {
       // Honest failure state. The old screen showed fake packages here whose
       // Buy button dead-ended - that path is deliberately dead.
@@ -93,6 +112,20 @@ const PaymentScreen = () => {
   }, [loadData]);
 
   const goBack = () => (navigation as any).goBack();
+
+  // Every way out that is not a purchase. `screen_state` separates "closed the
+  // RC paywall" from "gave up while the offering was still loading".
+  const dismissPaywall = (via: 'header_close' | 'overlay_close' | 'rc_dismiss') => {
+    trackEvent('paywall_dismissed', {
+      via,
+      screen_state: screenState,
+      seconds_on_screen: secondsSince(screenOpenedAt.current),
+      seconds_on_paywall: secondsSince(paywallRenderedAt.current),
+      credits_balance: currentCredits,
+      is_authenticated: isAuthenticated,
+    });
+    goBack();
+  };
 
   const navigateToSignUp = () => {
     trackEvent('register_cta_tapped', { source: 'paywall' });
@@ -172,7 +205,7 @@ const PaymentScreen = () => {
           brings its own overlay close button instead. */}
       {screenState !== 'paywall' && (
         <View style={styles.header}>
-          <TouchableOpacity onPress={goBack} style={styles.closeButton}>
+          <TouchableOpacity onPress={() => dismissPaywall('header_close')} style={styles.closeButton}>
             <MaterialCommunityIcons name="close" size={24} color="#FFFFFF" />
           </TouchableOpacity>
           <Text style={styles.headerMainTitle}>TuneMatch Pro</Text>
@@ -236,25 +269,44 @@ const PaymentScreen = () => {
             style={styles.paywall}
             options={{ offering, displayCloseButton: false }}
             onPurchaseStarted={({ packageBeingPurchased }: any) => {
-              trackEvent('purchase_started', {
+              packageInFlight.current = {
                 product_id: packageBeingPurchased?.product?.identifier,
                 package_id: packageBeingPurchased?.identifier,
+              };
+              purchaseStartedAt.current = Date.now();
+              trackEvent('purchase_started', {
+                ...packageInFlight.current,
                 paywall_type: 'subscription',
                 credits_balance: currentCredits,
                 is_authenticated: isAuthenticated,
+                seconds_on_paywall: secondsSince(paywallRenderedAt.current),
               });
             }}
             onPurchaseCompleted={handlePurchaseCompleted}
             onPurchaseCancelled={() => {
+              // A cancel a couple of seconds after start is a store sheet that
+              // failed to render, not a user who read the price and said no.
               trackEvent('purchase_cancelled', {
+                ...packageInFlight.current,
                 paywall_type: 'subscription',
                 credits_balance: currentCredits,
+                is_authenticated: isAuthenticated,
+                seconds_since_start: secondsSince(purchaseStartedAt.current),
               });
             }}
             onPurchaseError={({ error }: any) => {
+              // RC's message is a generic localized string ("There was a problem
+              // with the store."). The code and the underlying store message are
+              // the only things that say which Play/StoreKit error it really was.
               trackEvent('purchase_failed', {
+                ...packageInFlight.current,
                 paywall_type: 'subscription',
                 error: error?.message ?? String(error),
+                error_code: error?.code,
+                readable_code: error?.readableErrorCode,
+                underlying: error?.underlyingErrorMessage,
+                is_authenticated: isAuthenticated,
+                seconds_since_start: secondsSince(purchaseStartedAt.current),
               });
             }}
             onRestoreCompleted={async ({ customerInfo }: { customerInfo: CustomerInfo }) => {
@@ -267,7 +319,7 @@ const PaymentScreen = () => {
                 Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
               }
             }}
-            onDismiss={goBack}
+            onDismiss={() => dismissPaywall('rc_dismiss')}
           />
           {!isAuthenticated && (
             <TouchableOpacity
@@ -283,7 +335,7 @@ const PaymentScreen = () => {
           {/* Overlay close: zero height cost, unlike a header row, and unlike
               RC's built-in close button it respects the top safe-area inset. */}
           <TouchableOpacity
-            onPress={goBack}
+            onPress={() => dismissPaywall('overlay_close')}
             style={styles.paywallClose}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >

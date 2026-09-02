@@ -137,6 +137,7 @@ const DashboardScreen = () => {
   const handleButtonPress = () => {
     if (!isPro && credits < 1) {
       trackEvent('out_of_credits', { source: 'dashboard_cta', credits_balance: credits });
+      trackEvent('paywall_cta_tapped', { source: 'dashboard_out_of_credits', credits_balance: credits });
       navigation.navigate('Payment');
     } else {
       pickImage();
@@ -199,6 +200,9 @@ const DashboardScreen = () => {
               {!loading && (
                 <Pressable
                   onPress={() => {
+                    if (!isPro) {
+                      trackEvent('paywall_cta_tapped', { source: 'dashboard_credits_badge', credits_balance: credits });
+                    }
                     navigation.navigate('Payment');
                   }}
                   style={styles.creditsBadge}
@@ -381,6 +385,7 @@ const DashboardScreen = () => {
         onCancel={() => setShowCreditsModal(false)}
         onBuy={() => {
           setShowCreditsModal(false);
+          trackEvent('paywall_cta_tapped', { source: 'dashboard_credits_modal', credits_balance: credits });
           navigation.navigate('Payment');
         }}
       />

@@ -971,6 +971,7 @@ const AnalyzingScreen = () => {
         }}
         onBuy={() => {
           setShowCreditsModal(false);
+          trackEvent('paywall_cta_tapped', { source: 'analyzing_credits_modal' });
           (navigation as any).navigate('Payment');
         }}
       />
