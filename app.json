@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.paltech.tunematch",
-      "buildNumber": "68",
+      "buildNumber": "69",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "TuneMatch needs access to your photo library so you can choose a photo to match with music. For example, pick a photo from a concert or a beach walk and TuneMatch analyzes its colors, light and scene to recommend songs that fit that moment."
@@ -33,7 +33,7 @@
       "edgeToEdgeEnabled": true,
       "package": "com.paltech.tunematch",
       "runtimeVersion": "1.0.0",
-      "versionCode": 38
+      "versionCode": 39
     },
     "web": {
       "favicon": "./assets/favicon.png"
