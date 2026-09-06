@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { isSpotifyConnectEnabled } from '../../lib/featureFlags';
 import {
   View,
   Text,
@@ -28,6 +29,7 @@ type RootStackParamList = {
   SignUp: undefined;
   SignIn: undefined;
   ConnectSpotify: undefined;
+  TastePicker: { returnTo?: 'back' } | undefined;
   Onboarding: undefined;
   MainTabs: undefined;
 };
@@ -219,7 +221,8 @@ const WelcomeScreen = () => {
   useEffect(() => {
     console.log('[Welcome] auth effect - loading:', loading, 'user:', !!user, 'spotifyConnected:', spotifyConnected);
     if (!loading && user) {
-      const dest = spotifyConnected ? 'MainTabs' : 'ConnectSpotify';
+      // The Spotify prompt only shows when the remote flag is on for this user.
+      const dest = (spotifyConnected || !isSpotifyConnectEnabled()) ? 'MainTabs' : 'ConnectSpotify';
       console.log('[Welcome] logged-in user detected, resetting to', dest);
       navigation.reset({
         index: 0,
@@ -260,7 +263,14 @@ const WelcomeScreen = () => {
 
       // Guests never skip onboarding - onboardingComplete belongs to registered
       // sessions and must not short-circuit the guest path.
-      const target: keyof RootStackParamList = status.connected ? 'Onboarding' : 'ConnectSpotify';
+      // Already connected -> straight to onboarding. Flag on -> the Spotify
+      // prompt (skippable, falls through to the picker). Flag off (the public)
+      // -> the in-app taste picker, which is where taste comes from now.
+      const target: keyof RootStackParamList = status.connected
+        ? 'Onboarding'
+        : isSpotifyConnectEnabled()
+          ? 'ConnectSpotify'
+          : 'TastePicker';
       console.log('[Guest] Navigating to:', target);
       navigation.reset({
         index: 0,

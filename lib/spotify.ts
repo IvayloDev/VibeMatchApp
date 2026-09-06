@@ -5,6 +5,7 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase';
+import { registerSuperProperties } from './posthog';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -31,7 +32,17 @@ const KEY_REFRESH = 'tunematch_spotify_refresh_token';
 const KEY_ACCESS = 'tunematch_spotify_access_token';
 const KEY_EXPIRES = 'tunematch_spotify_expires_at';
 const KEY_DISPLAY = 'tunematch_spotify_display_name';
-const STORAGE_KEY_GUEST_TASTE = '@tunematch/guest_spotify_taste_profile';
+// Shared with the manual taste picker (app/onboarding/TastePickerScreen.tsx),
+// which writes the same AsyncStorage key with `source: 'manual'`. Spotify syncs
+// write `source: 'spotify'`. Whichever ran last wins.
+export const STORAGE_KEY_GUEST_TASTE = '@tunematch/guest_spotify_taste_profile';
+
+// Machine-readable code the edge functions answer with (HTTP 403) when the
+// Spotify app is in Development mode and the account is not on its allowlist:
+// OAuth succeeds, then every Web API call is refused.
+const NOT_ALLOWLISTED_CODE = 'spotify_not_allowlisted';
+const NOT_ALLOWLISTED_MESSAGE =
+  'Spotify only shares listening data with approved apps. Pick your taste instead.';
 
 // ---------- Types ----------
 
@@ -42,6 +53,9 @@ export type SpotifyTasteProfile = {
   saved_tracks: Array<{ id: string; name: string; artist: string; image?: string | null }>;
   top_genres: string[];
   refreshed_at: string;
+  // Where the profile came from. Missing on profiles cached before the manual
+  // picker existed; those were all Spotify syncs.
+  source?: 'spotify' | 'manual';
 };
 
 export type SpotifyConnectionStatus = {
@@ -79,6 +93,20 @@ function buildRedirectUri(): string {
 
 // ---------- Edge function helpers ----------
 
+// Edge functions send a machine-readable `code` next to the human-readable
+// `error` for failures the client has to branch on. Carry it on the thrown
+// Error as a plain property: no Error subclass, so nothing depends on
+// instanceof surviving transpilation.
+function edgeFunctionError(json: any, fallback: string): Error & { code?: string } {
+  const err = new Error(json?.error || fallback) as Error & { code?: string };
+  if (typeof json?.code === 'string') err.code = json.code;
+  return err;
+}
+
+function isNotAllowlistedError(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === NOT_ALLOWLISTED_CODE;
+}
+
 async function callSpotifyAuth(body: Record<string, unknown>): Promise<any> {
   const { data: { session } } = await supabase.auth.getSession();
   const headers: Record<string, string> = {
@@ -95,7 +123,7 @@ async function callSpotifyAuth(body: Record<string, unknown>): Promise<any> {
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new Error(json?.error || `spotify-auth failed (${resp.status})`);
+    throw edgeFunctionError(json, `spotify-auth failed (${resp.status})`);
   }
   return json;
 }
@@ -116,7 +144,7 @@ async function callSyncProfile(body: Record<string, unknown> = {}): Promise<any>
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new Error(json?.error || `sync-spotify-profile failed (${resp.status})`);
+    throw edgeFunctionError(json, `sync-spotify-profile failed (${resp.status})`);
   }
   return json;
 }
@@ -150,12 +178,20 @@ async function loadGuestTokens(): Promise<{
   return { access_token: access, refresh_token: refresh, expires_at: expires };
 }
 
-async function clearGuestTokens() {
+// Tokens only. Leaves the cached taste profile alone: the manual picker shares
+// that key, and a refused Spotify connect must not wipe a hand-picked taste.
+async function clearGuestTokenKeys() {
   await Promise.all([
     SecureStore.deleteItemAsync(KEY_ACCESS).catch(() => {}),
     SecureStore.deleteItemAsync(KEY_REFRESH).catch(() => {}),
     SecureStore.deleteItemAsync(KEY_EXPIRES).catch(() => {}),
     SecureStore.deleteItemAsync(KEY_DISPLAY).catch(() => {}),
+  ]);
+}
+
+async function clearGuestTokens() {
+  await Promise.all([
+    clearGuestTokenKeys(),
     AsyncStorage.removeItem(STORAGE_KEY_GUEST_TASTE).catch(() => {}),
   ]);
 }
@@ -257,12 +293,24 @@ export async function connectSpotify(): Promise<{ success: boolean; error?: stri
     if (error) return { success: false, error: `Spotify error: ${error}`, reason: `spotify_${error}` };
     if (!code) return { success: false, error: 'No authorization code from Spotify', reason: 'no_code' };
 
-    const exchange = await callSpotifyAuth({
-      action: 'exchange',
-      code,
-      code_verifier: verifier,
-      redirect_uri: redirectUri,
-    });
+    let exchange: any;
+    try {
+      exchange = await callSpotifyAuth({
+        action: 'exchange',
+        code,
+        code_verifier: verifier,
+        redirect_uri: redirectUri,
+      });
+    } catch (err) {
+      if (isNotAllowlistedError(err)) {
+        // The server saved nothing (no spotify_connections row, no tokens for
+        // guests). Drop any guest tokens left from an earlier attempt so the
+        // app stops reporting a connection that can never load data.
+        await clearGuestTokenKeys();
+        return { success: false, error: NOT_ALLOWLISTED_MESSAGE, reason: 'not_allowlisted' };
+      }
+      throw err;
+    }
 
     // Guest: persist tokens locally
     if (exchange.stored === 'client') {
@@ -275,7 +323,14 @@ export async function connectSpotify(): Promise<{ success: boolean; error?: stri
     }
 
     // Build taste profile (server-stored for registered, client-stored for guest)
-    await syncTasteProfile();
+    const sync = await syncTasteProfile();
+    if (sync.reason === 'not_allowlisted') {
+      // /me answered but the listening endpoints refused: same root cause, so
+      // the connection is just as useless. Guests get their tokens dropped; a
+      // registered user's spotify_connections row is only reachable server-side.
+      if (exchange.stored === 'client') await clearGuestTokenKeys();
+      return { success: false, error: NOT_ALLOWLISTED_MESSAGE, reason: 'not_allowlisted' };
+    }
 
     return { success: true };
   } catch (err: any) {
@@ -288,7 +343,7 @@ export async function connectSpotify(): Promise<{ success: boolean; error?: stri
  * Fetch fresh taste profile from Spotify and persist it.
  * Call after connect, on app foreground (if stale), or from a manual refresh button.
  */
-export async function syncTasteProfile(): Promise<{ success: boolean; error?: string }> {
+export async function syncTasteProfile(): Promise<{ success: boolean; error?: string; reason?: string }> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     const body: Record<string, unknown> = {};
@@ -304,10 +359,18 @@ export async function syncTasteProfile(): Promise<{ success: boolean; error?: st
       body.expires_at = tokens.expires_at;
     }
 
-    const result = await callSyncProfile(body);
+    let result: any;
+    try {
+      result = await callSyncProfile(body);
+    } catch (err) {
+      if (isNotAllowlistedError(err)) {
+        return { success: false, error: NOT_ALLOWLISTED_MESSAGE, reason: 'not_allowlisted' };
+      }
+      throw err;
+    }
 
     if (result.stored === 'client' && result.profile) {
-      await saveGuestTasteProfile(result.profile as SpotifyTasteProfile);
+      await saveGuestTasteProfile({ ...(result.profile as SpotifyTasteProfile), source: 'spotify' });
       // Persist possibly-refreshed tokens
       if (result.tokens) {
         await saveGuestTokens({
@@ -316,6 +379,19 @@ export async function syncTasteProfile(): Promise<{ success: boolean; error?: st
           expires_at: result.tokens.expires_at,
         });
       }
+    }
+
+    // Registered users get a count summary back, guests the profile itself.
+    // Either way only a profile with something in it counts as a Spotify
+    // taste source for the funnel; the manual picker registers 'manual' itself.
+    const artistCount: number = result.stored === 'client'
+      ? (result.profile?.top_artists?.length ?? 0)
+      : (result.summary?.artists ?? 0);
+    const genreCount: number = result.stored === 'client'
+      ? (result.profile?.top_genres?.length ?? 0)
+      : (result.summary?.genres ?? 0);
+    if (artistCount > 0 || genreCount > 0) {
+      registerSuperProperties({ taste_source: 'spotify' });
     }
 
     return { success: true };

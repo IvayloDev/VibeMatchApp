@@ -996,7 +996,8 @@ serve(async (req) => {
         spotify_url: null,
         album_cover: null,
         preview_url: null
-      }))
+      })),
+      has_taste: hasTaste
     }, 200);
   }
 
@@ -1074,7 +1075,8 @@ serve(async (req) => {
       console.warn("⚠️ Returning partial results - some songs not found on Spotify or had duplicate artists");
       return jsonResponse({
         songs: deduplicatedSongs,
-        warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined
+        warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined,
+        has_taste: hasTaste
       }, 200);
     } else {
       // No songs found at all - return error
@@ -1102,6 +1104,9 @@ serve(async (req) => {
   );
 
   return jsonResponse({
-    songs: deduplicatedSongs.slice(0, 3) // Ensure exactly 3
+    songs: deduplicatedSongs.slice(0, 3), // Ensure exactly 3
+    // Whether a Spotify taste profile shaped these picks, so the client can
+    // tell personalized results from generic ones.
+    has_taste: hasTaste
   }, 200);
 });

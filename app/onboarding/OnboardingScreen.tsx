@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -26,6 +26,8 @@ import { trackEvent, registerSuperProperties } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
 import { VIBES } from '../../lib/vibes';
 import { VibeGrid } from '../../lib/components/VibeGrid';
+import { getTasteSource } from '../../lib/taste';
+import type { TasteSource } from '../../lib/taste';
 
 const { width, height } = Dimensions.get('window');
 
@@ -79,6 +81,9 @@ type TasteProfile = {
   top_tracks?: { name: string; artist?: string; image?: string | null }[];
   top_genres?: string[];
   recently_played?: { name: string; artist?: string; image?: string | null }[];
+  // 'manual' = picked in-app (TastePickerScreen). Absent or 'spotify' = synced
+  // from Spotify listening data.
+  source?: 'manual' | 'spotify';
 };
 
 type RootStackParamList = {
@@ -88,15 +93,37 @@ type RootStackParamList = {
 };
 
 // The Wrapped-style reveal pages (genre / artist / personality / tracks) are pure
-// taste data. Without a connected streaming account they'd invent a #1 genre, a
-// "most played" artist and an empty track list, so they're dropped from the flow
-// entirely rather than shown with placeholder content.
-const PAGES_WITH_TASTE = ['welcome', 'genre', 'artist', 'personality', 'tracks', 'crafting', 'photo', 'vibe'] as const;
-const PAGES_NO_TASTE = ['welcome', 'crafting', 'photo', 'vibe'] as const;
+// taste data. Without a taste profile they'd invent a #1 genre, a "most played"
+// artist and an empty track list, so they're dropped from the flow entirely
+// rather than shown with placeholder content.
+type PageKey = 'welcome' | 'genre' | 'artist' | 'personality' | 'tracks' | 'crafting' | 'photo' | 'vibe';
+const PAGES_WITH_TASTE: PageKey[] = ['welcome', 'genre', 'artist', 'personality', 'tracks', 'crafting', 'photo', 'vibe'];
+const PAGES_NO_TASTE: PageKey[] = ['welcome', 'crafting', 'photo', 'vibe'];
+
+// Each reveal page is dropped on its own when its slice of the profile is
+// empty. A profile picked in-app never has tracks, and can have artists whose
+// Spotify genre list is empty (or genres with no artists), so all-or-nothing
+// would either show an empty track list or skip the reveal altogether.
+function pagesFor(profile: TasteProfile | null): PageKey[] {
+  const genres = profile?.top_genres?.length ?? 0;
+  const artists = profile?.top_artists?.length ?? 0;
+  const tracks = profile?.top_tracks?.length ?? 0;
+  if (genres === 0 && artists === 0) return PAGES_NO_TASTE;
+  return PAGES_WITH_TASTE.filter((key) => {
+    switch (key) {
+      case 'genre': return genres > 0;
+      case 'artist': return artists > 0;
+      // Derived from genres alone; without them it would be a made-up label.
+      case 'personality': return genres > 0;
+      case 'tracks': return tracks > 0;
+      default: return true;
+    }
+  });
+}
 
 // ─── Page components ──────────────────────────────────────────────────────────
 
-const WelcomePage: React.FC<{ user: any; hasTaste: boolean; onNext: () => void }> = ({ user, hasTaste, onNext }) => {
+const WelcomePage: React.FC<{ user: any; hasTaste: boolean; manual: boolean; onNext: () => void }> = ({ user, hasTaste, manual, onNext }) => {
   const scale = useRef(new Animated.Value(0.85)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
@@ -121,7 +148,9 @@ const WelcomePage: React.FC<{ user: any; hasTaste: boolean; onNext: () => void }
       <Text style={styles.welcomeName}>{name}</Text>
       <Text style={styles.welcomeSubtitle}>
         {hasTaste
-          ? 'We scanned your Spotify listening history.\nYour sound DNA is ready.'
+          ? (manual
+            ? 'Built from the artists and genres you picked.\nYour sound DNA is ready.'
+            : 'We scanned your Spotify listening history.\nYour sound DNA is ready.')
           : 'Snap or pick any photo and we\'ll match it\nto a song that fits the mood.'}
       </Text>
 
@@ -145,7 +174,7 @@ const WelcomePage: React.FC<{ user: any; hasTaste: boolean; onNext: () => void }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const GenrePage: React.FC<{ genres: string[]; onNext: () => void }> = ({ genres, onNext }) => {
+const GenrePage: React.FC<{ genres: string[]; manual: boolean; onNext: () => void }> = ({ genres, manual, onNext }) => {
   const bigScale = useRef(new Animated.Value(0.4)).current;
   const bigOpacity = useRef(new Animated.Value(0)).current;
   const labelOpacity = useRef(new Animated.Value(0)).current;
@@ -183,7 +212,9 @@ const GenrePage: React.FC<{ genres: string[]; onNext: () => void }> = ({ genres,
         </Animated.Text>
 
         <Animated.Text style={[styles.genreCaption, { opacity: labelOpacity }]}>
-          This genre showed up more than any other{'\n'}in your listening history
+          {manual
+            ? <>The genre at the heart of your picks.{'\n'}Every match starts from here.</>
+            : <>This genre showed up more than any other{'\n'}in your listening history</>}
         </Animated.Text>
 
         {runnerUps.length > 0 && (
@@ -207,7 +238,7 @@ const GenrePage: React.FC<{ genres: string[]; onNext: () => void }> = ({ genres,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-const ArtistPage: React.FC<{ artist: string; image?: string | null; onNext: () => void }> = ({ artist, image, onNext }) => {
+const ArtistPage: React.FC<{ artist: string; image?: string | null; manual: boolean; onNext: () => void }> = ({ artist, image, manual, onNext }) => {
   const slideY = useRef(new Animated.Value(40)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const glow = useRef(new Animated.Value(0)).current;
@@ -231,7 +262,7 @@ const ArtistPage: React.FC<{ artist: string; image?: string | null; onNext: () =
 
   return (
     <View style={styles.page}>
-      <Text style={styles.statLabel}>YOUR MOST PLAYED</Text>
+      <Text style={styles.statLabel}>{manual ? 'YOUR TOP ARTIST' : 'YOUR MOST PLAYED'}</Text>
 
       <View style={styles.bigRevealWrap}>
         <Animated.View style={[styles.artistAvatarWrap, { opacity, transform: [{ translateY: slideY }] }]}>
@@ -252,7 +283,9 @@ const ArtistPage: React.FC<{ artist: string; image?: string | null; onNext: () =
         </Animated.Text>
 
         <Animated.Text style={[styles.genreCaption, { opacity }]}>
-          You've been obsessed with this artist.{'\n'}We noticed.
+          {manual
+            ? <>The first name you picked.{'\n'}We'll match with that in mind.</>
+            : <>You've been obsessed with this artist.{'\n'}We noticed.</>}
         </Animated.Text>
       </View>
 
@@ -382,8 +415,18 @@ const CRAFT_STEPS = [
   { label: 'Profile crafted. You\'re unique.', icon: 'check-circle-outline' as const },
 ];
 
-// Shown when there's no connected streaming taste profile. Nothing here claims
-// to have read listening history, because for these users we haven't.
+// Shown for a profile picked in-app. Same rule as below: nothing here claims
+// to have read listening history, because we haven't.
+const CRAFT_STEPS_MANUAL = [
+  { label: 'Reading your picks…', icon: 'equalizer' as const },
+  { label: 'Mapping your taste DNA…', icon: 'dna' as const },
+  { label: 'Calibrating your mood palette…', icon: 'palette-outline' as const },
+  { label: 'Fine-tuning your sound signature…', icon: 'tune-variant' as const },
+  { label: 'Profile crafted. You\'re unique.', icon: 'check-circle-outline' as const },
+];
+
+// Shown when there's no taste profile at all. Nothing here claims to have read
+// listening history, because for these users we haven't.
 const CRAFT_STEPS_NO_TASTE = [
   { label: 'Warming up the mood engine…', icon: 'equalizer' as const },
   { label: 'Loading the music catalog…', icon: 'dna' as const },
@@ -392,8 +435,8 @@ const CRAFT_STEPS_NO_TASTE = [
   { label: 'Ready when you are.', icon: 'check-circle-outline' as const },
 ];
 
-const CraftingPage: React.FC<{ hasTaste: boolean; onNext: () => void }> = ({ hasTaste, onNext }) => {
-  const steps = hasTaste ? CRAFT_STEPS : CRAFT_STEPS_NO_TASTE;
+const CraftingPage: React.FC<{ hasTaste: boolean; manual: boolean; onNext: () => void }> = ({ hasTaste, manual, onNext }) => {
+  const steps = hasTaste ? (manual ? CRAFT_STEPS_MANUAL : CRAFT_STEPS) : CRAFT_STEPS_NO_TASTE;
   const [stepIndex, setStepIndex] = useState(0);
   const [done, setDone] = useState(false);
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -459,7 +502,9 @@ const CraftingPage: React.FC<{ hasTaste: boolean; onNext: () => void }> = ({ has
         </Text>
         <Text style={styles.craftSubtitle}>
           {hasTaste
-            ? 'Every listen, every skip, every obsession -\nwe\'re weaving it all together.'
+            ? (manual
+              ? 'The artists and genres you picked -\nwe\'re weaving them all together.'
+              : 'Every listen, every skip, every obsession -\nwe\'re weaving it all together.')
             : 'Point us at a photo and we\'ll find the song\nthat matches its mood.'}
         </Text>
       </Animated.View>
@@ -694,19 +739,25 @@ const OnboardingScreen: React.FC = () => {
   // Load taste profile on mount
   useEffect(() => {
     const fetchProfile = async (): Promise<TasteProfile | null> => {
-      // A stored taste profile outlives the connection that produced it: the
-      // guest cache in AsyncStorage and the spotify_taste_profiles row both
-      // survive a skip, a disconnect, and a hand-off to the next person on the
-      // device. Reading either one without checking the live connection shows
+      // A Spotify-derived taste profile outlives the connection that produced
+      // it: the guest cache in AsyncStorage and the spotify_taste_profiles row
+      // both survive a skip, a disconnect, and a hand-off to the next person
+      // on the device. Reading one without checking the live connection shows
       // somebody else's "your #1 genre" to a user who just skipped Spotify.
-      // Connection status is the source of truth; the profile is only a cache.
+      // For Spotify data the connection status is the source of truth and the
+      // profile is only a cache.
+      //
+      // A profile picked in-app (source 'manual') is different: it was typed
+      // on this device, or into this account, by the person it describes, so
+      // it is used whether or not Spotify is connected.
+      let connected = false;
       try {
         const status = await getSpotifyConnectionStatus();
-        if (!status.connected) return null;
+        connected = status.connected;
       } catch {
         // Status unknown - treat as not connected rather than risk showing
-        // taste data to someone who never connected.
-        return null;
+        // Spotify taste data to someone who never connected.
+        connected = false;
       }
 
       const { data: { session } } = await supabase.auth.getSession();
@@ -716,10 +767,20 @@ const OnboardingScreen: React.FC = () => {
           .select('top_genres, top_artists, top_tracks')
           .eq('user_id', session.user.id)
           .maybeSingle();
-        return data ?? null;
+        if (!data) return null;
+        // The table has no source column. Its only writers are
+        // sync-spotify-profile, which refuses a user without a
+        // spotify_connections row, and save-taste-profile (the in-app picker),
+        // and nothing removes a connection while keeping the row. So a row for
+        // a user who is not connected can only have come from the picker.
+        return { ...data, source: connected ? 'spotify' : 'manual' };
       }
-      const guestProfile = await loadGuestTasteProfile();
-      return (guestProfile as TasteProfile) ?? null;
+
+      const guestProfile = (await loadGuestTasteProfile()) as TasteProfile | null;
+      if (!guestProfile) return null;
+      if (guestProfile.source === 'manual') return guestProfile;
+      if (!connected) return null;
+      return { ...guestProfile, source: 'spotify' };
     };
 
     const loadProfile = async () => {
@@ -730,7 +791,9 @@ const OnboardingScreen: React.FC = () => {
         // Re-sync once so existing users get artwork immediately instead of
         // waiting for the 24h auto-refresh. One retry max - if the sync fails
         // or images still aren't there, fall back to the profile without them.
-        if (data?.top_artists?.length && !data.top_artists[0]?.image) {
+        // A picked profile has nothing to re-sync from: a missing image there
+        // just means Spotify has no artwork for that artist.
+        if (data?.source !== 'manual' && data?.top_artists?.length && !data.top_artists[0]?.image) {
           try {
             const { success } = await syncTasteProfile();
             if (success) {
@@ -771,8 +834,12 @@ const OnboardingScreen: React.FC = () => {
   // can show. Guests who skipped the Spotify prompt land here.
   const hasTaste =
     (profile?.top_genres?.length ?? 0) > 0 || (profile?.top_artists?.length ?? 0) > 0;
-  const pageKeys = hasTaste ? PAGES_WITH_TASTE : PAGES_NO_TASTE;
+  // Memoised: it sits in effect deps below, and a fresh array every render
+  // would re-fire the page-viewed event on every state change.
+  const pageKeys = useMemo(() => pagesFor(profile), [profile]);
   const variant = hasTaste ? 'taste' : 'no_taste';
+  const tasteSource: TasteSource = getTasteSource(profile);
+  const manual = tasteSource === 'manual';
 
   // Onboarding is a single navigation route, so App.js screen tracking only ever
   // reports "Onboarding" - every page inside it was invisible. These events make
@@ -785,13 +852,14 @@ const OnboardingScreen: React.FC = () => {
     startedAtRef.current = Date.now();
     // Super property, so scan_started / purchase_completed / everything
     // downstream can be split by cohort without plumbing the flag through.
-    registerSuperProperties({ has_taste: hasTaste, onboarding_variant: variant });
+    registerSuperProperties({ has_taste: hasTaste, taste_source: tasteSource, onboarding_variant: variant });
     trackEvent('onboarding_started', {
       variant,
       has_taste: hasTaste,
+      taste_source: tasteSource,
       total_pages: pageKeys.length,
     });
-  }, [profileLoaded, variant, hasTaste, pageKeys.length]);
+  }, [profileLoaded, variant, hasTaste, tasteSource, pageKeys.length]);
 
   useEffect(() => {
     if (!profileLoaded) return;
@@ -855,6 +923,7 @@ const OnboardingScreen: React.FC = () => {
       trackEvent('onboarding_completed', {
         variant,
         has_taste: hasTaste,
+        taste_source: tasteSource,
         total_pages: pageKeys.length,
         vibe: vibeId,
         duration_ms: startedAtRef.current ? Date.now() - startedAtRef.current : null,
@@ -896,12 +965,12 @@ const OnboardingScreen: React.FC = () => {
     // otherwise the welcome copy and the page count swap under the user.
     if (!profileLoaded) return null;
     switch (pageKeys[page]) {
-      case 'welcome': return <WelcomePage user={user} hasTaste={hasTaste} onNext={handleNext} />;
-      case 'genre': return <GenrePage genres={topGenres} onNext={handleNext} />;
-      case 'artist': return <ArtistPage artist={topArtist} image={topArtistImage} onNext={handleNext} />;
+      case 'welcome': return <WelcomePage user={user} hasTaste={hasTaste} manual={manual} onNext={handleNext} />;
+      case 'genre': return <GenrePage genres={topGenres} manual={manual} onNext={handleNext} />;
+      case 'artist': return <ArtistPage artist={topArtist} image={topArtistImage} manual={manual} onNext={handleNext} />;
       case 'personality': return <PersonalityPage personality={personality} onNext={handleNext} />;
       case 'tracks': return <TracksPage tracks={topTracks} onNext={handleNext} />;
-      case 'crafting': return <CraftingPage hasTaste={hasTaste} onNext={handleNext} />;
+      case 'crafting': return <CraftingPage hasTaste={hasTaste} manual={manual} onNext={handleNext} />;
       case 'photo': return <PhotoPage onPickPhoto={handlePickPhoto} onContinue={handleNext} />;
       case 'vibe': return <VibePage imageUri={photoUri} onGoLive={handleGoLive} loading={goLiveLoading} />;
       default: return null;

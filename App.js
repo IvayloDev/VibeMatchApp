@@ -19,6 +19,8 @@ import { Colors } from './lib/designSystem';
 import { initRevenueCat, identifyUser, logOutUser, reconcileProAfterLogin } from './lib/revenuecat';
 import { identifyUser as posthogIdentify, resetUser as posthogReset, trackScreen } from './lib/posthog';
 import { rescheduleEngagementReminders } from './lib/notifications';
+import { primeFeatureFlags, isSpotifyConnectEnabled } from './lib/featureFlags';
+import TastePickerScreen from './app/onboarding/TastePickerScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -67,10 +69,20 @@ function AppContent() {
     // on every cold start - and since onboarding only exits by completing a
     // scan, a guest out of credits could never get past it.
     if (!user) return guestOnboardingCompleteRef.current ? 'MainTabs' : 'Welcome';
-    if (!spotifyConnected) return 'ConnectSpotify';
+    // The Spotify prompt is behind a remote flag (off for the public: the
+    // Spotify app is in Development mode, so listening data never loads for
+    // anyone but allowlisted testers). Registered users are only routed to it
+    // when the flag is on for them.
+    if (!spotifyConnected && isSpotifyConnectEnabled()) return 'ConnectSpotify';
     if (!onboardingCompleteRef.current) return 'Onboarding';
     return 'MainTabs';
   }, [user, spotifyConnected]);
+
+  // Fetch remote kill switches once per cold start. Unknown flags count as
+  // off, so nothing waits on this.
+  React.useEffect(() => {
+    primeFeatureFlags();
+  }, []);
 
   // Track previous user ID to detect logout
   const prevUserIdRef = React.useRef(null);
@@ -184,6 +196,14 @@ function AppContent() {
         <Stack.Screen
           name="ConnectSpotify"
           component={ConnectSpotifyScreen}
+          options={{ gestureEnabled: false }}
+        />
+
+        {/* Taste picker: artists and genres chosen in-app. Replaces the Spotify
+            prompt for the public; also reachable from Profile to edit taste. */}
+        <Stack.Screen
+          name="TastePicker"
+          component={TastePickerScreen}
           options={{ gestureEnabled: false }}
         />
 

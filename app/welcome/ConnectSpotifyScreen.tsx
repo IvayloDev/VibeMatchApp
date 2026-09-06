@@ -15,6 +15,7 @@ type RootStackParamList = {
   SignIn: undefined;
   SignUp: undefined;
   ConnectSpotify: undefined;
+  TastePicker: { returnTo?: 'back' } | undefined;
   Onboarding: undefined;
   MainTabs: undefined;
 };
@@ -28,11 +29,17 @@ const ConnectSpotifyScreen: React.FC = () => {
   const { refreshSpotifyStatus, onboardingComplete, user } = useAuth();
   const [loading, setLoading] = useState(false);
 
-  // Where the flow goes once this screen is done with, connected or not.
-  // Guests (no auth user) must always go through onboarding regardless of any
-  // onboardingComplete flag left over from a prior registered session.
+  // Where the flow goes after a real Spotify connection (a taste profile now
+  // exists). Guests (no auth user) must always go through onboarding regardless
+  // of any onboardingComplete flag left over from a prior registered session.
   const nextTarget = (): 'MainTabs' | 'Onboarding' =>
     (user && onboardingComplete) ? 'MainTabs' : 'Onboarding';
+
+  // Without Spotify the app still needs a taste, so skipping lands on the
+  // in-app picker, which continues to Onboarding by itself. Registered users
+  // who already finished onboarding go straight back into the app.
+  const skipTarget = (): 'MainTabs' | 'TastePicker' =>
+    (user && onboardingComplete) ? 'MainTabs' : 'TastePicker';
 
   React.useEffect(() => {
     trackEvent('spotify_connect_shown');
@@ -40,7 +47,7 @@ const ConnectSpotifyScreen: React.FC = () => {
 
   const handleSkip = () => {
     trackEvent('spotify_connect_skipped');
-    navigation.reset({ index: 0, routes: [{ name: nextTarget() }] });
+    navigation.reset({ index: 0, routes: [{ name: skipTarget() }] });
   };
 
   const handleConnect = async () => {
@@ -50,6 +57,17 @@ const ConnectSpotifyScreen: React.FC = () => {
       const result = await connectSpotify();
       if (!result.success) {
         trackEvent('spotify_connect_failed', { error: result.error ?? 'unknown', reason: result.reason ?? 'unknown' });
+        if (result.reason === 'not_allowlisted') {
+          // OAuth went through but Spotify's Development-mode allowlist refuses
+          // the account, so no listening data will ever load. Hand them to the
+          // in-app picker instead of a dead end.
+          Alert.alert(
+            'Spotify kept its data',
+            'Spotify only shares listening history with approved apps. Pick your taste by hand instead and every match is still tuned to you.',
+            [{ text: 'Pick my taste', onPress: () => navigation.reset({ index: 0, routes: [{ name: 'TastePicker' }] }) }],
+          );
+          return;
+        }
         Alert.alert('Spotify Connection', result.error ?? 'Could not connect to Spotify');
         return;
       }
@@ -148,8 +166,7 @@ const ConnectSpotifyScreen: React.FC = () => {
           </TouchableOpacity>
 
           <Text style={styles.footnote}>
-            No Spotify? Skip - matching works without it, and you can connect any time from your
-            profile. Read-only either way.
+            No Spotify? Skip and pick your taste by hand. Matching works either way.
           </Text>
         </View>
       </SafeAreaView>

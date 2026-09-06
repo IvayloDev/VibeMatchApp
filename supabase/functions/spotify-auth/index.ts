@@ -7,6 +7,10 @@
 // spotify_connections and returns { access_token, expires_in, scope, spotify_user_id }.
 // For guest users, tokens are returned in the response body so the client can store them
 // in expo-secure-store.
+//
+// If Spotify answers 403 to /me right after the exchange (the app is in Development mode
+// and the account is not on its allowlist), "exchange" responds 403
+// { error: "spotify_not_allowlisted", code: "spotify_not_allowlisted" } and persists nothing.
 
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -96,12 +100,23 @@ async function refreshToken(refreshTokenValue: string) {
   };
 }
 
-async function fetchSpotifyProfile(accessToken: string) {
+type SpotifyProfile = { id: string; display_name?: string };
+
+// Returns the HTTP status alongside the profile so the exchange action can tell
+// "Spotify refuses this account" apart from a transient failure. While the app
+// is in Development mode, OAuth succeeds for any account but every Web API call
+// answers 403 unless the account is on the app's allowlist.
+async function fetchSpotifyProfile(
+  accessToken: string,
+): Promise<{ status: number; profile: SpotifyProfile | null }> {
   const resp = await fetch(SPOTIFY_ME_URL, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!resp.ok) return null;
-  return await resp.json() as { id: string; display_name?: string };
+  if (!resp.ok) {
+    console.warn(`⚠️ Spotify /me -> ${resp.status}`);
+    return { status: resp.status, profile: null };
+  }
+  return { status: resp.status, profile: await resp.json() as SpotifyProfile };
 }
 
 serve(async (req) => {
@@ -143,7 +158,21 @@ serve(async (req) => {
       }
 
       const tokens = await exchangeCode(code, code_verifier, redirect_uri);
-      const profile = await fetchSpotifyProfile(tokens.access_token);
+      const me = await fetchSpotifyProfile(tokens.access_token);
+
+      // 403 straight after a successful token exchange means the Spotify app is
+      // in Development mode and this account is not on its allowlist. Every
+      // later Web API call would answer 403 as well, so refuse the connection
+      // now instead of saving tokens that can never load listening data: no
+      // spotify_connections row for registered users, no tokens for guests.
+      if (me.status === 403) {
+        console.warn("⚠️ Spotify /me -> 403: account not on the app allowlist, connection not saved");
+        return json({ error: "spotify_not_allowlisted", code: "spotify_not_allowlisted" }, 403);
+      }
+      // Any other non-OK status (5xx, rate limit) is treated as transient, as
+      // before: the connection is saved without a profile. The helper has
+      // already logged the status.
+      const profile = me.profile;
       const expiresAt = new Date(Date.now() + (tokens.expires_in - 30) * 1000).toISOString();
 
       if (userId) {
