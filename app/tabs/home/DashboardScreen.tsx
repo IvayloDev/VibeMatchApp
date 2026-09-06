@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert, AppState } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -16,7 +16,9 @@ import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } 
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
-import CreditsModal from '../../../lib/components/CreditsModal';
+import WallSheet from '../../../lib/components/WallSheet';
+import { claimDailyCreditIfDue, nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
+import { registerNotificationOpenedTracking } from '../../../lib/notifications';
 
 const { width, height } = Dimensions.get('window');
 
@@ -41,18 +43,40 @@ const DashboardScreen = () => {
   const [isPro, setIsPro] = useState(false);
   const [proScansToday, setProScansToday] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  // Out-of-matches wall (replaces the old jump straight into the paywall).
+  const [showWall, setShowWall] = useState(false);
+  const [wallSource, setWallSource] = useState<'dashboard_cta' | 'dashboard_picker'>('dashboard_cta');
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  // Ticks once a minute so the "next free match in" countdown stays honest.
+  const [, setClockTick] = useState(0);
+  // The AppState listener below outlives any single render.
+  const userRef = useRef(user);
+  userRef.current = user;
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
-  const loadUserCredits = async () => {
+  // Loads run one after another: mount, focus and foreground can all fire
+  // together, and a plain read racing the daily claim would flash a stale 0.
+  const loadChain = useRef<Promise<void>>(Promise.resolve());
+  const loadUserCredits = (options?: { claimDaily?: boolean }): Promise<void> => {
+    const run = loadChain.current.then(() => loadUserCreditsNow(options));
+    loadChain.current = run.catch(() => {});
+    return run;
+  };
+
+  const loadUserCreditsNow = async (options?: { claimDaily?: boolean }) => {
     try {
-      const userCredits = await getUserCredits();
-      setCredits(userCredits);
       const pro = await hasProEntitlement();
       setIsPro(pro);
+      if (options?.claimDaily) {
+        // One free match a day, handed out only at a 0 balance (never to Pro).
+        const { nextAt } = await claimDailyCreditIfDue(pro, !!userRef.current);
+        setNextFreeAt(nextAt);
+      }
+      const userCredits = await getUserCredits();
+      setCredits(userCredits);
       // Refreshed alongside credits so the badge is right after every scan.
       if (pro) setProScansToday(await getProScansToday());
     } catch (error) {
@@ -63,7 +87,16 @@ const DashboardScreen = () => {
   };
 
   useEffect(() => {
-    loadUserCredits();
+    loadUserCredits({ claimDaily: true });
+
+    // Every foreground is a chance for today's free match to have unlocked.
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') loadUserCredits({ claimDaily: true });
+    });
+
+    // notification_opened analytics for every notification tap (App.js is
+    // plain JS and stays untouched; the Dashboard mounts once per session).
+    const stopOpenedTracking = registerNotificationOpenedTracking();
 
     // Purchases, renewals and expirations land here live, so the PRO badge
     // and gates flip without a screen re-entry.
@@ -84,8 +117,23 @@ const DashboardScreen = () => {
       }),
     ]).start();
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      appStateSub.remove();
+      stopOpenedTracking();
+    };
   }, []);
+
+  // While the countdown is on screen, re-render it every minute and claim the
+  // free match the moment midnight passes with the app still open.
+  useEffect(() => {
+    if (loading || isPro || credits > 0) return;
+    const id = setInterval(() => {
+      setClockTick((t) => t + 1);
+      if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, [loading, isPro, credits, nextFreeAt]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -93,24 +141,23 @@ const DashboardScreen = () => {
     }, [])
   );
 
-  const pickImage = async () => {
-    // Pro subscribers with quota left skip the credit gate entirely; the
-    // stricter per-scan check (including the daily cap) lives in
-    // AnalyzingScreen, which every scan path funnels through.
-    const proCanScan = isPro && (await canProScanToday());
-    if (!proCanScan && credits < 1) {
-      if (isPro) {
-        Alert.alert(
-          `That's ${PRO_DAILY_LIMIT} for today!`,
-          `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`
-        );
-        return;
-      }
-      trackEvent('out_of_credits', { source: 'dashboard_picker', credits_balance: credits });
-      setShowCreditsModal(true);
-      return;
-    }
+  // A free match may have unlocked since the balance was last read (the app
+  // can sit in the foreground across midnight). True if one was just granted.
+  const claimIfUnlocked = async () => {
+    const claim = await claimDailyCreditIfDue(false, !!userRef.current);
+    setNextFreeAt(claim.nextAt);
+    if (claim.granted) await loadUserCredits();
+    return claim.granted;
+  };
 
+  const openWall = (source: 'dashboard_cta' | 'dashboard_picker') => {
+    trackEvent('out_of_credits', { source, credits_balance: credits });
+    setWallSource(source);
+    setNextFreeAt(nextLocalMidnight());
+    setShowWall(true);
+  };
+
+  const launchPicker = async () => {
     trackEvent('photo_picker_opened', { source: 'library', credits_balance: credits });
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -134,15 +181,42 @@ const DashboardScreen = () => {
     }
   };
 
-  const handleButtonPress = () => {
+  const pickImage = async () => {
+    // Pro subscribers with quota left skip the credit gate entirely; the
+    // stricter per-scan check (including the daily cap) lives in
+    // AnalyzingScreen, which every scan path funnels through.
+    const proCanScan = isPro && (await canProScanToday());
+    if (!proCanScan && credits < 1) {
+      if (isPro) {
+        Alert.alert(
+          `That's ${PRO_DAILY_LIMIT} for today!`,
+          `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`
+        );
+        return;
+      }
+      if (!(await claimIfUnlocked())) {
+        openWall('dashboard_picker');
+        return;
+      }
+    }
+    launchPicker();
+  };
+
+  const handleButtonPress = async () => {
     if (!isPro && credits < 1) {
-      trackEvent('out_of_credits', { source: 'dashboard_cta', credits_balance: credits });
-      trackEvent('paywall_cta_tapped', { source: 'dashboard_out_of_credits', credits_balance: credits });
-      navigation.navigate('Payment');
+      // No more paywall jump at 0: the wall says when the next free match
+      // lands and offers the cheap pack first.
+      if (await claimIfUnlocked()) {
+        launchPicker();
+        return;
+      }
+      openWall('dashboard_cta');
     } else {
       pickImage();
     }
   };
+
+  const outOfMatches = !loading && !isPro && credits < 1;
 
   const handleButtonPressIn = () => {
     Animated.spring(buttonScale, {
@@ -257,10 +331,12 @@ const DashboardScreen = () => {
                 }}
                 activeOpacity={0.85}
               >
-                <MaterialCommunityIcons name="crown" size={20} color="#FFFFFF" />
+                <MaterialCommunityIcons name={outOfMatches ? 'clock-outline' : 'crown'} size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
-                  <Text style={styles.guestRegisterTitle}>Get more matches</Text>
-                  <Text style={styles.guestRegisterSubtitle}>Go Pro for 10 a day, or grab a 5-credit pack.</Text>
+                  <Text style={styles.guestRegisterTitle}>
+                    {outOfMatches ? `Next free match in ${formatUntil(nextFreeAt)}` : 'Get more matches'}
+                  </Text>
+                  <Text style={styles.guestRegisterSubtitle}>1 free match a day. Pro gives you 10.</Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
               </TouchableOpacity>
@@ -319,7 +395,9 @@ const DashboardScreen = () => {
                 {/* Card Text */}
                 <Text style={styles.uploadTitle}>Upload Your Vibe</Text>
                 <Text style={styles.uploadDescription}>
-                  Select a photo from your gallery to let AI analyze the mood
+                  {outOfMatches
+                    ? `Next free match in ${formatUntil(nextFreeAt)}`
+                    : 'Select a photo from your gallery to let AI analyze the mood'}
                 </Text>
 
                 {/* CTA Button */}
@@ -380,13 +458,26 @@ const DashboardScreen = () => {
         </ScrollView>
       </SafeAreaView>
 
-      <CreditsModal
-        visible={showCreditsModal}
-        onCancel={() => setShowCreditsModal(false)}
-        onBuy={() => {
-          setShowCreditsModal(false);
-          trackEvent('paywall_cta_tapped', { source: 'dashboard_credits_modal', credits_balance: credits });
+      <WallSheet
+        visible={showWall}
+        source={wallSource}
+        credits={credits}
+        nextFreeAt={nextFreeAt}
+        isAuthenticated={!!user}
+        isPro={isPro}
+        onClose={() => setShowWall(false)}
+        onBoughtPack={(newBalance) => {
+          setShowWall(false);
+          setCredits(newBalance);
+          loadUserCredits();
+        }}
+        onGoPro={() => {
+          setShowWall(false);
           navigation.navigate('Payment');
+        }}
+        onRegister={() => {
+          setShowWall(false);
+          navigation.navigate('SignUp');
         }}
       />
     </View>

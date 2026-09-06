@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { isSpotifyConnectEnabled } from '../../../lib/featureFlags';
 import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image, Linking, Platform, RefreshControl } from 'react-native';
 import * as Application from 'expo-application';
 import { Text } from 'react-native-paper';
@@ -31,6 +32,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
 import { trackEvent } from '../../../lib/posthog';
+import { sendTestNotification } from '../../../lib/notifications';
 
 const { width, height } = Dimensions.get('window');
 
@@ -59,6 +61,26 @@ const ProfileScreen = () => {
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Hidden QA hook: long-press the build stamp to fire a local test
+  // notification in 10 s (background the app to see the banner).
+  const handleVersionLongPress = () => {
+    Alert.alert('TuneMatch', undefined, [
+      {
+        text: 'Send test notification (10 s)',
+        onPress: async () => {
+          const ok = await sendTestNotification();
+          if (!ok) {
+            Alert.alert(
+              'Notifications are off',
+              'Enable notifications for TuneMatch in Settings and try again.'
+            );
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
 
   // Bug reports arrive useless without build context, so the diagnostics the
   // user can't be expected to know are prefilled into the body.
@@ -160,6 +182,18 @@ const ProfileScreen = () => {
       if (result.success) {
         trackEvent('spotify_connected', { source: 'profile', is_authenticated: !!user });
         Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
+      } else if (result.reason === 'not_allowlisted') {
+        // Spotify's Development mode: login worked, data will never load.
+        // Say so and send them to the picker instead of a dead end.
+        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error ?? 'not_allowlisted', reason: 'not_allowlisted' });
+        Alert.alert(
+          'Spotify kept its data',
+          'Spotify only shares listening history with approved apps. Pick your taste by hand instead and every match is still tuned to you.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Pick my taste', onPress: () => (navigation as any).navigate('TastePicker', { returnTo: 'back' }) },
+          ]
+        );
       } else if (result.error) {
         // A user-cancelled OAuth is not an error worth alerting about.
         trackEvent('spotify_connect_failed', { source: 'profile', error: result.error, reason: result.reason ?? 'unknown' });
@@ -544,7 +578,29 @@ const ProfileScreen = () => {
         {/* Spotify link, shown only to people who skipped it in onboarding.
             Hidden while the status is still resolving so it cannot flash in
             front of someone who is already connected. */}
-        {spotifyResolved && !spotifyChecking && !spotifyConnected && (
+        {/* Taste picker entry: artists and genres chosen in-app. This is where
+            taste comes from for the public now (see lib/featureFlags.ts). */}
+        <TouchableOpacity
+          style={styles.spotifyConnectCard}
+          onPress={() => {
+            trackEvent('taste_picker_opened', { source: 'profile', is_authenticated: !!user });
+            (navigation as any).navigate('TastePicker', { returnTo: 'back' });
+          }}
+          activeOpacity={0.85}
+        >
+          <View style={styles.spotifyIconWrap}>
+            <MaterialCommunityIcons name="music-note-plus" size={22} color="#f4258c" />
+          </View>
+          <View style={styles.spotifyTextWrap}>
+            <Text style={styles.spotifyConnectTitle}>Your music taste</Text>
+            <Text style={styles.spotifyConnectSubtitle}>
+              Pick the artists and genres you love so every match is tuned to you.
+            </Text>
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={22} color="rgba(255,255,255,0.5)" />
+        </TouchableOpacity>
+
+        {spotifyResolved && !spotifyChecking && !spotifyConnected && isSpotifyConnectEnabled() && (
           <TouchableOpacity
             style={styles.spotifyConnectCard}
             onPress={handleConnectSpotify}
@@ -608,6 +664,18 @@ const ProfileScreen = () => {
             <Text style={styles.legalLinkText}>Privacy Policy</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Build stamp. Long-press is a hidden test-notification action. */}
+        <TouchableOpacity
+          onLongPress={handleVersionLongPress}
+          delayLongPress={600}
+          activeOpacity={0.6}
+          style={styles.versionRow}
+        >
+          <Text style={styles.versionText}>
+            TuneMatch {Application.nativeApplicationVersion ?? '?'} ({Application.nativeBuildVersion ?? '?'})
+          </Text>
+        </TouchableOpacity>
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
@@ -914,6 +982,16 @@ const styles = StyleSheet.create({
   },
   bottomSpacing: {
     height: 20,
+  },
+  versionRow: {
+    alignSelf: 'center',
+    marginTop: Spacing.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  versionText: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.3)',
   },
   skeletonCredits: {
     height: 36,

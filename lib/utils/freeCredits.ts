@@ -156,6 +156,12 @@ export async function grantGuestFreeCredits(): Promise<boolean> {
     if (success) {
       const newCredits = await getLocalCredits();
       console.log(`✅ Granted ${GUEST_FREE_CREDITS} free credit(s) to guest user. New total: ${newCredits}`);
+      // The starter credits count as today's free match: the daily refill
+      // (lib/dailyCredit.ts) starts tomorrow, not the moment these run out.
+      try {
+        const { markDailyCreditGrantedToday } = await import('../dailyCredit');
+        await markDailyCreditGrantedToday();
+      } catch {}
       return true;
     } else {
       // If adding credits failed, we should unmark (but this is unlikely)
@@ -189,6 +195,11 @@ export async function grantRegisteredFreeCredits(userId: string): Promise<boolea
     if (success) {
       await markRegisteredFreeCreditsAsGranted(userId);
       console.log(`✅ Granted ${REGISTERED_FREE_CREDITS} free credit(s) to registered user`);
+      // Same rule as the guest grant: the signup credit is today's free match.
+      try {
+        const { markDailyCreditGrantedToday } = await import('../dailyCredit');
+        await markDailyCreditGrantedToday();
+      } catch {}
       return true;
     }
     

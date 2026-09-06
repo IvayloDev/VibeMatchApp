@@ -17,7 +17,7 @@ export const creditPackages: CreditPackage[] = [
 
 export const creditProductIds = creditPackages.map((pkg) => pkg.productId);
 
-// Free trial amounts live in ./utils/freeCredits (GUEST_FREE_CREDITS /
+// Free credit amounts live in ./utils/freeCredits (GUEST_FREE_CREDITS /
 // REGISTERED_FREE_CREDITS), which is what actually grants them. Duplicates
 // used to sit here unreferenced - FIRST_ANALYSIS_FREE in particular made free
 // first scans look intentional, which is why the ungated onboarding path went

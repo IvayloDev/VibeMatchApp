@@ -3,7 +3,8 @@ import { View, StyleSheet, Image, Animated, Dimensions, Alert, TouchableOpacity,
 import { Text } from 'react-native-paper';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
-import CreditsModal from '../../../lib/components/CreditsModal';
+import WallSheet from '../../../lib/components/WallSheet';
+import { claimDailyCreditIfDue, nextLocalMidnight } from '../../../lib/dailyCredit';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -213,7 +214,14 @@ const AnalyzingScreen = () => {
 
   // "Match found" reveal
   const [matchSong, setMatchSong] = useState<any>(null);
-  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  // Out-of-matches wall + what it needs to know.
+  const [showWall, setShowWall] = useState(false);
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  const [isAuthed, setIsAuthed] = useState(!!userId);
+  // Bumped to re-run the blocked scan (after a pack bought from the wall, or
+  // when the user comes back from the paywall).
+  const [scanAttempt, setScanAttempt] = useState(0);
+  const wentToPaywall = useRef(false);
   const revealBackdrop = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0.4)).current;
   const checkOpacity = useRef(new Animated.Value(0)).current;
@@ -233,6 +241,26 @@ const AnalyzingScreen = () => {
       };
     }, [navigation])
   );
+
+  // Back from the paywall the wall sent them to: re-run the gate. A new Pro
+  // or a pack bought there scans right away; otherwise the wall returns.
+  useFocusEffect(
+    React.useCallback(() => {
+      if (wentToPaywall.current) {
+        wentToPaywall.current = false;
+        setScanAttempt((n) => n + 1);
+      }
+    }, [])
+  );
+
+  // Same "leave the blocked scan" behavior the native alert used.
+  const leaveBlockedScan = () => {
+    if (fromOnboarding) {
+      (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+    } else {
+      (navigation as any).navigate('Dashboard');
+    }
+  };
 
   // Update ref when tags change
   useEffect(() => {
@@ -368,7 +396,18 @@ const AnalyzingScreen = () => {
       const usingProQuota = isPro && proScansToday < PRO_DAILY_LIMIT;
       // Balance before this scan's deduction. `is_last_credit` marks the scan
       // that leaves the user at zero - the moment the credit model stops them.
-      const creditsBefore = await getUserCredits();
+      let creditsBefore = await getUserCredits();
+
+      if (!usingProQuota && !isPro && creditsBefore < 1) {
+        // Today's free match may still be unclaimed (the Dashboard claim may
+        // not have run yet, or the app sat open across midnight).
+        const { data: { session: gateSession } } = await supabase.auth.getSession();
+        const authed = !!gateSession?.user;
+        setIsAuthed(authed);
+        const claim = await claimDailyCreditIfDue(false, authed);
+        setNextFreeAt(claim.nextAt);
+        if (claim.granted) creditsBefore = await getUserCredits();
+      }
 
       if (!usingProQuota && creditsBefore < 1) {
         if (isPro) {
@@ -389,7 +428,7 @@ const AnalyzingScreen = () => {
             credits_balance: creditsBefore,
             from_onboarding: !!fromOnboarding,
           });
-          setShowCreditsModal(true);
+          setShowWall(true);
         }
         return;
       }
@@ -575,6 +614,8 @@ const AnalyzingScreen = () => {
           from_onboarding: !!fromOnboarding,
           duration_ms: Date.now() - scanStartTime,
           credits_before: creditsBefore,
+          // Whether the server had a taste profile to tune this match with.
+          has_taste: typeof data?.has_taste === 'boolean' ? data.has_taste : undefined,
         });
 
         if (usingProQuota) {
@@ -636,7 +677,7 @@ const AnalyzingScreen = () => {
         // Value-first: only now (after a real success) ask for notification
         // permission, then (re)arm the gentle re-engagement ladder.
         try {
-          await ensureNotificationPermission();
+          await ensureNotificationPermission('post_match');
           await rescheduleEngagementReminders();
         } catch {}
 
@@ -645,7 +686,7 @@ const AnalyzingScreen = () => {
 
         const goToResults = () => {
           if (fromOnboarding) {
-            // From root stack (OnboardingAnalyzing) — reset nav to MainTabs
+            // From root stack (OnboardingAnalyzing) - reset nav to MainTabs
             // with History tab pre-showing results
             (navigation as any).reset({
               index: 0,
@@ -723,7 +764,7 @@ const AnalyzingScreen = () => {
         }).start(() => {
           setTimeout(() => {
             if (fromOnboarding) {
-              // Don't leave user stuck — onboarding already marked complete, go to app
+              // Don't leave user stuck - onboarding already marked complete, go to app
               Alert.alert(
                 'Analysis Failed',
                 'We couldn\'t analyze your photo this time. You can try again from the app!',
@@ -749,7 +790,7 @@ const AnalyzingScreen = () => {
       cornerPulseLoop.stop();
       pulseDotLoop.stop();
     };
-  }, [navigation, image, selectedVibe, userId, fromOnboarding]);
+  }, [navigation, image, selectedVibe, userId, fromOnboarding, scanAttempt]);
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -958,21 +999,31 @@ const AnalyzingScreen = () => {
         </Animated.View>
       )}
 
-      <CreditsModal
-        visible={showCreditsModal}
-        onCancel={() => {
-          setShowCreditsModal(false);
-          // Same "leave the blocked scan" behavior the native alert used.
-          if (fromOnboarding) {
-            (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
-          } else {
-            (navigation as any).navigate('Dashboard');
-          }
+      <WallSheet
+        visible={showWall}
+        source="analyzing_gate"
+        credits={0}
+        nextFreeAt={nextFreeAt}
+        isAuthenticated={isAuthed}
+        isPro={false}
+        onClose={() => {
+          setShowWall(false);
+          leaveBlockedScan();
         }}
-        onBuy={() => {
-          setShowCreditsModal(false);
-          trackEvent('paywall_cta_tapped', { source: 'analyzing_credits_modal' });
+        onBoughtPack={() => {
+          // Paid for matches with the photo still on screen: run the scan now.
+          setShowWall(false);
+          setScanAttempt((n) => n + 1);
+        }}
+        onGoPro={() => {
+          setShowWall(false);
+          wentToPaywall.current = true;
           (navigation as any).navigate('Payment');
+        }}
+        onRegister={() => {
+          setShowWall(false);
+          wentToPaywall.current = true;
+          (navigation as any).navigate('SignUp');
         }}
       />
     </View>

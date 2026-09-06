@@ -20,7 +20,9 @@ import { hasProEntitlement } from '../../../lib/revenuecat';
 import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
-import CreditsModal from '../../../lib/components/CreditsModal';
+import WallSheet from '../../../lib/components/WallSheet';
+import { claimDailyCreditIfDue, nextLocalMidnight } from '../../../lib/dailyCredit';
+import { useAuth } from '../../../lib/AuthContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -33,6 +35,7 @@ const DesignColors = {
 type RootStackParamList = {
   Analyzing: { image: string; selectedVibe?: string };
   Payment: undefined;
+  SignUp: undefined;
 };
 
 type RouteParams = {
@@ -46,10 +49,12 @@ const VibeSelectionScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { image } = (route.params || {}) as RouteParams;
+  const { user } = useAuth();
 
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [showWall, setShowWall] = useState(false);
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -70,7 +75,13 @@ const VibeSelectionScreen = () => {
       const isPro = await hasProEntitlement();
       const proQuotaLeft = isPro ? await canProScanToday() : false;
       if (!proQuotaLeft) {
-        const currentCredits = await getUserCredits();
+        let currentCredits = await getUserCredits();
+        if (!isPro && currentCredits < 1) {
+          // Today's free match may still be unclaimed (app open across midnight).
+          const claim = await claimDailyCreditIfDue(false, !!user);
+          setNextFreeAt(claim.nextAt);
+          if (claim.granted) currentCredits = await getUserCredits();
+        }
         if (currentCredits < 1) {
           if (isPro) {
             Alert.alert(
@@ -78,7 +89,8 @@ const VibeSelectionScreen = () => {
               'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.'
             );
           } else {
-            setShowCreditsModal(true);
+            trackEvent('out_of_credits', { source: 'vibe_selection', credits_balance: currentCredits });
+            setShowWall(true);
           }
           return;
         }
@@ -181,13 +193,26 @@ const VibeSelectionScreen = () => {
         </Animated.View>
       </SafeAreaView>
 
-      <CreditsModal
-        visible={showCreditsModal}
-        onCancel={() => setShowCreditsModal(false)}
-        onBuy={() => {
-          setShowCreditsModal(false);
-          trackEvent('paywall_cta_tapped', { source: 'vibe_credits_modal' });
+      <WallSheet
+        visible={showWall}
+        source="vibe_selection"
+        credits={0}
+        nextFreeAt={nextFreeAt}
+        isAuthenticated={!!user}
+        isPro={false}
+        onClose={() => setShowWall(false)}
+        onBoughtPack={() => {
+          // The photo and mood are already chosen - straight into the scan.
+          setShowWall(false);
+          navigation.navigate('Analyzing', { image, selectedVibe: selectedVibe ?? undefined });
+        }}
+        onGoPro={() => {
+          setShowWall(false);
           navigation.navigate('Payment');
+        }}
+        onRegister={() => {
+          setShowWall(false);
+          navigation.navigate('SignUp');
         }}
       />
     </View>
@@ -257,7 +282,7 @@ const styles = StyleSheet.create({
     width: '100%',
     // Absorb whatever vertical space is left after the header, mood grid and
     // CTA, so the photo reads like the results hero and the page never needs to
-    // scroll — on a short screen the image shrinks instead of pushing content off.
+    // scroll - on a short screen the image shrinks instead of pushing content off.
     flex: 1,
     minHeight: 120,
     marginBottom: Spacing.lg,
@@ -292,7 +317,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingTop: Spacing.md,
-    // Clear the floating bottom tab bar, which overlays this screen — otherwise
+    // Clear the floating bottom tab bar, which overlays this screen - otherwise
     // the flexed photo pushes the CTA underneath it.
     paddingBottom: 70,
   },
