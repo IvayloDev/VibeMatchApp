@@ -11,6 +11,8 @@ import {
   AccessibilityInfo,
   StyleProp,
   ViewStyle,
+  Image,
+  type ImageSourcePropType,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -56,20 +58,53 @@ type Gradient = readonly [string, string, string];
 interface MatchCardSpec {
   tag: string;
   gradient: Gradient;
+  /** The photo behind the song. Files live in assets/welcome/. */
+  photo: ImageSourcePropType;
   song: string;
   artist: string;
 }
 
 // Index 0 starts in front; the next index sits back-left, the one after
 // back-right. Rotation advances the front by one each swap.
+// The photos are placeholders until real ones land in assets/welcome/ under
+// the same names: romantic.jpg (a sunset), chill.jpg (a calm scene),
+// moody.jpg (a night scene). Square crops read best, 800x800 is plenty.
 const MATCH_CARDS: MatchCardSpec[] = [
-  { tag: 'Romantic', gradient: ['#ffb36b', '#f4258c', '#4a1d6e'], song: 'Golden Hour', artist: 'JVKE' },
-  { tag: 'Chill', gradient: ['#1de9b6', '#1c7ed6', '#0b1a3a'], song: 'Weightless', artist: 'Marconi Union' },
-  { tag: 'Moody', gradient: ['#8b5cf6', '#2a1444', '#0f0a1c'], song: 'Nightcall', artist: 'Kavinsky' },
+  {
+    tag: 'Romantic',
+    gradient: ['#ffb36b', '#f4258c', '#4a1d6e'],
+    photo: require('../../assets/welcome/romantic.jpg'),
+    song: 'Golden Hour',
+    artist: 'JVKE',
+  },
+  {
+    tag: 'Chill',
+    gradient: ['#1de9b6', '#1c7ed6', '#0b1a3a'],
+    photo: require('../../assets/welcome/chill.jpg'),
+    song: 'Weightless',
+    artist: 'Marconi Union',
+  },
+  {
+    tag: 'Moody',
+    gradient: ['#8b5cf6', '#2a1444', '#0f0a1c'],
+    photo: require('../../assets/welcome/moody.jpg'),
+    song: 'Nightcall',
+    artist: 'Kavinsky',
+  },
 ];
 
+// The gradient sits under the photo as its fallback while the image loads,
+// and a dark scrim over the lower half keeps the song pill readable on any
+// photo.
 const MatchCard = ({ card }: { card: MatchCardSpec }) => (
   <LinearGradient colors={card.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
+    <Image source={card.photo} style={StyleSheet.absoluteFill} resizeMode="cover" accessible={false} />
+    <LinearGradient
+      colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.0)', 'rgba(0,0,0,0.55)']}
+      locations={[0, 0.45, 1]}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+    />
     <View style={styles.tag}>
       <Text style={styles.tagText}>{card.tag}</Text>
     </View>
