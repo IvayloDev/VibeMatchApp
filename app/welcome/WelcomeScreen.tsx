@@ -98,7 +98,7 @@ const MATCH_CARDS: MatchCardSpec[] = [
 // photo.
 const MatchCard = ({ card }: { card: MatchCardSpec }) => (
   <LinearGradient colors={card.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
-    <Image source={card.photo} style={StyleSheet.absoluteFill} resizeMode="cover" accessible={false} />
+    <Image source={card.photo} style={styles.cardPhoto} resizeMode="cover" accessible={false} />
     <LinearGradient
       colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.0)', 'rgba(0,0,0,0.55)']}
       locations={[0, 0.45, 1]}
@@ -469,6 +469,13 @@ const styles = StyleSheet.create({
     height: CARD_SIZE,
     borderRadius: 20,
     overflow: 'hidden',
+  },
+  cardPhoto: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: CARD_SIZE,
+    height: CARD_SIZE,
   },
   tag: {
     position: 'absolute',
