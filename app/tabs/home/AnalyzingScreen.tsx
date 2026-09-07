@@ -25,8 +25,9 @@ import { trackEvent } from '../../../lib/posthog';
 import { addGuestHistoryItem, loadGuestHistory } from '../../../lib/guestHistory';
 import { getDeviceId } from '../../../lib/utils/freeCredits';
 
-// How many past guest matches feed the avoid list (6 songs each).
-const GUEST_AVOID_ITEMS = 12;
+// How many past guest matches feed the avoid list. The server keeps its own
+// per-device record, so this only has to cover the very recent ones.
+const GUEST_AVOID_ITEMS = 5;
 
 const { width, height } = Dimensions.get('window');
 

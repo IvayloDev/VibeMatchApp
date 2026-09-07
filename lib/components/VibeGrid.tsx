@@ -48,6 +48,11 @@ export const VibeGrid: React.FC<Props> = ({ selected, onSelect, variant = 'poste
                       end={{ x: 1, y: 1 }}
                       style={styles.dot}
                     />
+                    {/* The colour alone said nothing. The icon names the mood
+                        and keeps the row readable without reading the label. */}
+                    <View style={styles.dotIcon} pointerEvents="none">
+                      <MaterialCommunityIcons name={vibe.icon as any} size={15} color="#FFFFFF" />
+                    </View>
                     {isSelected && (
                       <View style={styles.dotCheck}>
                         <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
@@ -201,8 +206,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.10)',
   },
   compactPressed: { transform: [{ scale: 0.97 }] },
-  dotWrap: { width: 28, height: 28 },
-  dot: { width: 28, height: 28, borderRadius: 14 },
+  dotWrap: { width: 30, height: 30 },
+  dot: { width: 30, height: 30, borderRadius: 15 },
+  dotIcon: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   dotCheck: {
     position: 'absolute',
     right: -4,

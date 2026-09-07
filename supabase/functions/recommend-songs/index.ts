@@ -617,15 +617,11 @@ function buildTasteGuidance(hasTaste: boolean, manual: boolean = false): string 
     // Without this branch the model reads "rock, 1990s" through the Spotify
     // rules below, treats the genre as noise, and answers the vibe alone: the
     // same two songs for every sunset regardless of what the user chose.
-    return `\n\nUSER MUSIC TASTE - READ THIS CAREFULLY:
-- The user typed this profile by hand in the app. Every decade, genre and artist listed is a deliberate choice, not a listening statistic. There is no noise in it.
-- WHEN THEY CHOSE ARTISTS, THOSE ARTISTS OUTRANK EVERYTHING ELSE. They name the exact scene, language and sound the user wants. At least 4 of the 6 picks must be artists a fan of the chosen ones would recognise as the same world: contemporaries, label-mates, influences, proteges, or the same local scene. Never the chosen artists themselves.
-- The chosen artists also set the LANGUAGE and REGION. If they record in a language other than English, or belong to a national scene, most picks must come from that same language and scene. Do not translate the request into its English-language equivalent.
-- CHOSEN DECADES AND GENRES ARE A HARD PREFERENCE. Position 1 MUST be a track released in one of the chosen decades AND belonging to one of the chosen genres (or a direct subgenre of it). At least 4 of the 6 picks must satisfy both. The remaining picks may stretch one of the two, never both. When artists were also chosen, the artists win any conflict: stay in their scene and stretch the decade or genre instead.
-- "Released in the decade" means the original release year. A 2019 record that sounds like 1994 is not a 1990s pick; put those in the stretch slots only.
-- The image mood and the chosen vibe decide WHICH tracks from that space fit; they never override the decade or the genre. If the image is a sunset and the user chose 1990s rock, the answer is a 1990s rock song that feels like a sunset, not a sunset song from another era.
-- DISCOVERY IS THE PRODUCT: never pick an artist listed in the profile. Surface songs the user probably has not heard but will recognise as their kind of thing.
-- A pick is GREAT when a friend who knows the user's taste would say "of course, this is so them" while also "wait, how did you find this?"`;
+    return `\n\nUSER MUSIC TASTE - typed by hand in the app, so every entry is deliberate:
+- Chosen artists outrank everything else. At least 3 of the 5 picks must sit in their world: contemporaries, label-mates, influences, proteges, same local scene. Never the chosen artists themselves. They also set the language and region.
+- Chosen decades and genres are hard: position 1 must be released in a chosen decade and belong to a chosen genre. "Released in" means the original release year, not a modern record that sounds like it. Where artists were also chosen, the artists win the conflict.
+- The image and the vibe decide which track from that space fits; they never override it.
+- Discovery is the product: never an artist listed in the profile, and no deep cut from one.`;
   }
   return `\n\nUSER MUSIC TASTE — READ THIS CAREFULLY:
 - The user's Spotify listening profile is provided below. Treat it as their SONIC DNA, not a genre filter.
@@ -658,32 +654,18 @@ function buildSystemPrompt(
   return `You are VibeMatch, a personalized music curator. You combine the visual/emotional read of an image with the user's overall sonic taste to surface songs they'll love — including ones they haven't discovered yet.${tasteGuidance}
 
 Hard rules:
-- Output MUST be valid JSON matching the schema. No extra text.
-- Recommend exactly 6 tracks (no more, no less) — we need extras as fallbacks in case some can't be found on Spotify.
-- NEVER return fewer than 6, and never an empty list. The rules below are preferences competing for the same six slots, not filters that can leave it empty. If they cannot all hold at once, relax them in this order and still return 6: the decade first, then the genre, then the "avoid mainstream" rule, then the scene. An imperfect pick beats no pick.
-- RANKING IS CRITICAL: Sort recommendations from BEST to WORST match. Position 1 must be the single most on-point pick that best combines the image mood + chosen vibe with the user's sonic DNA. Positions 2-3 are strong alternatives. Positions 4-6 are good fallbacks.
-- No repeated artist (each track must have a different artist).
-- Avoid ultra-mainstream, over-recommended staples and viral overplayed hits. Banned examples (do not pick these or their obvious equivalents): Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Physical (Dua Lipa), Shut Up and Dance, Sweater Weather, Riptide, Go (The Chemical Brothers), Midnight City (M83), Weightless (Marconi Union), Nightcall (Kavinsky), Intro (The xx). If a track has been a TikTok/playlist default or has billions of streams, skip it.
-- Ensure diversity: at least 3 distinct subgenres OR eras across the 6 tracks. Cross-genre picks are welcomed when the sonic DNA fits.
-- STRICT NO-REPEAT: do NOT recommend any track or artist that appears anywhere in the user's saved/top/recently-played/top-artists lists. All 6 must be artists they have NOT listened to. A repeat is an automatic failure - find adjacent, undiscovered music instead.
-- Only suggest songs you are confident exist (title + primary artist).
-- Write each title and artist EXACTLY as Spotify lists it, in the original script. If an artist is listed in Cyrillic, Greek, Hangul or Japanese, use that spelling, not a transliteration, or the track will not resolve.
-- CANONICAL TITLES ONLY: put the plain studio title in "title" and the primary artist in "artist". No "(feat. ...)", "(Live)", "(Remastered)", "(Deluxe)", "(Radio Edit)" or similar suffixes - they break music-service lookup.
-- LANGUAGE: default to international (primarily English) songs. This default is OVERRIDDEN by the user's own taste: if their chosen artists or genres belong to another language or national scene, recommend from that scene instead - that is what they asked for. Absent such a signal, do not reach for Bulgarian/chalga/BG music just because the app is used there.
+- Valid JSON matching the schema, nothing else.
+- Exactly 5 tracks, never fewer, never an empty list. The preferences above compete for these 5 slots; they are not filters. If they cannot all hold, relax in this order and still return 5: decade, genre, "avoid mainstream", scene.
+- Ranked best to worst; position 1 is the most on-point pick.
+- A different artist per track, and none that appears anywhere in the user's profile. Recommending one they already listed is a failure.
+- Skip ultra-mainstream staples and viral defaults (Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Sweater Weather, Riptide, Go by The Chemical Brothers, Midnight City, Weightless, Nightcall, Intro by The xx, and obvious equivalents).
+- At least 2 distinct subgenres or eras across the 5.
+- Only songs you are confident exist. Write title and artist exactly as Spotify lists them, in the original script (Cyrillic, Greek, Hangul, Japanese included), or the track will not resolve.
+- Plain studio titles: no "(feat. ...)", "(Live)", "(Remastered)", "(Radio Edit)" suffixes.
+- Language: default to English-language music, unless the user's chosen artists or genres belong to another language or scene, in which case draw from that scene.
 ${avoidSection}
 
-Return JSON with this structure:
-{
-  "recommendations": [
-    {
-      "title": "REAL song title",
-      "artist": "REAL artist name",
-      "reason": "2-3 sentences. START by naming what is actually in the photo - the concrete scene and its mood (e.g. 'A foggy harbor at dusk, still and a little lonely...'). THEN connect that to a specific sonic-DNA trait of the user (e.g. 'shares the dusty, lo-fi warmth of your saved [Artist] tracks'). For discovery picks, name the bridge to a listed artist or production trait, not a genre tag.",
-      "mood_tags": ["tag1", "tag2", "tag3"],
-      "search_query": "track:\\"Song Title\\" artist:\\"Artist Name\\""
-    }
-  ]
-}`;
+Return JSON: {"recommendations":[{"title":"","artist":"","reason":"2-3 sentences: first name what is actually in the photo and its mood, then tie that to a specific trait of the user's taste, naming the bridge artist or production trait rather than a genre tag.","mood_tags":["","",""],"search_query":"track:\\"Title\\" artist:\\"Artist\\""}]}`;
 }
 
 const VIBE_GUIDANCE: Record<string, string> = {
@@ -760,12 +742,16 @@ serve(async (req) => {
   // server-side "already served" exclusion even when their local history is
   // empty. Never used for anything else.
   let deviceId: string | undefined;
+  // When true the success response carries the OpenAI token counts, so a
+  // prompt change can be measured instead of guessed. Off for the app.
+  let debugUsage = false;
 
   try {
     const body = await req.json();
     if (typeof body.deviceId === "string" && /^[A-Za-z0-9._:-]{8,128}$/.test(body.deviceId)) {
       deviceId = body.deviceId;
     }
+    debugUsage = body.debug === true;
     imageUrl = body.imageUrl;
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
@@ -904,20 +890,22 @@ serve(async (req) => {
   if (logClient) {
     try {
       const [{ data: popular }, { data: served }] = await Promise.all([
-        logClient.rpc('most_served_tracks', { p_vibe: vibe ?? null, p_days: 30, p_limit: 20 }),
+        logClient.rpc('most_served_tracks', { p_vibe: vibe ?? null, p_days: 30, p_limit: 12 }),
         deviceId || userId
           ? logClient
               .from('recommendation_log')
               .select('title, artist')
               .or([deviceId ? `device_id.eq.${deviceId}` : null, userId ? `user_id.eq.${userId}` : null].filter(Boolean).join(','))
               .order('created_at', { ascending: false })
-              .limit(60)
+              .limit(20)
           : Promise.resolve({ data: [] as Array<{ title: string; artist: string }> }),
       ]);
       const label = (r: { title: string; artist: string }) => `${r.title} (${r.artist})`;
       const popularTracks = (popular ?? []).map(label);
       const servedTracks = (served ?? []).map(label);
-      avoidTracks = Array.from(new Set([...avoidTracks, ...servedTracks, ...popularTracks]));
+      // Capped: the list is pure prompt weight, and past ~40 titles it buys
+      // almost no extra variety.
+      avoidTracks = Array.from(new Set([...avoidTracks, ...servedTracks, ...popularTracks])).slice(0, 40);
       console.log(`🚫 Excluding ${popularTracks.length} over-served + ${servedTracks.length} already-served tracks`);
     } catch (err) {
       console.warn("⚠️ recommendation_log lookup failed, continuing without it:", err);
@@ -1020,8 +1008,8 @@ serve(async (req) => {
                 required: ["title", "artist", "reason", "mood_tags", "search_query"],
                 additionalProperties: false
               },
-              minItems: 6,
-              maxItems: 6
+              minItems: 5,
+              maxItems: 5
             }
           },
           required: ["recommendations"],
@@ -1036,6 +1024,8 @@ serve(async (req) => {
   console.log("📤 Calling OpenAI with structured output");
   console.log("📤 OpenAI API Key present:", !!openaiKey, "Length:", openaiKey?.length || 0);
 
+  // Token counts from the model, surfaced only when the caller passes debug.
+  let openaiUsage: any = null;
   let openaiResp: Response;
   try {
     const headers = {
@@ -1081,6 +1071,7 @@ serve(async (req) => {
   let openaiData: any;
   try {
     const result = await openaiResp.json();
+    openaiUsage = result?.usage ?? null;
     const message = result.choices?.[0]?.message;
     if (!message) throw new Error("No message in OpenAI response");
 
@@ -1112,8 +1103,8 @@ serve(async (req) => {
       throw new Error("Invalid response structure: missing recommendations array");
     }
 
-    if (openaiData.recommendations.length !== 6) {
-      console.warn(`⚠️ Expected 6 recommendations, got ${openaiData.recommendations.length}`);
+    if (openaiData.recommendations.length !== 5) {
+      console.warn(`⚠️ Expected 5 recommendations, got ${openaiData.recommendations.length}`);
     }
 
     console.log(`✅ Got ${openaiData.recommendations.length} recommendations from OpenAI`);
@@ -1241,6 +1232,7 @@ serve(async (req) => {
     if (deduplicatedSongs.length > 0) {
       console.warn("⚠️ Returning partial results - some songs not found on Spotify or had duplicate artists");
       return jsonResponse({
+        ...(debugUsage && openaiUsage ? { usage: { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens } } : {}),
         songs: deduplicatedSongs,
         warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined,
         has_taste: hasTaste
@@ -1275,6 +1267,10 @@ serve(async (req) => {
   );
 
   const shipped = deduplicatedSongs.slice(0, 3);
+  const usage = openaiUsage
+    ? { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens }
+    : null;
+  console.log("💸 tokens", JSON.stringify(usage));
   // Record what we ship so the next request can avoid it. Fire and forget.
   if (logClient) {
     logClient
@@ -1295,6 +1291,7 @@ serve(async (req) => {
   }
 
   return jsonResponse({
+    ...(debugUsage && usage ? { usage } : {}),
     songs: shipped, // Ensure exactly 3
     // Whether a Spotify taste profile shaped these picks, so the client can
     // tell personalized results from generic ones.
