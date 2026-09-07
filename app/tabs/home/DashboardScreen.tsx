@@ -315,7 +315,6 @@ const DashboardScreen = () => {
             <Text style={styles.mainHeading}>
               Match music to your <Text style={styles.gradientText}>mood.</Text>
             </Text>
-            <Text style={styles.subtitle}>AI-curated songs from any photo you take.</Text>
           </Animated.View>
 
           {/* Guest monetization: the loud banner sells credits (the paywall is
@@ -334,9 +333,10 @@ const DashboardScreen = () => {
                 <MaterialCommunityIcons name={outOfMatches ? 'clock-outline' : 'crown'} size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
                   <Text style={styles.guestRegisterTitle}>
-                    {outOfMatches ? `Next free match in ${formatUntil(nextFreeAt)}` : 'Get more matches'}
+                    {outOfMatches
+                      ? `Next free match in ${formatUntil(nextFreeAt)}`
+                      : 'Go Pro - 10 matches a day'}
                   </Text>
-                  <Text style={styles.guestRegisterSubtitle}>1 free match a day. Pro gives you 10.</Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
               </TouchableOpacity>
@@ -590,12 +590,15 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   mainHeading: {
-    fontSize: 36,
+    // Was 36pt over two lines with a strapline under it, which pushed the
+    // upload card off the first screen. This is a returning user's home, not
+    // a landing page.
+    fontSize: 26,
     fontWeight: '700',
     color: '#FFFFFF',
     textAlign: 'center',
-    lineHeight: 40,
-    letterSpacing: -0.5,
+    lineHeight: 31,
+    letterSpacing: -0.4,
   },
   gradientText: {
     color: DesignColors.primary, // Using primary red/pink color
@@ -612,8 +615,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     marginHorizontal: Spacing.lg,
-    marginTop: Spacing.md,
-    paddingVertical: Spacing.sm + 2,
+    marginTop: Spacing.sm + 2,
+    paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.lg,
     backgroundColor: '#f4258c',

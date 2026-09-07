@@ -200,9 +200,10 @@ const ResultsScreen = () => {
     // credits pill and the out-of-credits wall, which is where the want
     // actually appears.
 
-    // The Vault holds the match they just made, guest or not. Discover would
-    // be a 0-credit upload prompt, a dead end.
-    navigation.navigate('History', { screen: 'History' });
+    // Discover, not the Vault: they still have credits after the first match,
+    // so the useful next step is matching another photo. The Vault only shows
+    // them the one they already have.
+    navigation.navigate('Home', { screen: 'Dashboard' });
   };
 
   const handleImagePress = useCallback(() => {
