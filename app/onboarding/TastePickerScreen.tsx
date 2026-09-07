@@ -75,7 +75,7 @@ const FEATURED_GENRES: readonly string[] = [
   'pop', 'hip hop', 'rock', 'r&b', 'electronic', 'indie', 'latin', 'jazz', 'metal', 'country', 'soul',
 ];
 
-const TOTAL_STEPS = 3;
+const TOTAL_STEPS = 4;
 
 // "hip hop" -> "Hip Hop", "r&b" -> "R&B", "k-pop" -> "K-Pop"
 const formatGenre = (genre: string) =>
@@ -118,9 +118,9 @@ const TastePickerScreen: React.FC = () => {
   const [saving, setSaving] = useState(false);
   // Artists are optional, so the search stays folded away until asked for.
   const [artistsOpen, setArtistsOpen] = useState(false);
-  // One question per screen: decades first, then genres (with artists under
-  // them). The two stages share this component so picks survive Back.
-  const [stage, setStage] = useState<'decades' | 'genres'>('decades');
+  // One question per screen: decades, genres, then artists. The stages
+  // share this component so picks survive Back.
+  const [stage, setStage] = useState<'decades' | 'genres' | 'artists'>('decades');
   // Eleven common genres show by default; "More" unfolds the rest in place.
   const [allGenresOpen, setAllGenresOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -168,13 +168,15 @@ const TastePickerScreen: React.FC = () => {
     };
   }, []);
 
-  // The input only mounts once the section is open, so focus after that render.
+  // The input only mounts on the artists stage, so focus after that render.
+  // Keyed on the stage, not on artistsOpen: a restored profile leaves the
+  // section open already, which used to swallow the focus.
   useEffect(() => {
-    if (!artistsOpen || !focusSearchOnOpen.current) return;
+    if (stage !== 'artists' || !focusSearchOnOpen.current) return;
     focusSearchOnOpen.current = false;
     const frame = requestAnimationFrame(() => searchInputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [artistsOpen]);
+  }, [stage]);
 
   const runSearch = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -439,6 +441,23 @@ const TastePickerScreen: React.FC = () => {
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   };
 
+  const goToArtists = () => {
+    if (saving) return;
+    triggerHaptic('light');
+    // The search is the whole screen here, so it opens with the keyboard up.
+    focusSearchOnOpen.current = true;
+    setArtistsOpen(true);
+    setStage('artists');
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+
+  const backToGenres = () => {
+    if (saving) return;
+    Keyboard.dismiss();
+    setStage('genres');
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+
   // Continue on the last stage with nothing picked is the same as Skip: no
   // profile to save, straight on to the photo.
   const finish = () => {
@@ -447,13 +466,11 @@ const TastePickerScreen: React.FC = () => {
   };
 
   const eraSummary = selectedEras.length > 0 ? [...selectedEras].sort().join(' · ') : null;
-  const stageIndex = stage === 'decades' ? 1 : 2;
+  const stageIndex = stage === 'decades' ? 1 : stage === 'genres' ? 2 : 3;
   const editing = returnTo === 'back';
 
-  const artistsBlock = artistsOpen ? (
+  const artistsStage = (
     <View style={styles.artists}>
-      <SectionHeader label="Artists" hint="Optional" count={selectedArtists.length} max={MAX_TASTE_ARTISTS} />
-
       {selectedArtistChips}
 
       <View style={styles.searchBox}>
@@ -547,22 +564,6 @@ const TastePickerScreen: React.FC = () => {
         </View>
       )}
     </View>
-  ) : (
-    <View style={styles.artists}>
-      {selectedArtistChips}
-      <TouchableOpacity
-        onPress={openArtists}
-        style={styles.quietLink}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel="Add artists you love"
-        accessibilityHint="Optional. Opens a search of Spotify's catalog."
-      >
-        <Text style={styles.quietLinkText}>
-          Love a specific artist? <Text style={styles.quietLinkAction}>Add artists</Text>
-        </Text>
-      </TouchableOpacity>
-    </View>
   );
 
   return (
@@ -572,7 +573,7 @@ const TastePickerScreen: React.FC = () => {
           <OnboardingHeader
             step={editing ? undefined : stageIndex}
             total={editing ? undefined : TOTAL_STEPS}
-            onBack={stage === 'genres' ? backToDecades : editing ? handleSkip : undefined}
+            onBack={stage === 'genres' ? backToDecades : stage === 'artists' ? backToGenres : editing ? handleSkip : undefined}
             onSkip={editing ? undefined : handleSkip}
           />
 
@@ -595,6 +596,15 @@ const TastePickerScreen: React.FC = () => {
                   subtitle="Up to three. We pick songs from those years."
                 />
                 <DecadeDial value={selectedEras} max={MAX_TASTE_ERAS} onChange={setSelectedEras} />
+              </>
+            ) : stage === 'artists' ? (
+              <>
+                <OnboardingIntro
+                  eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
+                  title="Any favourite artists?"
+                  subtitle="Optional. Up to three, from Spotify's catalog."
+                />
+                {artistsStage}
               </>
             ) : (
               <>
@@ -631,7 +641,6 @@ const TastePickerScreen: React.FC = () => {
                     />
                   ) : null}
                 </View>
-                {artistsBlock}
               </>
             )}
           </ScrollView>
@@ -643,9 +652,16 @@ const TastePickerScreen: React.FC = () => {
               onPress={goToGenres}
               bottomInset={insets.bottom}
             />
+          ) : stage === 'genres' ? (
+            <OnboardingFooter
+              summary={selectedGenres.length > 0 ? selectedGenres.map(formatGenre).join(' · ') : 'Pick up to three, or continue'}
+              ctaLabel="Continue"
+              onPress={goToArtists}
+              bottomInset={insets.bottom}
+            />
           ) : (
             <OnboardingFooter
-              summary={summary ?? 'Pick up to three, or continue'}
+              summary={selectedArtists.length > 0 ? selectedArtists.map((a) => a.name).join(' · ') : 'Add up to three, or continue'}
               ctaLabel={editing ? 'Save' : 'Continue'}
               onPress={finish}
               loading={saving}
@@ -675,7 +691,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: OB.margin,
     marginTop: 18,
   },
-  artists: { paddingHorizontal: OB.margin, marginTop: 22, gap: LABEL_GAP },
+  artists: { paddingHorizontal: OB.margin, marginTop: Spacing.md, gap: LABEL_GAP },
   quietLink: { minHeight: OB.hit, justifyContent: 'center' },
   quietLinkText: { color: OB.textDim, fontSize: OB.body },
   quietLinkAction: { color: OB.purpleText, fontWeight: '700' },

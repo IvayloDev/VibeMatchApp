@@ -63,8 +63,8 @@ type RootStackParamList = {
 };
 
 const PAGE_KEY = 'photo_vibe';
-const TOTAL_STEPS = 3;
-const THIS_STEP = 3;
+const TOTAL_STEPS = 4;
+const THIS_STEP = 4;
 
 // "hip hop" -> "Hip Hop"
 const titleCase = (s: string) =>
