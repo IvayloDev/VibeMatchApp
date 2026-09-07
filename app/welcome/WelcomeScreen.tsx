@@ -13,6 +13,7 @@ import {
   ViewStyle,
   Image,
   type ImageSourcePropType,
+  type ImageStyle,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -98,7 +99,7 @@ const MATCH_CARDS: MatchCardSpec[] = [
 // photo.
 const MatchCard = ({ card }: { card: MatchCardSpec }) => (
   <LinearGradient colors={card.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
-    <Image source={card.photo} style={styles.cardPhoto} resizeMode="cover" accessible={false} />
+    <Image source={card.photo} style={styles.cardPhoto as ImageStyle} resizeMode="cover" accessible={false} />
     <LinearGradient
       colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.0)', 'rgba(0,0,0,0.55)']}
       locations={[0, 0.45, 1]}
