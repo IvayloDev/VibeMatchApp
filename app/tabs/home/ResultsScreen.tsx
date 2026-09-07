@@ -494,7 +494,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  content: { paddingHorizontal: OB.margin, paddingTop: 18 },
+  content: { paddingHorizontal: OB.margin, paddingTop: 14 },
   title: {
     color: OB.text,
     fontSize: 26,
@@ -503,23 +503,25 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   artist: { color: OB.textDim, fontSize: OB.body, marginTop: 2 },
-  reason: { marginTop: 12 },
+  reason: { marginTop: 10 },
   reasonText: { color: OB.textDim, fontSize: 14, lineHeight: 20 },
-  play: { marginTop: 14 },
+  play: { marginTop: 12 },
   rows: {
-    marginTop: 22,
+    // Tightened from 22 with the paddings below, so the third song breaks the
+    // fold and reads as "there is more" rather than ending the page.
+    marginTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: OB.border,
   },
   row: {
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.08)',
   },
   rowMain: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 },
   // 44pt art plus the 12pt gap, so the text hangs under the title rather than
   // under the artwork and the row still reads as one block.
-  rowReason: { marginTop: 8, marginLeft: 56 },
+  rowReason: { marginTop: 6, marginLeft: 56 },
   // textDim, not textFaint: textFaint is 4.48:1 on this background and misses
   // AA for body text. Size carries the hierarchy against the 15pt title.
   rowReasonText: { color: OB.textDim, fontSize: OB.caption, lineHeight: 18 },

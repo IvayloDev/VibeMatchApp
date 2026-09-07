@@ -421,11 +421,17 @@ function resolutionKind(rec: any, track: any): "exact" | "artist" {
  * written about. Never falls back to rec.reason: that text names a specific
  * song, so on a substitution it is a fabrication about a song the user is not
  * looking at. Never empty either, so the card and the rows keep a description.
+ *
+ * It leads with the substitution itself rather than quietly presenting a
+ * different song as the pick. The card clamps to two lines, so the admission
+ * is what a reader sees without expanding, and the model's artist line follows
+ * it for anyone who taps through.
  */
 function artistLevelReason(rec: any, track: any): string {
   const name = (track?.artists ?? [])[0]?.name || rec?.artist || "this artist";
   const written = typeof rec?.artist_reason === "string" ? rec.artist_reason.trim() : "";
-  return written || `Picked for the way ${name} fits this photo and your taste.`;
+  const admission = `We couldn't find the track we picked for this photo, so this is ${name}'s best known one.`;
+  return written ? `${admission} ${written}` : admission;
 }
 
 /** One response row. The reason follows what resolved, never the code path. */
