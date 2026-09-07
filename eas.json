@@ -17,6 +17,20 @@
         "buildType": "app-bundle"
       }
     },
+    "device-test": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_DEBUG_TOOLS": "1",
+        "EXPO_PUBLIC_TEST_CREDITS": "10"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "android": {

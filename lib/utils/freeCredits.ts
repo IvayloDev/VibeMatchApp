@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import * as Application from 'expo-application';
 import { Platform } from 'react-native';
+import { DEBUG_TOOLS_ENABLED } from '../debugTools';
 
 // Secure storage keys (no @ prefix - SecureStore doesn't allow it)
 const GUEST_FREE_CREDITS_GRANTED_KEY = 'tunematch_guest_free_credits_granted';
@@ -15,8 +16,20 @@ function sanitizeKey(str: string): string {
   return str.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-// Free credit amounts
-export const GUEST_FREE_CREDITS: number = 3;
+/**
+ * Free credit amounts.
+ *
+ * A test build can start with a bigger balance so a whole flow can be walked
+ * end to end without buying: set EXPO_PUBLIC_TEST_CREDITS on the build
+ * profile. It is only honoured where the debug tools are compiled in, and the
+ * production profile sets neither flag, so a store build always grants 3.
+ */
+const TEST_CREDITS = Number(process.env.EXPO_PUBLIC_TEST_CREDITS);
+
+export const GUEST_FREE_CREDITS: number =
+  DEBUG_TOOLS_ENABLED && Number.isFinite(TEST_CREDITS) && TEST_CREDITS > 0
+    ? TEST_CREDITS
+    : 3;
 export const REGISTERED_FREE_CREDITS: number = 1;
 
 /**
