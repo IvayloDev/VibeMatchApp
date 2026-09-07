@@ -178,7 +178,12 @@ function normalizeForMatch(value: string): string {
     .replace(/\s*[([][^)\]]*[)\]]/g, " ")               // "(Remastered)", "[Live]"
     .replace(/\s+-\s+.*$/, " ")                          // " - Radio Edit", " - 2011 Mix"
     .replace(/&/g, " and ")
-    .replace(/[^a-z0-9]+/g, " ")                         // punctuation, apostrophes
+    // Keep every Unicode letter and digit, not just a-z0-9. The ASCII-only
+    // version erased any non-Latin script entirely: a Cyrillic, Greek, Korean
+    // or Japanese title normalized to "", scored zero overlap, and was
+    // rejected, so a user whose chosen artists record in those scripts got
+    // "No matches found" every time.
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
 }
@@ -191,6 +196,43 @@ function tokenOverlap(a: string, b: string): number {
   let shared = 0;
   for (const token of left) if (right.has(token)) shared++;
   return shared / Math.min(left.size, right.size);
+}
+
+/**
+ * The artist's most popular track on Spotify, or null when the artist itself
+ * cannot be verified.
+ *
+ * Used when a recommended title does not resolve. The artist name is still
+ * matched strictly, so this can only ever return a song by the artist the
+ * model actually named - it rescues a wrong title, never a wrong artist.
+ */
+async function topTrackForArtist(
+  artist: string,
+  token: string,
+  state?: SpotifySearchState
+): Promise<any | null> {
+  const wantArtist = normalizeForMatch(artist);
+  if (!wantArtist || !token) return null;
+  try {
+    const params = new URLSearchParams({ type: "track", limit: "20", q: `artist:"${artist}"` });
+    const resp = await fetchWithRetry(
+      `https://api.spotify.com/v1/search?${params.toString()}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (state) state.lastHttpStatus = resp.status;
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const items: any[] = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
+    const byArtist = items.filter((t) =>
+      (t?.artists ?? []).some((a: any) => tokenOverlap(normalizeForMatch(a?.name ?? ""), wantArtist) >= 0.8)
+    );
+    if (byArtist.length === 0) return null;
+    byArtist.sort((a, b) => (b?.popularity ?? 0) - (a?.popularity ?? 0));
+    return byArtist[0];
+  } catch (err) {
+    console.warn("topTrackForArtist failed:", err);
+    return null;
+  }
 }
 
 /**
@@ -543,7 +585,13 @@ function buildTasteBlock(profile: TasteProfile | null): string {
 
   const parts: string[] = [];
   if (saved.length) parts.push(`Saved (high-intent — songs they chose to keep): ${saved.join("; ")}`);
-  if (artists.length) parts.push(`Most-listened artists: ${artists.join(", ")}`);
+  if (artists.length) {
+    parts.push(
+      isManualTaste(profile)
+        ? `Artists they chose (deliberate, high-intent - the single strongest signal here): ${artists.join(", ")}`
+        : `Most-listened artists: ${artists.join(", ")}`
+    );
+  }
   if (tracks.length) parts.push(`Most-listened tracks: ${tracks.join("; ")}`);
   if (recent.length) parts.push(`Currently in rotation: ${recent.join("; ")}`);
   if (eras.length) parts.push(`Decades they chose (deliberate, high-intent): ${eras.join(", ")}`);
@@ -571,9 +619,10 @@ function buildTasteGuidance(hasTaste: boolean, manual: boolean = false): string 
     // same two songs for every sunset regardless of what the user chose.
     return `\n\nUSER MUSIC TASTE - READ THIS CAREFULLY:
 - The user typed this profile by hand in the app. Every decade, genre and artist listed is a deliberate choice, not a listening statistic. There is no noise in it.
-- CHOSEN DECADES AND GENRES ARE A HARD PREFERENCE. Position 1 MUST be a track released in one of the chosen decades AND belonging to one of the chosen genres (or a direct subgenre of it). At least 4 of the 6 picks must satisfy both. The remaining picks may stretch one of the two, never both.
+- WHEN THEY CHOSE ARTISTS, THOSE ARTISTS OUTRANK EVERYTHING ELSE. They name the exact scene, language and sound the user wants. At least 4 of the 6 picks must be artists a fan of the chosen ones would recognise as the same world: contemporaries, label-mates, influences, proteges, or the same local scene. Never the chosen artists themselves.
+- The chosen artists also set the LANGUAGE and REGION. If they record in a language other than English, or belong to a national scene, most picks must come from that same language and scene. Do not translate the request into its English-language equivalent.
+- CHOSEN DECADES AND GENRES ARE A HARD PREFERENCE. Position 1 MUST be a track released in one of the chosen decades AND belonging to one of the chosen genres (or a direct subgenre of it). At least 4 of the 6 picks must satisfy both. The remaining picks may stretch one of the two, never both. When artists were also chosen, the artists win any conflict: stay in their scene and stretch the decade or genre instead.
 - "Released in the decade" means the original release year. A 2019 record that sounds like 1994 is not a 1990s pick; put those in the stretch slots only.
-- Chosen artists are anchors: pick contemporaries, label-mates, influences or proteges of those artists, never the artists themselves.
 - The image mood and the chosen vibe decide WHICH tracks from that space fit; they never override the decade or the genre. If the image is a sunset and the user chose 1990s rock, the answer is a 1990s rock song that feels like a sunset, not a sunset song from another era.
 - DISCOVERY IS THE PRODUCT: never pick an artist listed in the profile. Surface songs the user probably has not heard but will recognise as their kind of thing.
 - A pick is GREAT when a friend who knows the user's taste would say "of course, this is so them" while also "wait, how did you find this?"`;
@@ -611,14 +660,16 @@ function buildSystemPrompt(
 Hard rules:
 - Output MUST be valid JSON matching the schema. No extra text.
 - Recommend exactly 6 tracks (no more, no less) — we need extras as fallbacks in case some can't be found on Spotify.
+- NEVER return fewer than 6, and never an empty list. The rules below are preferences competing for the same six slots, not filters that can leave it empty. If they cannot all hold at once, relax them in this order and still return 6: the decade first, then the genre, then the "avoid mainstream" rule, then the scene. An imperfect pick beats no pick.
 - RANKING IS CRITICAL: Sort recommendations from BEST to WORST match. Position 1 must be the single most on-point pick that best combines the image mood + chosen vibe with the user's sonic DNA. Positions 2-3 are strong alternatives. Positions 4-6 are good fallbacks.
 - No repeated artist (each track must have a different artist).
 - Avoid ultra-mainstream, over-recommended staples and viral overplayed hits. Banned examples (do not pick these or their obvious equivalents): Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Physical (Dua Lipa), Shut Up and Dance, Sweater Weather, Riptide, Go (The Chemical Brothers), Midnight City (M83), Weightless (Marconi Union), Nightcall (Kavinsky), Intro (The xx). If a track has been a TikTok/playlist default or has billions of streams, skip it.
 - Ensure diversity: at least 3 distinct subgenres OR eras across the 6 tracks. Cross-genre picks are welcomed when the sonic DNA fits.
 - STRICT NO-REPEAT: do NOT recommend any track or artist that appears anywhere in the user's saved/top/recently-played/top-artists lists. All 6 must be artists they have NOT listened to. A repeat is an automatic failure - find adjacent, undiscovered music instead.
 - Only suggest songs you are confident exist (title + primary artist).
+- Write each title and artist EXACTLY as Spotify lists it, in the original script. If an artist is listed in Cyrillic, Greek, Hangul or Japanese, use that spelling, not a transliteration, or the track will not resolve.
 - CANONICAL TITLES ONLY: put the plain studio title in "title" and the primary artist in "artist". No "(feat. ...)", "(Live)", "(Remastered)", "(Deluxe)", "(Radio Edit)" or similar suffixes - they break music-service lookup.
-- IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music unless the image or context explicitly shows Bulgarian content or culture. Default to English-language music.
+- LANGUAGE: default to international (primarily English) songs. This default is OVERRIDDEN by the user's own taste: if their chosen artists or genres belong to another language or national scene, recommend from that scene instead - that is what they asked for. Absent such a signal, do not reach for Bulgarian/chalga/BG music just because the app is used there.
 ${avoidSection}
 
 Return JSON with this structure:
@@ -654,11 +705,11 @@ function buildUserPrompt(params: { vibe?: string }): string {
     return `The user picked the "${vibe}" vibe for their social-media story photo (${guidance}).
 
 Analyze the image and recommend 6 songs that match this vibe AND complement the photo's atmosphere, color palette, and implied story. Lean into the emotional tone of the vibe. Prefer unexpected-but-accurate picks over obvious hits.
-IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music.`;
+IMPORTANT: Default to international (primarily English) songs unless the user's chosen artists or genres point at another language or scene.`;
   }
 
   return `Analyze the image and recommend 6 songs that match the atmosphere, color palette, energy, and implied story. Prefer unexpected-but-accurate picks over obvious hits.
-IMPORTANT: Recommend ONLY international (primarily English) songs. DO NOT recommend Bulgarian/chalga/BG music.`;
+IMPORTANT: Default to international (primarily English) songs unless the user's chosen artists or genres point at another language or scene.`;
 }
 
 // Edge function
@@ -1118,8 +1169,29 @@ serve(async (req) => {
         preview_url: track.preview_url ?? null // 30s clip; often null on newer apps - client falls back to iTunes
       });
     } else {
-      console.warn(`⚠️ Could not find "${rec.title}" by "${rec.artist}" on Spotify`);
-      failedSongs.push(rec);
+      // The title did not resolve. Outside the English-language mainstream
+      // the model often names a real artist but invents a track title, and
+      // the strict title gate then throws the whole pick away. Falling back
+      // to that artist's most popular track keeps a real, correct-scene song
+      // instead of failing the request. The artist is still verified, so a
+      // hallucinated artist is dropped as before.
+      const fallback = await topTrackForArtist(rec.artist, spotifyToken, spotifySearchState);
+      if (fallback) {
+        console.warn(`↩️ "${rec.title}" not found; using "${fallback.name}" by ${rec.artist} instead`);
+        resolvedSongs.push({
+          title: fallback.name,
+          artist: fallback.artists[0]?.name || rec.artist,
+          reason: rec.reason,
+          mood_tags: rec.mood_tags,
+          language: "en",
+          spotify_url: fallback.external_urls?.spotify || `https://open.spotify.com/track/${fallback.id}`,
+          album_cover: fallback.album?.images?.[0]?.url,
+          preview_url: fallback.preview_url ?? null,
+        });
+      } else {
+        console.warn(`⚠️ Could not find "${rec.title}" by "${rec.artist}" on Spotify`);
+        failedSongs.push(rec);
+      }
     }
   }
 
@@ -1138,7 +1210,10 @@ serve(async (req) => {
         error: "No matches found",
         message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
         // null = every Spotify Search call returned 2xx; failure was empty results or strict title/artist scoring
-        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null
+        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null,
+        // What the model asked for, so a resolution failure can be told apart
+        // from a bad prompt without reading the function logs.
+        requested: failedSongs.map((s: any) => `${s.title} - ${s.artist}`),
       }, 404);
     }
   }
@@ -1175,10 +1250,14 @@ serve(async (req) => {
       if (isSpotifyAuthFailure(spotifySearchState.lastHttpStatus)) {
         return spotifyAuthErrorResponse();
       }
+      // Say what was asked for. Without this a resolution failure is a black
+      // box: the model may have picked fine songs that Spotify could not
+      // match, and there is no way to tell that from a bad prompt.
       return jsonResponse({
         error: "No matches found",
         message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
-        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null
+        lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null,
+        requested: (openaiData?.recommendations ?? []).map((r: any) => `${r?.title} - ${r?.artist}`),
       }, 404);
     }
   }
