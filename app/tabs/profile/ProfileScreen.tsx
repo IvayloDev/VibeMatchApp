@@ -22,7 +22,7 @@ import {
   PRO_ENTITLEMENT_ID,
 } from '../../../lib/revenuecat';
 import type { ProPlanSummary } from '../../../lib/revenuecat';
-import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset, showsSeconds } from '../../../lib/proQuota';
+import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { connectSpotify } from '../../../lib/spotify';
 import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
@@ -227,9 +227,8 @@ const ProfileScreen = () => {
   // Keep the "next batch in ..." line honest without a heavy timer.
   useEffect(() => {
     if (!isPro) return;
-    // Once inside the last hour the label carries seconds, so it has to tick
-    // every second; before that a slow tick is plenty.
-    const id = setInterval(() => setResetIn(formatQuotaReset()), showsSeconds() ? 1000 : 30000);
+    // The label carries seconds, so it ticks once a second.
+    const id = setInterval(() => setResetIn(formatQuotaReset()), 1000);
     return () => clearInterval(id);
   }, [isPro]);
 

@@ -59,22 +59,16 @@ export function msUntilQuotaReset(): number {
   return Math.max(0, nextResetAt(now).getTime() - now.getTime());
 }
 
-/** "4h 12m" / "38m" / "under a minute" - for telling someone when the next batch lands. */
+/** "14h 27m 12s" / "38m 04s" / "9s" - when the next batch lands, to the second. */
 export function formatQuotaReset(ms: number = msUntilQuotaReset()): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  // Seconds only appear in the last hour. Above that they are noise, and
-  // showing them would force a once-a-second re-render all day.
-  if (hours > 0) return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  const ss = String(seconds).padStart(2, '0');
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m ${ss}s`;
+  if (minutes > 0) return `${minutes}m ${ss}s`;
   return `${seconds}s`;
-}
-
-/** True while the countdown is close enough that seconds are shown. */
-export function showsSeconds(ms: number = msUntilQuotaReset()): boolean {
-  return ms < 60 * 60 * 1000;
 }
 
 /** Scans a pro subscriber has used today (0 on any read error). */

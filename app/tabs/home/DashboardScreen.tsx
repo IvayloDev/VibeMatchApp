@@ -12,7 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
-import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset, showsSeconds } from '../../../lib/proQuota';
+import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -135,12 +135,11 @@ const DashboardScreen = () => {
 
   useEffect(() => {
     if (loading || isPro || credits > 0) return;
-    // A second inside the last hour, a minute before that: the label only
-    // carries seconds near the end.
+    // The countdown carries seconds, so it ticks once a second.
     const id = setInterval(() => {
       setClockTick((t) => t + 1);
       if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
-    }, showsSeconds(nextFreeAt.getTime() - Date.now()) ? 1000 : 60 * 1000);
+    }, 1000);
     return () => clearInterval(id);
   }, [loading, isPro, credits, nextFreeAt]);
 
