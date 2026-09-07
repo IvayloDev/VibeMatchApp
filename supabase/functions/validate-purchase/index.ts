@@ -14,6 +14,45 @@ const CREDITS_PER_PRODUCT: Record<string, number> = {
   'tunematch_credits_150': 150,
 };
 
+/**
+ * Look the purchase up on RevenueCat's own record of this subscriber.
+ *
+ * Returns RevenueCat's transaction id for the purchase, or null when the
+ * subscriber has no such purchase. Accepts either RevenueCat's id or the
+ * store's, and, for the client's synthetic fallback ids, any purchase of the
+ * product made in the last fifteen minutes.
+ */
+async function verifyWithRevenueCat(
+  secret: string,
+  appUserId: string,
+  productId: string,
+  transactionId: string,
+): Promise<string | null> {
+  const resp = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(appUserId)}`, {
+    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+  });
+  if (!resp.ok) {
+    console.error('RevenueCat lookup failed:', resp.status);
+    return null;
+  }
+  const json = await resp.json();
+  const purchases: Array<{ id?: string; store_transaction_id?: string; purchase_date?: string }> =
+    json?.subscriber?.non_subscriptions?.[productId] ?? [];
+  if (purchases.length === 0) return null;
+
+  const exact = purchases.find((p) => p.id === transactionId || p.store_transaction_id === transactionId);
+  if (exact?.id) return exact.id;
+
+  if (transactionId.startsWith('rc_')) {
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    const recent = purchases
+      .filter((p) => p.id && p.purchase_date && Date.parse(p.purchase_date) >= cutoff)
+      .sort((a, b) => Date.parse(b.purchase_date!) - Date.parse(a.purchase_date!));
+    if (recent[0]?.id) return recent[0].id;
+  }
+  return null;
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -108,21 +147,57 @@ serve(async (req) => {
     const bonusCredits = Math.min(Math.max(0, Math.floor(requestedBonus)), 30);
     const creditsToGrant = baseCredits + bonusCredits;
 
-    // NOTE: RevenueCat validates receipts on their servers.
-    // Since we're using RevenueCat, we trust their validation.
-    // The purchase has already been validated by RevenueCat before reaching this function.
-    
+    // RevenueCat validates the store receipt, but nothing here used to check
+    // that RevenueCat had actually seen this transaction: any signed-in user
+    // could post a made-up transaction id and the largest product id and be
+    // granted its credits. When REVENUECAT_SECRET_API_KEY is set, the purchase
+    // has to exist on the subscriber that RevenueCat holds for this user id.
+    // Without the secret the old trusting path runs, loudly, so a missing
+    // secret never blocks a real purchase.
+    const rcSecret = Deno.env.get('REVENUECAT_SECRET_API_KEY') ?? '';
+    let verifiedTransactionId = transactionId;
+    if (rcSecret) {
+      const verified = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+      if (!verified) {
+        console.warn('🚫 RevenueCat has no such purchase', { userId: user.id, productId, transactionId });
+        return new Response(
+          JSON.stringify({ success: false, error: 'Purchase not found' }),
+          {
+            status: 403,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
+      }
+      verifiedTransactionId = verified;
+      // The client may have sent a synthetic id; dedupe on the real one.
+      if (verifiedTransactionId !== transactionId) {
+        const { data: dup } = await adminClient
+          .from('purchases')
+          .select('credits_granted')
+          .eq('transaction_id', verifiedTransactionId)
+          .maybeSingle();
+        if (dup) {
+          return new Response(
+            JSON.stringify({ success: true, alreadyProcessed: true, creditsGranted: dup.credits_granted, newBalance: dup.credits_granted }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+    } else {
+      console.warn('⚠️ REVENUECAT_SECRET_API_KEY not set: granting on the client\'s word');
+    }
+
     // Record the purchase in the database
     const { error: purchaseError } = await adminClient
       .from('purchases')
       .insert({
         user_id: user.id,
         product_id: productId,
-        transaction_id: transactionId,
+        transaction_id: verifiedTransactionId,
         platform: platform,
         credits_granted: creditsToGrant,
         validation_data: {
-          validated_by: 'revenuecat',
+          validated_by: rcSecret ? 'revenuecat_api' : 'client',
           validated_at: new Date().toISOString(),
           base_credits: baseCredits,
           launch_offer_bonus: bonusCredits,

@@ -47,6 +47,11 @@ function bytesToBase64(bytes: Uint8Array): string {
  * scheme is deliberately NOT accepted - a 13-digit timestamp is guessable, and
  * accepting it would turn this function into an enumeration oracle.
  */
+// Per-day call ceilings, checked against recommendation_log. Pro is 10 a day
+// and the largest pack ever sold was 120 credits; nobody real gets near these.
+const DAILY_CALLS_PER_IDENTITY = 60;
+const DAILY_CALLS_PER_IP = 200;
+
 const GUEST_IMAGE_PATH =
   /^anonymous\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/;
 
@@ -59,6 +64,11 @@ const GUEST_IMAGE_PATH =
  * policies just closed. Signed-in callers get their own folder; guests get
  * only their own unguessable guest path.
  */
+function isOwnStorageUrl(url: string): boolean {
+  const base = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
+  return !!base && url.startsWith(`${base}/storage/v1/object/`);
+}
+
 function isAllowedImagePath(path: string, userId?: string): boolean {
   if (!path || path.includes("..") || path.startsWith("/")) return false;
   if (userId && path.startsWith(`${userId}/`)) return true;
@@ -752,13 +762,12 @@ serve(async (req) => {
       deviceId = body.deviceId;
     }
     debugUsage = body.debug === true;
-    imageUrl = body.imageUrl;
+    imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
-    // Only use userId from body if we didn't get it from auth header
-    if (!userId) {
-      userId = body.userId;
-    }
+    // The user id comes from the verified JWT only. It used to fall back to
+    // body.userId, which let any caller name another user and have that
+    // person's history and taste profile shape the picks.
     avoidTracks = body.avoidTracks || [];
     avoidArtists = body.avoidArtists || [];
     // Guest taste profile may be passed inline from the client
@@ -779,6 +788,16 @@ serve(async (req) => {
       return jsonResponse({
         error: "imagePath is required"
       }, 400);
+    }
+
+    // imageUrl is kept for builds that predate imagePath. It must point at
+    // this project's own bucket: an arbitrary URL would make this function
+    // fetch anything on the caller's behalf and bill the result to OpenAI.
+    if (!imagePath && imageUrl && !isOwnStorageUrl(imageUrl)) {
+      console.warn("🚫 Rejected imageUrl host");
+      return jsonResponse({
+        error: "Forbidden image url"
+      }, 403);
     }
 
     // imagePath is the path clients use now. Reject anything the caller has no
@@ -909,6 +928,45 @@ serve(async (req) => {
       console.log(`🚫 Excluding ${popularTracks.length} over-served + ${servedTracks.length} already-served tracks`);
     } catch (err) {
       console.warn("⚠️ recommendation_log lookup failed, continuing without it:", err);
+    }
+  }
+
+  // 2c) Abuse ceiling. Credits and the Pro quota are enforced on the client,
+  // so without this the anon key in the app binary is an unmetered OpenAI
+  // account. recommendation_log already records every shipped track per
+  // device/user and (from this version) per IP; three rows per call.
+  // The limits are far above any legitimate day, so a real user never meets
+  // them; they exist so a script cannot run for hours.
+  const clientIp = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim()
+    || req.headers.get("cf-connecting-ip")
+    || null;
+  if (logClient) {
+    try {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const countSince = async (column: string, value: string) => {
+        const { count } = await logClient
+          .from('recommendation_log')
+          .select('id', { count: 'exact', head: true })
+          .eq(column, value)
+          .gt('created_at', since);
+        return Math.ceil((count ?? 0) / 3);
+      };
+      const [byUser, byDevice, byIp] = await Promise.all([
+        userId ? countSince('user_id', userId) : Promise.resolve(0),
+        deviceId ? countSince('device_id', deviceId) : Promise.resolve(0),
+        clientIp ? countSince('ip', clientIp) : Promise.resolve(0),
+      ]);
+      const identityCalls = Math.max(byUser, byDevice);
+      if (identityCalls >= DAILY_CALLS_PER_IDENTITY || byIp >= DAILY_CALLS_PER_IP) {
+        console.warn("🚫 Daily ceiling hit", { userId: userId ?? null, deviceId: deviceId ?? null, ip: clientIp, identityCalls, byIp });
+        return jsonResponse({
+          error: "Daily limit reached",
+          code: "rate_limited",
+          message: "That's a lot of matches for one day. Try again tomorrow."
+        }, 429);
+      }
+    } catch (err) {
+      console.warn("⚠️ Ceiling check failed, continuing:", err);
     }
   }
 
@@ -1283,6 +1341,7 @@ serve(async (req) => {
           spotify_url: s.spotify_url ?? null,
           device_id: deviceId ?? null,
           user_id: userId ?? null,
+          ip: clientIp,
         }))
       )
       .then(({ error }) => {

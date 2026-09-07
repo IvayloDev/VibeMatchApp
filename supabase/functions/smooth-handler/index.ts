@@ -45,7 +45,9 @@ serve(async (req) => {
     }
 
     // ── 1. Delete all DB rows ────────────────────────────────────────────────
-    const tables = ['user_profiles', 'history', 'spotify_taste_profiles', 'spotify_connections'];
+    // recommendation_log keeps what this account was served, by user id, so
+    // it goes too: erasure means nothing left that points at the account.
+    const tables = ['user_profiles', 'history', 'spotify_taste_profiles', 'spotify_connections', 'recommendation_log'];
     for (const table of tables) {
       const { error } = await adminClient.from(table).delete().eq('user_id', user.id);
       if (error) console.error(`Error deleting from ${table}:`, error.message);
