@@ -22,6 +22,7 @@ import { useAuth } from '../../lib/AuthContext';
 import { trackEvent } from '../../lib/posthog';
 import { triggerHaptic } from '../../lib/utils/haptics';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
+import { OB, OnboardingHeader, OnboardingIntro, OnboardingFooter } from '../../lib/components/OnboardingChrome';
 import {
   GENRE_OPTIONS,
   ERA_OPTIONS,
@@ -41,20 +42,6 @@ type RootStackParamList = {
   MainTabs: undefined;
 };
 
-// Design tokens, same palette as the rest of the onboarding flow.
-const C = {
-  bg: '#221019',
-  primary: '#f4258c',
-  purple: '#8b5cf6',
-  white: '#FFFFFF',
-  dim: 'rgba(255,255,255,0.55)',
-  dimMore: 'rgba(255,255,255,0.3)',
-  card: 'rgba(255,255,255,0.06)',
-  cardRaised: 'rgba(255,255,255,0.1)',
-  border: 'rgba(255,255,255,0.12)',
-  error: '#FF6B6B',
-};
-
 const SEARCH_DEBOUNCE_MS = 300;
 const SEARCH_MIN_CHARS = 2;
 // A search that never answers must not leave a spinner running forever.
@@ -64,6 +51,12 @@ const LIMIT_HINT_MS = 2200;
 
 const SEARCH_ERROR_NETWORK = "Couldn't reach Spotify. Check your connection and try again.";
 const SEARCH_ERROR_TIMEOUT = 'Spotify took too long to answer. Try again.';
+
+// Selected chip fill: the brand pink at 18% over the dark ground.
+const PRIMARY_TINT = OB.primary + '2E';
+
+// Gap between a section's label row and its chips.
+const LABEL_GAP = Spacing.sm + Spacing.xs;
 
 // "hip hop" -> "Hip Hop", "r&b" -> "R&B", "k-pop" -> "K-Pop"
 const formatGenre = (genre: string) =>
@@ -80,10 +73,20 @@ const ArtistAvatar: React.FC<{ uri: string | null; size: number }> = ({ uri, siz
   }
   return (
     <View style={[styles.avatarPlaceholder, radius]}>
-      <MaterialCommunityIcons name="account-music" size={Math.round(size * 0.55)} color={C.primary} />
+      <MaterialCommunityIcons name="account-music" size={Math.round(size * 0.55)} color={OB.primary} />
     </View>
   );
 };
+
+// Section label on the left, "n of max" on the right.
+const SectionLabel: React.FC<{ label: string; count: number; max: number }> = ({ label, count, max }) => (
+  <View style={styles.sectionLabelRow}>
+    <Text style={styles.sectionLabel}>{label}</Text>
+    <Text style={styles.sectionCount}>
+      {count} of {max}
+    </Text>
+  </View>
+);
 
 const TastePickerScreen: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -104,12 +107,18 @@ const TastePickerScreen: React.FC = () => {
   const [selectedEras, setSelectedEras] = useState<string[]>([]);
   const [limitHint, setLimitHint] = useState<'artists' | 'genres' | 'eras' | null>(null);
   const [saving, setSaving] = useState(false);
+  // Artists are optional, so the search stays folded away until asked for.
+  const [artistsOpen, setArtistsOpen] = useState(false);
 
   // Only the latest search may touch state: a slow early response must not
   // overwrite the results of a later, more specific query.
   const requestIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const limitHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<TextInput>(null);
+  // Focus the search only when the user opened the section by tapping, not
+  // when it opened on its own because a restored profile had artists.
+  const focusSearchOnOpen = useRef(false);
 
   useEffect(() => {
     trackEvent('taste_picker_shown', { source });
@@ -121,14 +130,14 @@ const TastePickerScreen: React.FC = () => {
     let cancelled = false;
     loadManualTasteProfile().then((profile) => {
       if (!profile || cancelled) return;
-      setSelectedArtists(
-        profile.top_artists.slice(0, MAX_TASTE_ARTISTS).map((a) => ({
-          id: a.id,
-          name: a.name,
-          genres: a.genres ?? [],
-          image: a.image ?? null,
-        }))
-      );
+      const artists = profile.top_artists.slice(0, MAX_TASTE_ARTISTS).map((a) => ({
+        id: a.id,
+        name: a.name,
+        genres: a.genres ?? [],
+        image: a.image ?? null,
+      }));
+      setSelectedArtists(artists);
+      if (artists.length > 0) setArtistsOpen(true);
       setSelectedGenres((profile.picked_genres ?? []).slice(0, MAX_TASTE_GENRES));
       setSelectedEras((profile.picked_eras ?? []).slice(0, MAX_TASTE_ERAS));
     });
@@ -143,6 +152,14 @@ const TastePickerScreen: React.FC = () => {
       if (limitHintTimer.current) clearTimeout(limitHintTimer.current);
     };
   }, []);
+
+  // The input only mounts once the section is open, so focus after that render.
+  useEffect(() => {
+    if (!artistsOpen || !focusSearchOnOpen.current) return;
+    focusSearchOnOpen.current = false;
+    const frame = requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [artistsOpen]);
 
   const runSearch = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -193,6 +210,13 @@ const TastePickerScreen: React.FC = () => {
     limitHintTimer.current = setTimeout(() => setLimitHint(null), LIMIT_HINT_MS);
   };
 
+  const openArtists = () => {
+    if (saving) return;
+    triggerHaptic('light');
+    focusSearchOnOpen.current = true;
+    setArtistsOpen(true);
+  };
+
   const isArtistSelected = (id: string) => selectedArtists.some((a) => a.id === id);
 
   const removeArtist = (id: string) => {
@@ -216,7 +240,7 @@ const TastePickerScreen: React.FC = () => {
     trackEvent('taste_artist_selected', { count: next.length });
     // The pick lives on as a chip; clear the search so the next name can be
     // typed straight away. Once the slots are full, get the keyboard out of
-    // the way so the genres below are visible.
+    // the way so the rest of the screen is visible.
     setQuery('');
     setResults([]);
     setSearchedFor('');
@@ -343,249 +367,233 @@ const TastePickerScreen: React.FC = () => {
       : null,
   ].filter(Boolean).join(', ');
 
-  const renderGenreChip = (genre: string) => {
-    const selected = selectedGenres.includes(genre);
-    return (
-      <TouchableOpacity
-        key={genre}
-        style={[styles.genreChip, selected && styles.genreChipSelected]}
-        onPress={() => toggleGenre(genre)}
-        activeOpacity={0.7}
-        accessibilityRole="button"
-        accessibilityState={{ selected }}
-      >
-        {selected && <MaterialCommunityIcons name="check" size={14} color={C.primary} />}
-        <Text style={[styles.genreChipText, selected && styles.genreChipTextSelected]}>
-          {formatGenre(genre)}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
+  const renderChip = (key: string, label: string, selected: boolean, onPress: () => void) => (
+    <TouchableOpacity
+      key={key}
+      style={[styles.chip, selected && styles.chipSelected]}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+    >
+      {selected && <MaterialCommunityIcons name="check" size={16} color={OB.primary} />}
+      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+    </TouchableOpacity>
+  );
+
+  const renderGenreChip = (genre: string) =>
+    renderChip(genre, formatGenre(genre), selectedGenres.includes(genre), () => toggleGenre(genre));
+
+  const selectedArtistChips = selectedArtists.length > 0 && (
+    <View style={styles.chipWrap}>
+      {selectedArtists.map((artist) => (
+        <TouchableOpacity
+          key={artist.id}
+          style={styles.artistChip}
+          onPress={() => removeArtist(artist.id)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${artist.name}`}
+        >
+          <ArtistAvatar uri={artist.image} size={28} />
+          <Text style={styles.artistChipText} numberOfLines={1}>{artist.name}</Text>
+          <MaterialCommunityIcons name="close" size={16} color={OB.textDim} />
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
 
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.flex} edges={['top']}>
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          {returnTo === 'back' ? (
+            <OnboardingHeader onBack={handleSkip} />
+          ) : (
+            <OnboardingHeader step={1} total={2} onSkip={handleSkip} skipLabel="Skip" />
+          )}
+
           <ScrollView
             style={styles.flex}
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <View style={styles.topRow}>
-              {returnTo === 'back' ? (
-                <TouchableOpacity style={styles.backBtn} onPress={handleSkip} hitSlop={12} accessibilityLabel="Back">
-                  <MaterialCommunityIcons name="chevron-left" size={28} color={C.white} />
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.backBtn} />
-              )}
-              <Text style={styles.brandLabel}>YOUR MUSIC TASTE</Text>
-              <View style={styles.backBtn} />
-            </View>
+            <OnboardingIntro
+              title="What do you listen to?"
+              subtitle="Tap what sounds like you. Every match gets tuned to it."
+            />
 
-            {/* Step 1: artists */}
-            <View style={styles.stepHeader}>
-              <Text style={styles.stepLabel}>STEP 1</Text>
-              <Text style={styles.stepCount}>{selectedArtists.length} of {MAX_TASTE_ARTISTS}</Text>
-            </View>
-            <Text style={styles.title}>Which artists do you love?</Text>
-            <Text style={styles.subtitle}>
-              Pick up to {MAX_TASTE_ARTISTS}. Every match gets tuned to them.
-            </Text>
-
-            <View style={styles.searchBox}>
-              <MaterialCommunityIcons name="magnify" size={20} color={C.dim} />
-              <TextInput
-                style={styles.searchInput}
-                value={query}
-                onChangeText={setQuery}
-                placeholder="Search any artist"
-                placeholderTextColor={C.dimMore}
-                autoCapitalize="words"
-                autoCorrect={false}
-                returnKeyType="search"
-                onSubmitEditing={() => { if (trimmedQuery.length >= SEARCH_MIN_CHARS) runSearch(trimmedQuery); }}
-                editable={!saving}
-                accessibilityLabel="Search artists"
-              />
-              {searching ? (
-                <ActivityIndicator size="small" color={C.primary} />
-              ) : query.length > 0 ? (
-                <TouchableOpacity onPress={() => setQuery('')} hitSlop={10} accessibilityLabel="Clear search">
-                  <MaterialCommunityIcons name="close-circle" size={18} color={C.dim} />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            {selectedArtists.length > 0 && (
-              <View style={styles.chipRow}>
-                {selectedArtists.map((artist) => (
-                  <TouchableOpacity
-                    key={artist.id}
-                    style={styles.artistChip}
-                    onPress={() => removeArtist(artist.id)}
-                    activeOpacity={0.7}
-                    accessibilityLabel={`Remove ${artist.name}`}
-                  >
-                    <ArtistAvatar uri={artist.image} size={22} />
-                    <Text style={styles.artistChipText} numberOfLines={1}>{artist.name}</Text>
-                    <MaterialCommunityIcons name="close" size={14} color={C.dim} />
-                  </TouchableOpacity>
-                ))}
+            <View style={styles.body}>
+              {/* Decades first: one tap, and a stronger steer than a genre alone. */}
+              <View style={styles.section}>
+                <SectionLabel label="Decades" count={selectedEras.length} max={MAX_TASTE_ERAS} />
+                {limitHint === 'eras' && (
+                  <Text style={styles.limitHint}>
+                    That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
+                  </Text>
+                )}
+                <View style={styles.chipWrap}>
+                  {ERA_OPTIONS.map((era) =>
+                    renderChip(era, era, selectedEras.includes(era), () => toggleEra(era))
+                  )}
+                </View>
               </View>
-            )}
 
-            {limitHint === 'artists' && (
-              <Text style={styles.limitHint}>
-                That's {MAX_TASTE_ARTISTS} already. Remove one to swap it out.
-              </Text>
-            )}
-
-            {searchError && (
-              <View style={styles.statusRow}>
-                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={C.error} />
-                <Text style={styles.statusErrorText}>{searchError}</Text>
-                <TouchableOpacity onPress={() => runSearch(searchedFor || trimmedQuery)} hitSlop={8}>
-                  <Text style={styles.retryText}>Retry</Text>
-                </TouchableOpacity>
+              {/* Genres */}
+              <View style={styles.section}>
+                <SectionLabel label="Genres" count={selectedGenres.length} max={MAX_TASTE_GENRES} />
+                {limitHint === 'genres' && (
+                  <Text style={styles.limitHint}>
+                    That's {MAX_TASTE_GENRES} already. Remove one to swap it out.
+                  </Text>
+                )}
+                {artistGenres.length > 0 ? (
+                  <>
+                    <Text style={styles.groupLabel}>From your artists</Text>
+                    <View style={styles.chipWrap}>{artistGenres.map(renderGenreChip)}</View>
+                    <Text style={styles.groupLabel}>More</Text>
+                    <View style={styles.chipWrap}>{moreGenres.map(renderGenreChip)}</View>
+                  </>
+                ) : (
+                  <View style={styles.chipWrap}>{moreGenres.map(renderGenreChip)}</View>
+                )}
               </View>
-            )}
 
-            {showNoResults && (
-              <Text style={styles.statusText}>
-                No artists found for "{searchedFor}". Try another spelling.
-              </Text>
-            )}
+              {/* Artists, optional and folded away until asked for. */}
+              <View style={styles.section}>
+                {artistsOpen ? (
+                  <>
+                    <SectionLabel label="Artists" count={selectedArtists.length} max={MAX_TASTE_ARTISTS} />
 
-            {showSearchHint && !searchError && (
-              <Text style={styles.statusText}>
-                Type a name to search Spotify's catalog.
-              </Text>
-            )}
+                    <View style={styles.searchBox}>
+                      <MaterialCommunityIcons name="magnify" size={20} color={OB.textDim} />
+                      <TextInput
+                        ref={searchInputRef}
+                        style={styles.searchInput}
+                        value={query}
+                        onChangeText={setQuery}
+                        placeholder="Search any artist"
+                        placeholderTextColor={OB.textFaint}
+                        autoCapitalize="words"
+                        autoCorrect={false}
+                        returnKeyType="search"
+                        onSubmitEditing={() => { if (trimmedQuery.length >= SEARCH_MIN_CHARS) runSearch(trimmedQuery); }}
+                        editable={!saving}
+                        accessibilityLabel="Search artists"
+                      />
+                      {searching ? (
+                        <ActivityIndicator size="small" color={OB.primary} />
+                      ) : query.length > 0 ? (
+                        <TouchableOpacity
+                          onPress={() => setQuery('')}
+                          hitSlop={10}
+                          accessibilityRole="button"
+                          accessibilityLabel="Clear search"
+                        >
+                          <MaterialCommunityIcons name="close-circle" size={18} color={OB.textDim} />
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
 
-            {showResults && (
-              <View style={styles.resultsList}>
-                {results.map((artist) => {
-                  const selected = isArtistSelected(artist.id);
-                  return (
+                    {selectedArtistChips}
+
+                    {limitHint === 'artists' && (
+                      <Text style={styles.limitHint}>
+                        That's {MAX_TASTE_ARTISTS} already. Remove one to swap it out.
+                      </Text>
+                    )}
+
+                    {searchError && (
+                      <View style={styles.statusRow}>
+                        <MaterialCommunityIcons name="alert-circle-outline" size={16} color={OB.error} />
+                        <Text style={styles.statusErrorText}>{searchError}</Text>
+                        <TouchableOpacity
+                          onPress={() => runSearch(searchedFor || trimmedQuery)}
+                          hitSlop={8}
+                          accessibilityRole="button"
+                        >
+                          <Text style={styles.retryText}>Retry</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {showNoResults && (
+                      <Text style={styles.statusText}>
+                        No artists found for "{searchedFor}". Try another spelling.
+                      </Text>
+                    )}
+
+                    {showSearchHint && !searchError && (
+                      <Text style={styles.statusText}>
+                        Type a name to search Spotify's catalog.
+                      </Text>
+                    )}
+
+                    {showResults && (
+                      <View style={styles.resultsList}>
+                        {results.map((artist) => {
+                          const selected = isArtistSelected(artist.id);
+                          return (
+                            <TouchableOpacity
+                              key={artist.id}
+                              style={[styles.resultRow, selected && styles.resultRowSelected]}
+                              onPress={() => toggleArtist(artist)}
+                              activeOpacity={0.7}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected }}
+                            >
+                              <ArtistAvatar uri={artist.image} size={44} />
+                              <View style={styles.resultText}>
+                                <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
+                                {artist.genres.length > 0 && (
+                                  <Text style={styles.resultGenres} numberOfLines={1}>
+                                    {artist.genres.slice(0, 2).map(formatGenre).join(', ')}
+                                  </Text>
+                                )}
+                              </View>
+                              <MaterialCommunityIcons
+                                name={selected ? 'check-circle' : 'plus-circle-outline'}
+                                size={22}
+                                color={selected ? OB.primary : OB.textFaint}
+                              />
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {selectedArtistChips}
                     <TouchableOpacity
-                      key={artist.id}
-                      style={[styles.resultRow, selected && styles.resultRowSelected]}
-                      onPress={() => toggleArtist(artist)}
+                      style={styles.addArtistsRow}
+                      onPress={openArtists}
                       activeOpacity={0.7}
                       accessibilityRole="button"
-                      accessibilityState={{ selected }}
+                      accessibilityLabel="Add artists you love"
+                      accessibilityHint="Optional. Search Spotify's catalog."
                     >
-                      <ArtistAvatar uri={artist.image} size={44} />
-                      <View style={styles.resultText}>
-                        <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
-                        {artist.genres.length > 0 && (
-                          <Text style={styles.resultGenres} numberOfLines={1}>
-                            {artist.genres.slice(0, 2).map(formatGenre).join(', ')}
-                          </Text>
-                        )}
+                      <View style={styles.addArtistsText}>
+                        <Text style={styles.addArtistsTitle}>Add artists you love</Text>
+                        <Text style={styles.addArtistsCaption}>Optional. Search Spotify's catalog.</Text>
                       </View>
-                      <MaterialCommunityIcons
-                        name={selected ? 'check-circle' : 'plus-circle-outline'}
-                        size={22}
-                        color={selected ? C.primary : C.dimMore}
-                      />
+                      <MaterialCommunityIcons name="plus" size={22} color={OB.primary} />
                     </TouchableOpacity>
-                  );
-                })}
+                  </>
+                )}
               </View>
-            )}
-
-            {/* Step 2: genres */}
-            <View style={[styles.stepHeader, styles.stepHeaderSpaced]}>
-              <Text style={styles.stepLabel}>STEP 2</Text>
-              <Text style={styles.stepCount}>{selectedGenres.length} of {MAX_TASTE_GENRES}</Text>
-            </View>
-            <Text style={styles.title}>Pick up to {MAX_TASTE_GENRES} genres</Text>
-            <Text style={styles.subtitle}>
-              {artistGenres.length > 0
-                ? 'Your artists\' genres come first. Tap any that sound like you.'
-                : 'Tap the ones that sound like you.'}
-            </Text>
-
-            {limitHint === 'genres' && (
-              <Text style={styles.limitHint}>
-                That's {MAX_TASTE_GENRES} already. Remove one to swap it out.
-              </Text>
-            )}
-
-            {artistGenres.length > 0 && (
-              <>
-                <Text style={styles.groupLabel}>From your artists</Text>
-                <View style={styles.chipRow}>{artistGenres.map(renderGenreChip)}</View>
-                <Text style={styles.groupLabel}>More</Text>
-              </>
-            )}
-            <View style={styles.chipRow}>{moreGenres.map(renderGenreChip)}</View>
-
-            {/* Step 3: eras. A decade is a stronger steer than a genre alone
-                and costs one tap, so it sits last but is worth asking for. */}
-            <View style={[styles.stepHeader, styles.stepHeaderSpaced]}>
-              <Text style={styles.stepLabel}>STEP 3</Text>
-              <Text style={styles.stepCount}>{selectedEras.length} of {MAX_TASTE_ERAS}</Text>
-            </View>
-            <Text style={styles.title}>Pick up to {MAX_TASTE_ERAS} decades</Text>
-            <Text style={styles.subtitle}>Where does your music live? Optional.</Text>
-
-            {limitHint === 'eras' && (
-              <Text style={styles.limitHint}>
-                That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
-              </Text>
-            )}
-
-            <View style={styles.chipRow}>
-              {ERA_OPTIONS.map((era) => {
-                const selected = selectedEras.includes(era);
-                return (
-                  <TouchableOpacity
-                    key={era}
-                    style={[styles.genreChip, selected && styles.genreChipSelected]}
-                    onPress={() => toggleEra(era)}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                  >
-                    {selected && <MaterialCommunityIcons name="check" size={14} color={C.primary} />}
-                    <Text style={[styles.genreChipText, selected && styles.genreChipTextSelected]}>
-                      {era}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
             </View>
           </ScrollView>
 
-          <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
-            <Text style={styles.footerSummary} numberOfLines={1}>
-              {summary ? `${summary} picked` : 'Pick at least one artist, genre or decade'}
-            </Text>
-            <TouchableOpacity
-              style={[styles.saveBtn, (!canSave || saving) && styles.saveBtnDisabled]}
-              onPress={handleSave}
-              disabled={!canSave || saving}
-              activeOpacity={0.85}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !canSave || saving }}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color={C.white} />
-              ) : (
-                <>
-                  <Text style={styles.saveBtnText}>Save my taste</Text>
-                  <MaterialCommunityIcons name="arrow-right" size={20} color={C.white} />
-                </>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleSkip} disabled={saving} hitSlop={8} style={styles.skipBtn}>
-              <Text style={styles.skipText}>{returnTo === 'back' ? 'Cancel' : 'Skip for now'}</Text>
-            </TouchableOpacity>
-          </View>
+          <OnboardingFooter
+            summary={summary ? `${summary} picked` : 'Pick at least one to continue'}
+            ctaLabel="Continue"
+            onPress={handleSave}
+            disabled={!canSave}
+            loading={saving}
+            bottomInset={insets.bottom}
+          />
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
@@ -593,190 +601,136 @@ const TastePickerScreen: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: C.bg },
+  container: { flex: 1, backgroundColor: OB.bg },
   flex: { flex: 1 },
-  scrollContent: {
+  scrollContent: { paddingBottom: Spacing.xl },
+  body: {
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.xl,
+    paddingTop: Spacing.lg,
+    gap: Spacing.lg,
   },
+  section: { gap: LABEL_GAP },
 
-  topRow: {
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+  },
+  sectionLabel: { color: OB.text, fontSize: OB.body, fontWeight: '700' },
+  sectionCount: { color: OB.textFaint, fontSize: OB.caption, fontWeight: '600' },
+  groupLabel: { color: OB.textFaint, fontSize: OB.caption, fontWeight: '600' },
+
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: Spacing.sm,
-    marginBottom: Spacing.lg,
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: OB.hit,
+    paddingHorizontal: Spacing.md,
+    borderRadius: 22,
+    backgroundColor: OB.surface,
+    borderWidth: 1.5,
+    borderColor: OB.border,
   },
-  backBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  brandLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: C.primary,
-    letterSpacing: 2.5,
+  chipSelected: {
+    backgroundColor: PRIMARY_TINT,
+    borderColor: OB.primary,
   },
+  chipText: { color: OB.text, fontSize: OB.body, fontWeight: '500' },
+  chipTextSelected: { fontWeight: '600' },
 
-  stepHeader: {
+  artistChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.xs,
+    gap: Spacing.sm,
+    minHeight: OB.hit,
+    paddingLeft: Spacing.sm,
+    paddingRight: Spacing.md,
+    borderRadius: 22,
+    backgroundColor: PRIMARY_TINT,
+    borderWidth: 1.5,
+    borderColor: OB.primary,
+    maxWidth: '100%',
   },
-  stepHeaderSpaced: { marginTop: Spacing.xxl },
-  stepLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: C.purple,
-    letterSpacing: 2,
+  artistChipText: { color: OB.text, fontSize: OB.body, fontWeight: '600', flexShrink: 1 },
+
+  avatarImage: { backgroundColor: OB.surface },
+  avatarPlaceholder: {
+    backgroundColor: PRIMARY_TINT,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  stepCount: { fontSize: 12, fontWeight: '600', color: C.dim },
-  title: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: C.white,
-    letterSpacing: -0.4,
-    marginBottom: Spacing.xs,
+
+  addArtistsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    minHeight: 56,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: OB.surface,
+    borderWidth: 1,
+    borderColor: OB.border,
   },
-  subtitle: {
-    fontSize: 14,
-    color: C.dim,
-    lineHeight: 20,
-    marginBottom: Spacing.md,
-  },
+  addArtistsText: { flex: 1, gap: 2 },
+  addArtistsTitle: { color: OB.text, fontSize: OB.body, fontWeight: '600' },
+  addArtistsCaption: { color: OB.textDim, fontSize: OB.caption },
 
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
-    backgroundColor: C.cardRaised,
-    borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: BorderRadius.lg,
+    minHeight: 52,
     paddingHorizontal: Spacing.md,
-    minHeight: 50,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: OB.surfaceRaised,
+    borderWidth: 1,
+    borderColor: OB.border,
   },
   searchInput: {
     flex: 1,
     fontSize: 16,
-    color: C.white,
+    color: OB.text,
     paddingVertical: Spacing.sm + 4,
   },
 
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-    marginTop: Spacing.md,
-  },
-  artistChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: C.primary + '22',
-    borderWidth: 1,
-    borderColor: C.primary + '66',
-    paddingLeft: 5,
-    paddingRight: Spacing.sm + 2,
-    paddingVertical: 5,
-    borderRadius: BorderRadius.round,
-    maxWidth: '100%',
-  },
-  artistChipText: { color: C.white, fontSize: 13, fontWeight: '600', flexShrink: 1 },
-
-  avatarImage: { backgroundColor: C.card },
-  avatarPlaceholder: {
-    backgroundColor: C.primary + '22',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  limitHint: { color: C.primary, fontSize: 12, fontWeight: '600', marginTop: Spacing.sm },
+  limitHint: { color: OB.primary, fontSize: OB.caption, fontWeight: '600' },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: Spacing.md,
   },
-  statusErrorText: { flex: 1, color: C.error, fontSize: 13, lineHeight: 18 },
-  retryText: { color: C.primary, fontSize: 13, fontWeight: '700' },
-  statusText: { color: C.dim, fontSize: 13, lineHeight: 18, marginTop: Spacing.md },
+  statusErrorText: { flex: 1, color: OB.error, fontSize: OB.caption, lineHeight: 18 },
+  retryText: { color: OB.primary, fontSize: OB.caption, fontWeight: '700' },
+  statusText: { color: OB.textDim, fontSize: OB.caption, lineHeight: 18 },
 
   resultsList: {
-    marginTop: Spacing.md,
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: OB.border,
     borderRadius: BorderRadius.lg,
-    backgroundColor: C.card,
+    backgroundColor: OB.surface,
     overflow: 'hidden',
   },
   resultRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
+    minHeight: 56,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm + 2,
+    paddingVertical: Spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: C.border,
+    borderBottomColor: OB.border,
   },
-  resultRowSelected: { backgroundColor: C.primary + '14' },
+  resultRowSelected: { backgroundColor: PRIMARY_TINT },
   resultText: { flex: 1 },
-  resultName: { color: C.white, fontSize: 15, fontWeight: '600' },
-  resultGenres: { color: C.dim, fontSize: 12, marginTop: 2 },
-
-  groupLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: C.dimMore,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    marginTop: Spacing.md,
-    marginBottom: -Spacing.xs,
-  },
-  genreChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: C.card,
-    borderWidth: 1,
-    borderColor: C.border,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 9,
-    borderRadius: BorderRadius.round,
-  },
-  genreChipSelected: {
-    backgroundColor: C.primary + '22',
-    borderColor: C.primary,
-  },
-  genreChipText: { color: C.white, fontSize: 14, fontWeight: '500' },
-  genreChipTextSelected: { color: C.primary, fontWeight: '700' },
-
-  footer: {
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: C.border,
-    backgroundColor: C.bg,
-    alignItems: 'center',
-  },
-  footerSummary: { color: C.dim, fontSize: 12, marginBottom: Spacing.sm },
-  saveBtn: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    backgroundColor: C.primary,
-    paddingVertical: 15,
-    borderRadius: BorderRadius.round,
-    shadowColor: C.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 10,
-  },
-  saveBtnDisabled: { opacity: 0.45, shadowOpacity: 0, elevation: 0 },
-  saveBtnText: { color: C.white, fontWeight: '700', fontSize: 16, letterSpacing: 0.3 },
-  skipBtn: { paddingVertical: Spacing.sm + 4 },
-  skipText: { color: C.dim, fontSize: 14, fontWeight: '600' },
+  resultName: { color: OB.text, fontSize: OB.body, fontWeight: '600' },
+  resultGenres: { color: OB.textDim, fontSize: OB.caption, marginTop: 2 },
 });
 
 export default TastePickerScreen;

@@ -339,6 +339,23 @@ const WelcomeScreen = () => {
             >
               Match music to your mood.
             </Animated.Text>
+
+            {/* What happens next, in three lines. The old screen asked for a
+                tap before saying what the app does. */}
+            <Animated.View style={[styles.howList, { opacity: taglineOpacity }]}>
+              {[
+                { icon: 'image-outline', text: 'Pick any photo' },
+                { icon: 'auto-fix', text: 'We read its mood and your taste' },
+                { icon: 'play-circle-outline', text: 'Play the songs that fit' },
+              ].map((row) => (
+                <View key={row.text} style={styles.howRow}>
+                  <View style={styles.howIcon}>
+                    <MaterialCommunityIcons name={row.icon as any} size={16} color={DesignColors.primary} />
+                  </View>
+                  <Text style={styles.howText}>{row.text}</Text>
+                </View>
+              ))}
+            </Animated.View>
           </View>
 
           {/* Primary action - Start Matching only */}
@@ -355,7 +372,7 @@ const WelcomeScreen = () => {
                 end={{ x: 1, y: 1 }}
                 style={styles.primaryButton}
               >
-                <Text style={styles.primaryButtonText}>Start Matching</Text>
+                <Text style={styles.primaryButtonText}>Start matching</Text>
               </LinearGradient>
             </TouchableOpacity>
 
@@ -393,6 +410,17 @@ const WelcomeScreen = () => {
 };
 
 const styles = StyleSheet.create({
+  howList: { marginTop: Spacing.lg, gap: 10, alignSelf: 'center' },
+  howRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  howIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(244,37,140,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  howText: { color: 'rgba(255,255,255,0.75)', fontSize: 15 },
   container: {
     flex: 1,
     backgroundColor: DesignColors.backgroundDark,
