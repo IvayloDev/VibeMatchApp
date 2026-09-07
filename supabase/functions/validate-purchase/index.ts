@@ -141,12 +141,20 @@ serve(async (req) => {
     if (existingPurchase) {
       console.log('Transaction already processed:', transactionId);
       // Return success but don't grant credits again
+      // newBalance used to echo credits_granted, which is a grant AMOUNT and
+      // not a balance, and the purchase screens display it as the user's new
+      // balance. Read the real one.
+      const { data: existingProfile } = await adminClient
+        .from('user_profiles')
+        .select('credits')
+        .eq('user_id', user.id)
+        .maybeSingle();
       return new Response(
         JSON.stringify({
           success: true,
           alreadyProcessed: true,
           creditsGranted: existingPurchase.credits_granted,
-          newBalance: existingPurchase.credits_granted, // Return the credits that were already granted
+          newBalance: existingProfile?.credits ?? null,
         }),
         {
           status: 200,
@@ -167,11 +175,18 @@ serve(async (req) => {
       );
     }
 
-    // Launch offer bonus credits (client-requested, capped server-side)
-    // Only accepted for known product ids (enforced by the baseCredits check above)
-    const requestedBonus = Number(bonus) || 0;
-    const bonusCredits = Math.min(Math.max(0, Math.floor(requestedBonus)), 30);
-    const creditsToGrant = baseCredits + bonusCredits;
+    // The launch-offer bonus used to be a number in the request body, clamped
+    // to 0..30 and added to any product. No shipped client has ever sent a
+    // nonzero value (both call sites in lib/supabase.ts default it to 0), so
+    // every nonzero bonus that arrives here is forged: the 5-credit pack at
+    // $0.99 plus bonus:30 is 35 credits, 2.8 cents a match against an intended
+    // 19.8. RevenueCat verification cannot help, because it confirms that the
+    // purchase happened, never what bonus it earned. If the offer comes back it
+    // belongs in CREDITS_PER_PRODUCT or on a server-side flag, not in the body.
+    if (bonus !== undefined && Number(bonus) > 0) {
+      console.warn('🚫 Ignoring client-supplied bonus credits', { userId: user.id, productId, bonus });
+    }
+    const creditsToGrant = baseCredits;
 
     // RevenueCat validates the store receipt, but nothing here used to check
     // that RevenueCat had actually seen this transaction: any signed-in user
@@ -183,7 +198,16 @@ serve(async (req) => {
     const rcSecret = Deno.env.get('REVENUECAT_SECRET_API_KEY') ?? '';
     let verifiedTransactionId = transactionId;
     if (rcSecret) {
-      const verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+      let verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+      // One retry before refusing. The client calls this the moment the
+      // RevenueCat SDK resolves the purchase, which can be marginally ahead of
+      // RevenueCat's own servers having recorded it. Refusing on that race
+      // would charge a real customer and give them nothing, so a miss costs us
+      // one and a half seconds before it is believed.
+      if (verdict.status === 'not_found') {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+      }
       if (verdict.status === 'not_found') {
         console.warn('🚫 RevenueCat has no such purchase', { userId: user.id, productId, transactionId });
         return new Response(
@@ -236,7 +260,7 @@ serve(async (req) => {
           validated_by: verifiedTransactionId !== transactionId ? 'revenuecat_api' : (rcSecret ? 'revenuecat_api_or_unavailable' : 'client'),
           validated_at: new Date().toISOString(),
           base_credits: baseCredits,
-          launch_offer_bonus: bonusCredits,
+          launch_offer_bonus: 0,
         },
       });
 
@@ -274,6 +298,22 @@ serve(async (req) => {
 
     if (updateError) {
       console.error('Error updating credits:', updateError);
+      // Take the dedup row back out. The purchase row is inserted BEFORE the
+      // grant, so leaving it behind makes every retry return alreadyProcessed at
+      // the top of this function, and the client deletes its pending-validation
+      // record on that reply. A customer who was charged would be permanently
+      // locked out of the credits they paid for.
+      const { error: rollbackError } = await adminClient
+        .from('purchases')
+        .delete()
+        .eq('transaction_id', verifiedTransactionId);
+      if (rollbackError) {
+        console.error(
+          '🚨 Could not roll back the purchase row, this transaction is now stuck:',
+          rollbackError.message,
+          { transactionId: verifiedTransactionId, userId: user.id }
+        );
+      }
       return new Response(
         JSON.stringify({ success: false, error: 'Failed to grant credits' }),
         {
