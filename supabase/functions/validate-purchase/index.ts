@@ -22,35 +22,61 @@ const CREDITS_PER_PRODUCT: Record<string, number> = {
  * store's, and, for the client's synthetic fallback ids, any purchase of the
  * product made in the last fifteen minutes.
  */
+type RcVerdict =
+  /** RevenueCat holds this purchase. Carries its own transaction id. */
+  | { status: 'verified'; transactionId: string }
+  /** RevenueCat answered and has no such purchase for this user. */
+  | { status: 'not_found' }
+  /**
+   * We could not ask. A bad or rotated key, a RevenueCat outage, a network
+   * failure. Never treated as fraud: refusing here charges a real customer and
+   * gives them nothing, which is worse than the abuse this check exists to
+   * stop. It happened once already, when a placeholder string was stored as
+   * the key and every purchase started coming back 403.
+   */
+  | { status: 'unavailable'; detail: string };
+
 async function verifyWithRevenueCat(
   secret: string,
   appUserId: string,
   productId: string,
   transactionId: string,
-): Promise<string | null> {
-  const resp = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(appUserId)}`, {
-    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
-  });
+): Promise<RcVerdict> {
+  let resp: Response;
+  try {
+    resp = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(appUserId)}`, {
+      headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    });
+  } catch (err) {
+    return { status: 'unavailable', detail: `network: ${err}` };
+  }
+  // 401/403 is our credential, 5xx and 429 are their availability. None of
+  // them are a statement about this purchase.
+  if (resp.status === 401 || resp.status === 403 || resp.status === 429 || resp.status >= 500) {
+    return { status: 'unavailable', detail: `http ${resp.status}` };
+  }
   if (!resp.ok) {
+    // A 404 here means RevenueCat has no subscriber record for this app user
+    // id at all, which for a purchase we were just told about is a real miss.
     console.error('RevenueCat lookup failed:', resp.status);
-    return null;
+    return { status: 'not_found' };
   }
   const json = await resp.json();
   const purchases: Array<{ id?: string; store_transaction_id?: string; purchase_date?: string }> =
     json?.subscriber?.non_subscriptions?.[productId] ?? [];
-  if (purchases.length === 0) return null;
+  if (purchases.length === 0) return { status: 'not_found' };
 
   const exact = purchases.find((p) => p.id === transactionId || p.store_transaction_id === transactionId);
-  if (exact?.id) return exact.id;
+  if (exact?.id) return { status: 'verified', transactionId: exact.id };
 
   if (transactionId.startsWith('rc_')) {
     const cutoff = Date.now() - 15 * 60 * 1000;
     const recent = purchases
       .filter((p) => p.id && p.purchase_date && Date.parse(p.purchase_date) >= cutoff)
       .sort((a, b) => Date.parse(b.purchase_date!) - Date.parse(a.purchase_date!));
-    if (recent[0]?.id) return recent[0].id;
+    if (recent[0]?.id) return { status: 'verified', transactionId: recent[0].id };
   }
-  return null;
+  return { status: 'not_found' };
 }
 
 serve(async (req) => {
@@ -157,8 +183,8 @@ serve(async (req) => {
     const rcSecret = Deno.env.get('REVENUECAT_SECRET_API_KEY') ?? '';
     let verifiedTransactionId = transactionId;
     if (rcSecret) {
-      const verified = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
-      if (!verified) {
+      const verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+      if (verdict.status === 'not_found') {
         console.warn('🚫 RevenueCat has no such purchase', { userId: user.id, productId, transactionId });
         return new Response(
           JSON.stringify({ success: false, error: 'Purchase not found' }),
@@ -168,7 +194,17 @@ serve(async (req) => {
           }
         );
       }
-      verifiedTransactionId = verified;
+      if (verdict.status === 'unavailable') {
+        // Grant, loudly. A customer who has already been charged must not be
+        // refused because our own key is wrong or RevenueCat is down.
+        console.error(
+          '⚠️ RevenueCat unreachable, granting without verification:',
+          verdict.detail,
+          { userId: user.id, productId, transactionId }
+        );
+      } else {
+        verifiedTransactionId = verdict.transactionId;
+      }
       // The client may have sent a synthetic id; dedupe on the real one.
       if (verifiedTransactionId !== transactionId) {
         const { data: dup } = await adminClient
@@ -197,7 +233,7 @@ serve(async (req) => {
         platform: platform,
         credits_granted: creditsToGrant,
         validation_data: {
-          validated_by: rcSecret ? 'revenuecat_api' : 'client',
+          validated_by: verifiedTransactionId !== transactionId ? 'revenuecat_api' : (rcSecret ? 'revenuecat_api_or_unavailable' : 'client'),
           validated_at: new Date().toISOString(),
           base_credits: baseCredits,
           launch_offer_bonus: bonusCredits,

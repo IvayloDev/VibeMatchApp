@@ -21,6 +21,7 @@
 // are capped so the open endpoint cannot be used to hammer Spotify's quota.
 
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -40,6 +41,19 @@ const SPOTIFY_SEARCH_URL = "https://api.spotify.com/v1/search";
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 10;
 const MAX_QUERY_LENGTH = 100;
+
+// Per-IP ceiling on suggest, counted over the last hour in edge_call_log.
+//
+// The cost being defended is not tokens (gpt-4.1-mini at this prompt size is
+// cents an hour even under sustained abuse) but the app's SHARED Spotify
+// quota: suggest runs paged catalog searches, and one script hammering it
+// degrades matching for every user of the app at once.
+//
+// Set high on purpose. Carrier-grade NAT puts many real phones behind one
+// address, and a genuine taste-picker session is about ten calls including
+// refreshes, so this has room for a dozen simultaneous strangers on the same
+// mobile network while still stopping a script dead.
+const SUGGEST_CALLS_PER_IP_PER_HOUR = 120;
 // Treat the app token as expired this long before Spotify does, so a request
 // never goes out with a token that dies in flight.
 const TOKEN_EXPIRY_MARGIN_MS = 60 * 1000;
@@ -229,6 +243,42 @@ Name 12 other artists they would probably love: contemporaries, influences, labe
   return out;
 }
 
+/**
+ * Count and record one metered call. Returns true when the caller is over the
+ * ceiling. Fails OPEN: if the ledger cannot be read, a real user must not be
+ * blocked because our own bookkeeping is down.
+ */
+async function overSuggestLimit(ip: string | null): Promise<boolean> {
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
+  const url = Deno.env.get("SUPABASE_URL") ?? "";
+  if (!serviceKey || !url || !ip) return false;
+  try {
+    const sb = createClient(url, serviceKey);
+    const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { count } = await sb
+      .from("edge_call_log")
+      .select("id", { count: "exact", head: true })
+      .eq("fn", "spotify-search")
+      .eq("ip", ip)
+      .gt("created_at", since);
+    if ((count ?? 0) >= SUGGEST_CALLS_PER_IP_PER_HOUR) {
+      console.warn(`🚫 suggest ceiling hit for ip=${ip} count=${count}`);
+      return true;
+    }
+    // Fire and forget: the count above is what gates, and waiting on the write
+    // would put a round trip in front of every suggestion.
+    sb.from("edge_call_log")
+      .insert({ fn: "spotify-search", mode: "suggest", ip })
+      .then(({ error }) => {
+        if (error) console.warn("edge_call_log insert failed:", error.message);
+      });
+    return false;
+  } catch (err) {
+    console.warn("suggest ceiling check failed, allowing:", err);
+    return false;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -246,6 +296,15 @@ serve(async (req) => {
 
   // Suggestion mode: no free-text query, the picks are the input.
   if (body?.suggest && typeof body.suggest === "object") {
+    const clientIp = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim()
+      || req.headers.get("cf-connecting-ip")
+      || null;
+    if (await overSuggestLimit(clientIp)) {
+      return json({
+        error: "Too many suggestion requests",
+        code: "rate_limited",
+      }, 429);
+    }
     const strs = (v: unknown, cap: number) =>
       (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string").map((x) => x.trim().slice(0, 60)).filter(Boolean).slice(0, cap);
     const genres = strs(body.suggest.genres, 3);
