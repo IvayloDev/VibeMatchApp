@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, ActivityIndicator, Animated, Easing, AccessibilityInfo } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Spacing } from '../designSystem';
 
@@ -126,6 +126,8 @@ type FooterProps = {
   bottomInset?: number;
   /** Welcome has nothing to separate from; the hairline is off there. */
   hairline?: boolean;
+  /** Slow breathing scale on the button. */
+  pulse?: boolean;
 };
 
 export const OnboardingFooter: React.FC<FooterProps> = ({
@@ -136,6 +138,7 @@ export const OnboardingFooter: React.FC<FooterProps> = ({
   summary,
   bottomInset = 0,
   hairline = true,
+  pulse,
 }) => (
   <View style={[styles.footer, hairline && styles.footerHairline, { paddingBottom: Math.max(bottomInset, Spacing.md) }]}>
     {summary ? (
@@ -143,7 +146,7 @@ export const OnboardingFooter: React.FC<FooterProps> = ({
         {summary}
       </Text>
     ) : null}
-    <PrimaryButton label={ctaLabel} onPress={onPress} disabled={disabled} loading={loading} />
+    <PrimaryButton label={ctaLabel} onPress={onPress} disabled={disabled} loading={loading} pulse={pulse} />
   </View>
 );
 
@@ -153,9 +156,42 @@ export const PrimaryButton: React.FC<{
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
-}> = ({ label, onPress, disabled, loading }) => {
+  /** Slow breathing scale. For a screen whose only job is this one tap. */
+  pulse?: boolean;
+}> = ({ label, onPress, disabled, loading, pulse }) => {
   const inactive = !!disabled || !!loading;
+  const breathe = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    if (!pulse || inactive) return;
+    let loop: Animated.CompositeAnimation | undefined;
+    let active = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduceMotion) => {
+        if (!active || reduceMotion) return;
+        loop = Animated.loop(
+          Animated.sequence([
+            Animated.timing(breathe, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+            Animated.timing(breathe, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+          ])
+        );
+        loop.start();
+      });
+    return () => {
+      active = false;
+      loop?.stop();
+      breathe.setValue(0);
+    };
+  }, [pulse, inactive, breathe]);
+
+  // Breathes inward, never outward: at rest the button sits exactly on the
+  // 20pt content column, and a pulse that overflowed it would undo the
+  // alignment everywhere else on the screen.
+  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 0.985] });
+
   return (
+    <Animated.View style={pulse ? { transform: [{ scale }] } : undefined}>
     <Pressable
       style={({ pressed }) => [styles.cta, pressed && !inactive && styles.ctaPressed, inactive && styles.ctaInactive]}
       onPress={onPress}
@@ -172,6 +208,7 @@ export const PrimaryButton: React.FC<{
         </>
       )}
     </Pressable>
+    </Animated.View>
   );
 };
 
@@ -294,11 +331,17 @@ const styles = StyleSheet.create({
     height: OB.hit,
     alignItems: 'center',
     justifyContent: 'center',
+    // The chevron glyph carries its own left bearing, so a centred 44pt tap
+    // target put its ink ~6pt right of the 20pt content column. Pull it back
+    // optically; the target keeps its full size.
+    marginLeft: -6,
   },
   textBtn: {
     minHeight: OB.hit,
     paddingHorizontal: Spacing.sm,
     justifyContent: 'center',
+    // Same idea on the right: land Skip's ink on the content column.
+    marginRight: 4,
   },
   textBtnLabel: { color: OB.textDim, fontSize: OB.body, fontWeight: '600' },
   progress: { flex: 1, flexDirection: 'row', gap: 6, paddingHorizontal: Spacing.md },

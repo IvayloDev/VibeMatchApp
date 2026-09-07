@@ -342,6 +342,7 @@ const OnboardingScreen: React.FC = () => {
               </TouchableOpacity>
             </Animated.View>
           ) : (
+            <View style={styles.dropzoneWrap}>
             <TouchableOpacity
               style={styles.dropzone}
               onPress={pickPhoto}
@@ -355,6 +356,7 @@ const OnboardingScreen: React.FC = () => {
               <Text style={styles.dropzoneTitle}>Choose from your library</Text>
               <Text style={styles.dropzoneHint}>Portrait or landscape, any light.</Text>
             </TouchableOpacity>
+            </View>
           )}
 
           {!photoUri ? (
@@ -388,9 +390,12 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   scroll: { paddingBottom: Spacing.md },
   tasteRow: { paddingHorizontal: OB.margin, marginTop: Spacing.md },
+  // A plain full-width row owns the margins. aspectRatio on a self-margined
+  // child let Yoga settle on a narrower box than the stretch width, which put
+  // the dropzone 20pt from the left but 41pt from the right.
+  dropzoneWrap: { marginTop: Spacing.md, paddingHorizontal: OB.margin },
   dropzone: {
-    marginTop: Spacing.md,
-    marginHorizontal: OB.margin,
+    width: '100%',
     aspectRatio: 4 / 3,
     borderRadius: 20,
     borderWidth: 1.5,

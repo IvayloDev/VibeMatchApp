@@ -53,7 +53,7 @@ const CARD_SPREAD = 70;
 const STACK_WIDTH = CARD_SIZE + CARD_SPREAD * 2;
 const STACK_HEIGHT = CARD_SIZE + 32;
 const SWAP_EVERY_MS = 3000;
-const SWAP_DURATION_MS = 650;
+const SWAP_DURATION_MS = 900;
 
 type Gradient = readonly [string, string, string];
 
@@ -150,14 +150,19 @@ const MatchCard = ({ card }: { card: MatchCardSpec }) => (
 // exposure and the back cards snapped when state flipped.
 const N = MATCH_CARDS.length;
 const PHASES = [0, 1, 2, 3, 4, 5];
-const POSE_X = [0, CARD_SPREAD, 0, 0, -CARD_SPREAD, 0];
-const POSE_Y = [-6, 16, 44, 44, 16, -6];
-const POSE_ROT = ['0deg', '10deg', '0deg', '0deg', '-11deg', '0deg'];
-const POSE_SCALE = [1, 0.96, 0.8, 0.8, 0.96, 1];
+// The two hidden poses sit exactly on top of the visible back poses, so a
+// card fades out where it already is and the next one fades in where it will
+// stay. Nothing translucent ever travels across the stack, which is what made
+// the old swap look like a double exposure.
+const POSE_X = [0, CARD_SPREAD, CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD, 0];
+const POSE_Y = [-6, 16, 16, 16, 16, -6];
+const POSE_ROT = ['0deg', '10deg', '10deg', '-11deg', '-11deg', '0deg'];
+const POSE_SCALE = [1, 0.96, 0.96, 0.96, 0.96, 1];
 const POSE_OPACITY = [1, 0.92, 0, 0, 0.92, 1];
 // Layer order for the duration of a step, keyed by the phase a card is
 // heading to: the card arriving at the front slides over the old front.
-const Z_BY_END_PHASE = [5, 4, 1, 2, 3];
+// Front on top, then the card arriving from the left, then the right card.
+const Z_BY_END_PHASE = [5, 3, 1, 1, 4];
 
 const CarouselCard = ({ card, index, clock, zIndex }: {
   card: MatchCardSpec;
@@ -359,6 +364,7 @@ const WelcomeScreen = () => {
               loading={starting}
               bottomInset={0}
               hairline={false}
+              pulse
             />
 
             {/* Returning users only: subtle way back in */}
