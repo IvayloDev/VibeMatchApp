@@ -18,6 +18,7 @@ import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as SecureStore from 'expo-secure-store';
 import { getImageSignedUrl, supabase } from '../../../lib/supabase';
 import { Spacing } from '../../../lib/designSystem';
@@ -329,6 +330,14 @@ const ResultsScreen = () => {
             accessibilityLabel="Your photo. Opens full screen."
           >
             {imageUrl ? <Image source={{ uri: imageUrl }} style={styles.photo} /> : null}
+            {/* The photo melts into the page instead of ending on a hard
+                edge. Purely decorative, and it never covers the song. */}
+            <LinearGradient
+              colors={['transparent', OB.bg + 'B3', OB.bg]}
+              locations={[0, 0.6, 1]}
+              style={styles.photoFade}
+              pointerEvents="none"
+            />
           </TouchableOpacity>
 
           <Animated.View style={[styles.content, enterStyle]}>
@@ -452,6 +461,7 @@ const styles = StyleSheet.create({
   // History views keep the floating tab bar; the last row must clear it.
   scrollAboveTabBar: { paddingBottom: 120 },
   photoWrap: { width: '100%', aspectRatio: 1, backgroundColor: OB.surface },
+  photoFade: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 140 },
   photo: { width: '100%', height: '100%', resizeMode: 'cover' },
   photoNav: {
     position: 'absolute',
