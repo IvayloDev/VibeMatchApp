@@ -73,7 +73,7 @@ let inFlight: Promise<DailyCreditResult> | null = null;
  *   - at most once per local calendar day per device
  *   - tops the balance up to 1; a balance that already has a match in hand
  *     consumes the day without granting, so free credits never accumulate
- * Never throws. `nextAt` is always the next local midnight, whether or not
+ * Never throws. `nextAt` is always the next 09:00 local, whether or not
  * anything was granted.
  */
 export async function claimDailyCreditIfDue(
