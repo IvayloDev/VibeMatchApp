@@ -34,6 +34,7 @@ import {
   SectionHeader,
 } from '../../lib/components/OnboardingChrome';
 import { DecadeDial } from '../../lib/components/DecadeDial';
+import { GenreGrid } from '../../lib/components/GenreGrid';
 import {
   GENRE_OPTIONS,
   MAX_TASTE_ARTISTS,
@@ -593,23 +594,6 @@ const TastePickerScreen: React.FC = () => {
         ? summaryNames.join(' · ')
         : `${summaryNames.slice(0, SUMMARY_NAMES).join(' · ')} +${summaryNames.length - SUMMARY_NAMES}`;
 
-  const erasFull = selectedEras.length >= MAX_TASTE_ERAS;
-  const genresFull = selectedGenres.length >= MAX_TASTE_GENRES;
-
-  const renderGenreChip = (genre: string) => {
-    const selected = selectedGenres.includes(genre);
-    return (
-      <Chip
-        key={genre}
-        label={formatGenre(genre)}
-        selected={selected}
-        dimmed={genresFull}
-        onPress={() => toggleGenre(genre)}
-        accessibilityLabel={`${formatGenre(genre)}, genre`}
-      />
-    );
-  };
-
   const selectedArtistChips = selectedArtists.length > 0 && (
     <View style={styles.chipWrap}>
       {selectedArtists.map((artist) => (
@@ -635,9 +619,12 @@ const TastePickerScreen: React.FC = () => {
   // "Rockabilly" appeared because an artist carried those tags. They still
   // reach the matcher through the saved profile, they just are not something
   // to ask the user to choose from.
+  // Featured order first, so a card never moves out from under the thumb when
+  // it is tapped. Anything picked that is not featured is appended rather than
+  // hoisted to the front for the same reason.
   const visibleGenres = allGenresOpen
     ? uniqueStrings(moreGenres)
-    : uniqueStrings([...selectedGenres, ...FEATURED_GENRES]);
+    : uniqueStrings([...FEATURED_GENRES, ...selectedGenres]);
   const hiddenGenreCount = GENRE_OPTIONS.filter((g) => !visibleGenres.includes(g)).length;
 
   const goToGenres = () => {
@@ -904,29 +891,13 @@ const TastePickerScreen: React.FC = () => {
                     That's {MAX_TASTE_GENRES} already. Remove one to swap it out.
                   </Text>
                 )}
-                <View style={styles.grid}>
-                  {visibleGenres.map((genre) => (
-                    <Chip
-                      key={genre}
-                      size="grid"
-                      label={formatGenre(genre)}
-                      selected={selectedGenres.includes(genre)}
-                      dimmed={genresFull}
-                      onPress={() => toggleGenre(genre)}
-                      accessibilityLabel={`${formatGenre(genre)}, genre`}
-                    />
-                  ))}
-                  {!allGenresOpen && hiddenGenreCount > 0 ? (
-                    <Chip
-                      size="grid"
-                      ghost
-                      label="More"
-                      selected={false}
-                      onPress={() => { triggerHaptic('light'); setAllGenresOpen(true); }}
-                      accessibilityLabel={`More genres, ${hiddenGenreCount} hidden`}
-                    />
-                  ) : null}
-                </View>
+                <GenreGrid
+                  options={visibleGenres}
+                  value={selectedGenres}
+                  onToggle={toggleGenre}
+                  hiddenCount={allGenresOpen ? 0 : hiddenGenreCount}
+                  onMore={() => { triggerHaptic('light'); setAllGenresOpen(true); }}
+                />
               </>
             )}
           </ScrollView>
