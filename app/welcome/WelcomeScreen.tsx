@@ -8,20 +8,23 @@ import {
   Linking,
   TouchableOpacity,
   Animated,
-  Easing,
+  AccessibilityInfo,
+  StyleProp,
+  ViewStyle,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as SecureStore from 'expo-secure-store';
+import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
 import { useAuth } from '../../lib/AuthContext';
 import { HAD_ACCOUNT_KEY } from '../../lib/AuthContext';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
 import { trackEvent } from '../../lib/posthog';
-import { Colors, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
+import { Spacing } from '../../lib/designSystem';
+import { OB, OnboardingFooter } from '../../lib/components/OnboardingChrome';
 
 // Define the navigation stack param list
 type RootStackParamList = {
@@ -38,86 +41,82 @@ const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy
 
 const { width, height } = Dimensions.get('window');
 
-// Brand colors used across the app (see DashboardScreen / AnalyzingScreen)
-const DesignColors = {
-  primary: '#f4258c',
-  accentPurple: '#8b5cf6',
-  accentBlue: Colors.accent.blue,
-  backgroundDark: '#221019',
-};
+// Hero: three stylized "match cards" fanned in a stack. Each is a gradient
+// cover with a vibe tag and a song pill, so the screen shows the result of
+// a match before asking for a tap. The front card rotates every few seconds.
+const CARD_SIZE = 196;
+const CARD_SPREAD = 70;
+const STACK_WIDTH = CARD_SIZE + CARD_SPREAD * 2;
+const STACK_HEIGHT = CARD_SIZE + 32;
+const SWAP_EVERY_MS = 3000;
+const SWAP_DURATION_MS = 400;
 
-// Album-cover carousel config. The cards are stylized (no real artist photos) -
-// each is a rich gradient "cover" with an abstract artist/music motif, so the
-// screen reads as a wall of album art scrolling by.
-const CARD_SIZE = 118;
-const CARD_GAP = Spacing.sm + 4;
-const CARD_STEP = CARD_SIZE + CARD_GAP;
+type Gradient = readonly [string, string, string];
 
-type MotifIcon = keyof typeof MaterialCommunityIcons.glyphMap;
-
-interface CardSpec {
-  icon: MotifIcon;
-  gradient: string[];
+interface MatchCardSpec {
+  tag: string;
+  gradient: Gradient;
+  song: string;
+  artist: string;
 }
 
-// Duotone gradients spanning the brand palette for cover variety
-const GRADIENTS: string[][] = [
-  [DesignColors.primary, DesignColors.accentPurple],
-  [DesignColors.accentPurple, DesignColors.accentBlue],
-  ['#FF6B6B', DesignColors.primary],
-  [DesignColors.accentBlue, DesignColors.accentPurple],
-  ['#7C4DFF', '#18A0FB'],
-  [DesignColors.primary, '#FF9F45'],
-  ['#0FB8AD', DesignColors.accentBlue],
-  [DesignColors.accentPurple, DesignColors.primary],
+// Index 0 starts in front; the next index sits back-left, the one after
+// back-right. Rotation advances the front by one each swap.
+const MATCH_CARDS: MatchCardSpec[] = [
+  { tag: 'Romantic', gradient: ['#ffb36b', '#f4258c', '#4a1d6e'], song: 'Golden Hour', artist: 'JVKE' },
+  { tag: 'Chill', gradient: ['#1de9b6', '#1c7ed6', '#0b1a3a'], song: 'Weightless', artist: 'Marconi Union' },
+  { tag: 'Moody', gradient: ['#8b5cf6', '#2a1444', '#0f0a1c'], song: 'Nightcall', artist: 'Kavinsky' },
 ];
 
-// Motifs alternate artist silhouettes and instruments so the covers feel varied
-const CARD_MOTIFS: MotifIcon[] = [
-  'account-music',
-  'microphone-variant',
-  'guitar-electric',
-  'headphones',
-  'album',
-  'piano',
-  'account-tie',
-  'saxophone',
-  'guitar-acoustic',
-  'music-clef-treble',
-];
-
-const buildCards = (icons: MotifIcon[]): CardSpec[] =>
-  icons.map((icon, index) => ({
-    icon,
-    gradient: GRADIENTS[index % GRADIENTS.length],
-  }));
-
-const ROW_ONE_CARDS = buildCards(CARD_MOTIFS);
-// Shifted order + different gradient offset so the two rows don't mirror
-const ROW_TWO_CARDS = buildCards([...CARD_MOTIFS.slice(5), ...CARD_MOTIFS.slice(0, 5)]);
-
-// Width of a single card set - each row renders the set twice and animates
-// by exactly one set width for a seamless loop
-const ROW_SET_WIDTH = CARD_MOTIFS.length * CARD_STEP;
-const MARQUEE_DURATION = 28000;
-
-const AlbumCard = ({ card }: { card: CardSpec }) => (
-  <View style={styles.cardWrapper}>
-    <LinearGradient
-      colors={card.gradient}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.card}
-    >
-      {/* Vinyl-disc accent for an album-art feel */}
-      <View style={styles.cardDisc} />
-      <View style={styles.cardDiscHole} />
-      <MaterialCommunityIcons name={card.icon} size={44} color="rgba(255,255,255,0.95)" />
-      {/* Bottom sheen bar, like a cover title strip */}
-      <View style={styles.cardStrip} />
-    </LinearGradient>
-  </View>
+const MatchCard = ({ card }: { card: MatchCardSpec }) => (
+  <LinearGradient colors={card.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
+    <View style={styles.tag}>
+      <Text style={styles.tagText}>{card.tag}</Text>
+    </View>
+    <View style={styles.pill}>
+      <View style={styles.playDot}>
+        <MaterialCommunityIcons name="play" size={16} color={OB.text} />
+      </View>
+      <View style={styles.pillCopy}>
+        <Text style={styles.song} numberOfLines={1}>
+          {card.song}
+        </Text>
+        <Text style={styles.artist} numberOfLines={1}>
+          {card.artist}
+        </Text>
+      </View>
+    </View>
+  </LinearGradient>
 );
+
+// One position in the stack. Two cards are layered: the one underneath is
+// always fully opaque and the one on top fades, so a swap is a single fade
+// with no background bleeding through mid-crossfade. Which card sits on top
+// alternates each step so the shared Animated.Value never has to be reset
+// (resetting it in the same tick as a state change can flash a frame).
+type CardSlotProps = {
+  current: MatchCardSpec;
+  next: MatchCardSpec;
+  topIsCurrent: boolean;
+  topOpacity: Animated.AnimatedInterpolation<number>;
+  style: StyleProp<ViewStyle>;
+  lift?: Animated.AnimatedInterpolation<number>;
+};
+
+const CardSlot = ({ current, next, topIsCurrent, topOpacity, style, lift }: CardSlotProps) => {
+  const top = topIsCurrent ? current : next;
+  const under = topIsCurrent ? next : current;
+  return (
+    <Animated.View style={[styles.slot, style, lift ? { transform: [{ translateY: lift }] } : null]}>
+      <View style={StyleSheet.absoluteFill}>
+        <MatchCard card={under} />
+      </View>
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: topOpacity }]}>
+        <MatchCard card={top} />
+      </Animated.View>
+    </Animated.View>
+  );
+};
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -127,16 +126,14 @@ const WelcomeScreen = () => {
   // brand-new users get a pure Start Matching screen.
   const [hadAccount, setHadAccount] = useState(false);
 
-  // Marquee progress values (0 -> 1 mapped to one card-set width)
-  const rowOneAnim = useRef(new Animated.Value(0)).current;
-  const rowTwoAnim = useRef(new Animated.Value(0)).current;
+  // Hero rotation: step counts completed swaps. step % 3 picks the front
+  // card, step % 2 picks which layer of each slot is on top.
+  const [step, setStep] = useState(0);
+  const stepRef = useRef(0);
+  const swap = useRef(new Animated.Value(0)).current;
 
-  // Title / tagline / button entrance
-  const titleOpacity = useRef(new Animated.Value(0)).current;
-  const titleTranslate = useRef(new Animated.Value(24)).current;
-  const taglineOpacity = useRef(new Animated.Value(0)).current;
-  const taglineTranslate = useRef(new Animated.Value(16)).current;
-  const buttonsOpacity = useRef(new Animated.Value(0)).current;
+  // Single entrance fade for the whole screen
+  const enter = useRef(new Animated.Value(0)).current;
 
   // Detect a returning-but-logged-out user to conditionally reveal Sign in
   useEffect(() => {
@@ -151,71 +148,46 @@ const WelcomeScreen = () => {
     };
   }, []);
 
-  // Looped marquee animations - both rows scroll continuously in
-  // opposite directions, resetting after exactly one card-set width
   useEffect(() => {
-    const rowOneLoop = Animated.loop(
-      Animated.timing(rowOneAnim, {
-        toValue: 1,
-        duration: MARQUEE_DURATION,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
-    const rowTwoLoop = Animated.loop(
-      Animated.timing(rowTwoAnim, {
-        toValue: 1,
-        duration: MARQUEE_DURATION,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
+    Animated.timing(enter, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+  }, [enter]);
 
-    rowOneLoop.start();
-    rowTwoLoop.start();
+  // Swap the front card every few seconds. Skipped entirely when the user
+  // has asked for reduced motion, leaving a static stack.
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const tick = () => {
+      const toValue = stepRef.current % 2 === 0 ? 1 : 0;
+      Animated.timing(swap, {
+        toValue,
+        duration: SWAP_DURATION_MS,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished || !active) return;
+        stepRef.current += 1;
+        setStep(stepRef.current);
+      });
+    };
+
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduceMotion) => {
+        if (!active || reduceMotion) return;
+        timer = setInterval(tick, SWAP_EVERY_MS);
+      });
 
     return () => {
-      rowOneLoop.stop();
-      rowTwoLoop.stop();
+      active = false;
+      if (timer) clearInterval(timer);
+      swap.stopAnimation();
     };
-  }, [rowOneAnim, rowTwoAnim]);
-
-  // Staggered entrance for title, tagline, and button
-  useEffect(() => {
-    Animated.stagger(200, [
-      Animated.parallel([
-        Animated.timing(titleOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(titleTranslate, {
-          toValue: 0,
-          duration: 600,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(taglineOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(taglineTranslate, {
-          toValue: 0,
-          duration: 600,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.timing(buttonsOpacity, {
-        toValue: 1,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [titleOpacity, titleTranslate, taglineOpacity, taglineTranslate, buttonsOpacity]);
+  }, [swap]);
 
   // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
@@ -282,14 +254,11 @@ const WelcomeScreen = () => {
     }
   };
 
-  const rowOneTranslate = rowOneAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -ROW_SET_WIDTH],
-  });
-  const rowTwoTranslate = rowTwoAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-ROW_SET_WIDTH, 0],
-  });
+  const front = step % 3;
+  const topIsCurrent = step % 2 === 0;
+  const topOpacity = swap.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
+  const lift = swap.interpolate({ inputRange: [0, 0.5, 1], outputRange: [-6, -10, -6] });
+  const cardAt = (offset: number) => MATCH_CARDS[(front + offset) % MATCH_CARDS.length];
 
   return (
     <View style={styles.container}>
@@ -298,83 +267,57 @@ const WelcomeScreen = () => {
       <View style={styles.backgroundBlur2} />
 
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
-          {/* Album-cover carousel */}
-          <View style={styles.marqueeSection}>
-            <View style={styles.marqueeRow}>
-              <Animated.View
-                style={[styles.marqueeTrack, { transform: [{ translateX: rowOneTranslate }] }]}
-              >
-                {[...ROW_ONE_CARDS, ...ROW_ONE_CARDS].map((card, index) => (
-                  <AlbumCard key={`row1-${index}`} card={card} />
-                ))}
-              </Animated.View>
-            </View>
-            <View style={styles.marqueeRow}>
-              <Animated.View
-                style={[styles.marqueeTrack, { transform: [{ translateX: rowTwoTranslate }] }]}
-              >
-                {[...ROW_TWO_CARDS, ...ROW_TWO_CARDS].map((card, index) => (
-                  <AlbumCard key={`row2-${index}`} card={card} />
-                ))}
-              </Animated.View>
+        <Animated.View style={[styles.content, { opacity: enter }]}>
+          <Text style={styles.wordmark}>TUNEMATCH</Text>
+
+          {/* Decorative hero: hidden from assistive tech */}
+          <View style={styles.hero}>
+            <View
+              style={styles.stack}
+              accessible={false}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              <CardSlot
+                current={cardAt(1)}
+                next={cardAt(2)}
+                topIsCurrent={topIsCurrent}
+                topOpacity={topOpacity}
+                style={styles.slotBackLeft}
+              />
+              <CardSlot
+                current={cardAt(2)}
+                next={cardAt(0)}
+                topIsCurrent={topIsCurrent}
+                topOpacity={topOpacity}
+                style={styles.slotBackRight}
+              />
+              <CardSlot
+                current={cardAt(0)}
+                next={cardAt(1)}
+                topIsCurrent={topIsCurrent}
+                topOpacity={topOpacity}
+                style={styles.slotFront}
+                lift={lift}
+              />
             </View>
           </View>
 
-          {/* Title + Tagline */}
-          <View style={styles.titleSection}>
-            <Animated.Text
-              style={[
-                styles.mainTitle,
-                { opacity: titleOpacity, transform: [{ translateY: titleTranslate }] },
-              ]}
-            >
-              TuneMatch
-            </Animated.Text>
-            <Animated.Text
-              style={[
-                styles.tagline,
-                { opacity: taglineOpacity, transform: [{ translateY: taglineTranslate }] },
-              ]}
-            >
+          <View style={styles.copy}>
+            <Text style={styles.headline} maxFontSizeMultiplier={1.3}>
               Match music to your mood.
-            </Animated.Text>
-
-            {/* What happens next, in three lines. The old screen asked for a
-                tap before saying what the app does. */}
-            <Animated.View style={[styles.howList, { opacity: taglineOpacity }]}>
-              {[
-                { icon: 'image-outline', text: 'Pick any photo' },
-                { icon: 'auto-fix', text: 'We read its mood and your taste' },
-                { icon: 'play-circle-outline', text: 'Play the songs that fit' },
-              ].map((row) => (
-                <View key={row.text} style={styles.howRow}>
-                  <View style={styles.howIcon}>
-                    <MaterialCommunityIcons name={row.icon as any} size={16} color={DesignColors.primary} />
-                  </View>
-                  <Text style={styles.howText}>{row.text}</Text>
-                </View>
-              ))}
-            </Animated.View>
+            </Text>
+            <Text style={styles.subtitle}>Pick a photo. We find the songs that fit it, and you.</Text>
           </View>
 
-          {/* Primary action - Start Matching only */}
-          <Animated.View style={[styles.bottomSection, { opacity: buttonsOpacity }]}>
-            <TouchableOpacity
+          <View style={styles.bottom}>
+            <OnboardingFooter
+              ctaLabel="Start matching"
               onPress={handleStartMatching}
-              activeOpacity={0.9}
-              disabled={starting}
-              style={styles.primaryButtonWrapper}
-            >
-              <LinearGradient
-                colors={[DesignColors.primary, DesignColors.accentPurple]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.primaryButton}
-              >
-                <Text style={styles.primaryButtonText}>Start matching</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+              loading={starting}
+              bottomInset={0}
+              hairline={false}
+            />
 
             {/* Returning users only: subtle way back in */}
             {hadAccount && (
@@ -382,6 +325,7 @@ const WelcomeScreen = () => {
                 onPress={() => navigation.navigate('SignIn')}
                 activeOpacity={0.7}
                 style={styles.signInLink}
+                accessibilityRole="button"
               >
                 <Text style={styles.signInText}>
                   Already have an account? <Text style={styles.signInTextBold}>Sign in</Text>
@@ -402,28 +346,17 @@ const WelcomeScreen = () => {
                 </TouchableOpacity>
               </View>
             </View>
-          </Animated.View>
-        </View>
+          </View>
+        </Animated.View>
       </SafeAreaView>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  howList: { marginTop: Spacing.lg, gap: 10, alignSelf: 'center' },
-  howRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  howIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(244,37,140,0.14)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  howText: { color: 'rgba(255,255,255,0.75)', fontSize: 15 },
   container: {
     flex: 1,
-    backgroundColor: DesignColors.backgroundDark,
+    backgroundColor: OB.bg,
   },
   safeArea: {
     flex: 1,
@@ -450,133 +383,161 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.lg,
   },
-  marqueeSection: {
+  wordmark: {
+    paddingTop: Spacing.sm,
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 2,
+    color: OB.textFaint,
+  },
+
+  // Hero stack
+  hero: {
     flex: 1,
+    minHeight: 260,
     justifyContent: 'center',
-    gap: CARD_GAP,
+    alignItems: 'center',
   },
-  marqueeRow: {
-    width: '100%',
+  stack: {
+    width: STACK_WIDTH,
+    height: STACK_HEIGHT,
+  },
+  slot: {
+    position: 'absolute',
+    left: CARD_SPREAD,
+    top: 8,
+    width: CARD_SIZE,
     height: CARD_SIZE,
-    overflow: 'hidden',
   },
-  marqueeTrack: {
-    flexDirection: 'row',
-    width: ROW_SET_WIDTH * 2,
+  slotBackLeft: {
+    opacity: 0.9,
+    transform: [{ translateX: -CARD_SPREAD }, { translateY: 16 }, { rotate: '-11deg' }],
   },
-  cardWrapper: {
-    marginRight: CARD_GAP,
+  slotBackRight: {
+    opacity: 0.9,
+    transform: [{ translateX: CARD_SPREAD }, { translateY: 16 }, { rotate: '10deg' }],
+  },
+  slotFront: {
+    zIndex: 2,
+    borderRadius: 20,
+    backgroundColor: OB.bg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 24 },
+    shadowOpacity: 0.5,
+    shadowRadius: 24,
+    elevation: 12,
   },
   card: {
     width: CARD_SIZE,
     height: CARD_SIZE,
-    borderRadius: BorderRadius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 20,
     overflow: 'hidden',
-    shadowColor: DesignColors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 8,
   },
-  cardDisc: {
+  tag: {
     position: 'absolute',
-    width: CARD_SIZE * 0.62,
-    height: CARD_SIZE * 0.62,
-    borderRadius: CARD_SIZE,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.18)',
+    top: 12,
+    left: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 8,
+    paddingVertical: 3,
+    paddingHorizontal: 7,
   },
-  cardDiscHole: {
-    position: 'absolute',
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: 'rgba(255,255,255,0.35)',
-  },
-  cardStrip: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: CARD_SIZE * 0.22,
-    backgroundColor: 'rgba(0,0,0,0.18)',
-  },
-  titleSection: {
-    alignItems: 'center',
-    paddingHorizontal: Layout.screenPadding,
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.xxl,
-  },
-  mainTitle: {
-    fontSize: 46,
+  tagText: {
+    color: OB.text,
+    fontSize: 10,
     fontWeight: '800',
-    color: Colors.textPrimary,
-    letterSpacing: -1,
-    textAlign: 'center',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
-  tagline: {
-    fontSize: 17,
-    fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.75)',
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-  bottomSection: {
+  pill: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Layout.screenPadding,
-    paddingBottom: Spacing.lg,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
   },
-  primaryButtonWrapper: {
-    width: '100%',
-    borderRadius: BorderRadius.xl,
-    shadowColor: DesignColors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    elevation: 8,
-  },
-  primaryButton: {
-    width: '100%',
-    borderRadius: BorderRadius.xl,
-    paddingVertical: Spacing.md + 6,
+  playDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#1DB954',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryButtonText: {
-    fontSize: 18,
+  pillCopy: {
+    flex: 1,
+  },
+  song: {
+    color: OB.text,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#FFFFFF',
+  },
+  artist: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+  },
+
+  // Copy
+  copy: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.lg,
+    gap: 10,
+  },
+  headline: {
+    color: OB.text,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '800',
+    letterSpacing: -0.8,
+    textAlign: 'center',
+  },
+  subtitle: {
+    color: OB.textDim,
+    fontSize: OB.body,
+    lineHeight: 21,
+    textAlign: 'center',
+  },
+
+  // Bottom block
+  bottom: {
+    paddingBottom: Spacing.sm,
   },
   signInLink: {
-    marginTop: Spacing.lg,
-    paddingVertical: Spacing.xs,
+    minHeight: OB.hit,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
   },
   signInText: {
-    fontSize: 14,
-    fontWeight: '400',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: OB.textDim,
+    fontSize: OB.body,
     textAlign: 'center',
   },
   signInTextBold: {
+    color: OB.text,
     fontWeight: '700',
-    color: Colors.textPrimary,
   },
   legalSection: {
     alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
   },
   legalText: {
+    color: OB.textFaint,
     fontSize: 11,
-    fontWeight: '400',
-    color: 'rgba(255, 255, 255, 0.7)',
-    textAlign: 'center',
     lineHeight: 16,
+    textAlign: 'center',
   },
   legalLinks: {
     flexDirection: 'row',
@@ -585,9 +546,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   legalLink: {
+    color: 'rgba(255,255,255,0.6)',
     fontSize: 11,
+    lineHeight: 16,
     fontWeight: '500',
-    color: DesignColors.primary,
     textDecorationLine: 'underline',
   },
 });

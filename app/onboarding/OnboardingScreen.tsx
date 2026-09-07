@@ -9,6 +9,7 @@ import {
   BackHandler,
   ScrollView,
 } from 'react-native';
+import type { ViewStyle } from 'react-native';
 import { Text } from 'react-native-paper';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -23,9 +24,10 @@ import { triggerHaptic } from '../../lib/utils/haptics';
 import { trackEvent, registerSuperProperties } from '../../lib/posthog';
 import { Spacing } from '../../lib/designSystem';
 import { VibeGrid } from '../../lib/components/VibeGrid';
-import { OB, OnboardingHeader, OnboardingIntro, OnboardingFooter } from '../../lib/components/OnboardingChrome';
+import { OB, OnboardingHeader, OnboardingIntro, OnboardingFooter, TasteChip } from '../../lib/components/OnboardingChrome';
 import { getTasteSource, erasFromTopGenres, ERA_TAG_PREFIX } from '../../lib/taste';
 import type { TasteSource } from '../../lib/taste';
+import { getVibeById } from '../../lib/vibes';
 
 /**
  * First-run step 2 of 2: pick a photo, pick a vibe, get the first match.
@@ -37,6 +39,10 @@ import type { TasteSource } from '../../lib/taste';
  * install. The reveals restated the user's own input and the progress bar
  * delayed them, so both are gone. Taste is acknowledged with one chip on
  * this screen, and the first match is the reveal.
+ *
+ * Layout is sized so that on a 6.1 inch phone the photo, the four vibes and
+ * the button are all visible without scrolling: the photo is a 4:3 cover and
+ * the vibes are compact rows, because the photo is the hero here.
  */
 
 type TasteProfile = {
@@ -64,20 +70,24 @@ const THIS_STEP = 2;
 const titleCase = (s: string) =>
   s.replace(/(^|[\s&-])([a-z])/g, (_m, lead: string, letter: string) => lead + letter.toUpperCase());
 
-/** "Tuned to Rock, 1980s and 1990s" from the picked or synced profile. */
+// "1980s" -> "80s". The 2000s and later keep their full name: "00s" and "10s"
+// do not read as decades.
+const shortEra = (era: string) => (/^19\d0s$/.test(era) ? era.slice(2) : era);
+
+/** "Rock · 80s · 90s" from the picked or synced profile. */
 function tasteSummary(profile: TasteProfile | null): string | null {
   if (!profile) return null;
   const genres = (profile.top_genres ?? [])
     .filter((g) => typeof g === 'string' && !g.startsWith(ERA_TAG_PREFIX))
     .slice(0, 2)
     .map(titleCase);
-  const eras = erasFromTopGenres(profile.top_genres).slice(0, 2);
+  const eras = erasFromTopGenres(profile.top_genres).slice(0, 2).map(shortEra);
   const artists = (profile.top_artists ?? []).slice(0, 2).map((a) => a.name).filter(Boolean);
   const parts = [...artists, ...genres, ...eras];
   if (parts.length === 0) return null;
   const shown = parts.slice(0, 3);
   const more = parts.length - shown.length;
-  return `Tuned to ${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`;
+  return `${shown.join(' · ')}${more > 0 ? ` +${more}` : ''}`;
 }
 
 const OnboardingScreen: React.FC = () => {
@@ -96,6 +106,8 @@ const OnboardingScreen: React.FC = () => {
   const startedRef = useRef(false);
 
   const photoReveal = useRef(new Animated.Value(0)).current;
+  const vibeReveal = useRef(new Animated.Value(0)).current;
+  const titleFade = useRef(new Animated.Value(1)).current;
   const scrollRef = useRef<ScrollView>(null);
 
   // Load the taste profile once, for the analytics cohort and the taste chip.
@@ -214,10 +226,24 @@ const OnboardingScreen: React.FC = () => {
       { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
     );
 
+    const firstPhoto = !photoUri;
     setPhotoUri(uri);
+    if (!firstPhoto) return;
+
+    // The photo lands, the vibes follow a beat later, and the title asks the
+    // next question. Each animation marks a state change, nothing else moves.
     photoReveal.setValue(0);
-    Animated.spring(photoReveal, { toValue: 1, tension: 60, friction: 9, useNativeDriver: true }).start();
-    // The vibe grid appears under the photo; bring it into view.
+    vibeReveal.setValue(0);
+    titleFade.setValue(0);
+    Animated.parallel([
+      Animated.timing(titleFade, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.spring(photoReveal, { toValue: 1, tension: 60, friction: 9, useNativeDriver: true }),
+      Animated.sequence([
+        Animated.delay(80),
+        Animated.spring(vibeReveal, { toValue: 1, tension: 60, friction: 9, useNativeDriver: true }),
+      ]),
+    ]).start();
+    // On a small phone the vibes may sit under the fold; bring them into view.
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 350);
   };
 
@@ -260,11 +286,22 @@ const OnboardingScreen: React.FC = () => {
   };
 
   const canMatch = !!photoUri && !!selectedVibe;
+  const vibeName = getVibeById(selectedVibe)?.name;
   const footerSummary = !photoUri
     ? 'Pick a photo to start'
     : !selectedVibe
       ? 'Now pick how it should feel'
-      : summary ?? 'Ready when you are';
+      : summary
+        ? `${vibeName} · tuned to ${summary}`
+        : `${vibeName} · ready when you are`;
+
+  const revealStyle = (value: Animated.Value): Animated.WithAnimatedObject<ViewStyle> => ({
+    opacity: value,
+    transform: [
+      { scale: value.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+      { translateY: value.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) },
+    ],
+  });
 
   return (
     <View style={styles.container}>
@@ -277,39 +314,22 @@ const OnboardingScreen: React.FC = () => {
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
         >
-          <OnboardingIntro
-            title={photoUri ? 'How should it feel?' : 'Pick a photo'}
-            subtitle={
-              photoUri
-                ? 'Same photo, four moods. Choose the one you are going for.'
-                : 'A selfie, a sunset, your dog. The photo sets the mood, your taste sets the sound.'
-            }
-          />
+          <Animated.View style={{ opacity: titleFade }}>
+            <OnboardingIntro
+              eyebrow={`Step ${THIS_STEP} of ${TOTAL_STEPS}`}
+              title={photoUri ? 'How should it feel?' : 'Pick a photo'}
+              subtitle={photoUri ? undefined : 'Any photo works: a place, a face, a night out.'}
+            />
+          </Animated.View>
 
-          {summary && profileLoaded ? (
-            <TouchableOpacity
-              style={styles.tasteChip}
-              onPress={goToTaste}
-              activeOpacity={0.8}
-              accessibilityRole="button"
-              accessibilityLabel={`${summary}. Edit taste.`}
-            >
-              <MaterialCommunityIcons name="music-note" size={14} color={OB.primary} />
-              <Text style={styles.tasteChipText} numberOfLines={1}>{summary}</Text>
-              <Text style={styles.tasteChipEdit}>Edit</Text>
-            </TouchableOpacity>
+          {profileLoaded ? (
+            <View style={styles.tasteRow}>
+              <TasteChip summary={summary ? `Tuned to ${summary}` : null} onPress={goToTaste} />
+            </View>
           ) : null}
 
           {photoUri ? (
-            <Animated.View
-              style={[
-                styles.photoWrap,
-                {
-                  opacity: photoReveal,
-                  transform: [{ scale: photoReveal.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }],
-                },
-              ]}
-            >
+            <Animated.View style={[styles.photoWrap, revealStyle(photoReveal)]}>
               <Image source={{ uri: photoUri }} style={styles.photo} resizeMode="cover" accessibilityLabel="Your chosen photo" />
               <TouchableOpacity
                 style={styles.changeBtn}
@@ -318,7 +338,6 @@ const OnboardingScreen: React.FC = () => {
                 accessibilityRole="button"
                 accessibilityLabel="Change photo"
               >
-                <MaterialCommunityIcons name="image-edit-outline" size={16} color={OB.text} />
                 <Text style={styles.changeBtnText}>Change</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -331,27 +350,23 @@ const OnboardingScreen: React.FC = () => {
               accessibilityLabel="Choose a photo from your library"
             >
               <View style={styles.dropzoneIcon}>
-                <MaterialCommunityIcons name="image-plus" size={30} color={OB.text} />
+                <MaterialCommunityIcons name="image-plus" size={26} color={OB.primary} />
               </View>
-              <Text style={styles.dropzoneTitle}>Choose from your photos</Text>
-              <Text style={styles.dropzoneHint}>Any photo works. Portrait or landscape.</Text>
+              <Text style={styles.dropzoneTitle}>Choose from your library</Text>
+              <Text style={styles.dropzoneHint}>Portrait or landscape, any light.</Text>
             </TouchableOpacity>
           )}
 
           {!photoUri ? (
-            <View style={styles.privacyRow}>
-              <MaterialCommunityIcons name="lock-outline" size={14} color={OB.textFaint} />
-              <Text style={styles.privacyText}>
-                Only the photo you pick is analyzed. The rest of your library is never touched.
-              </Text>
-            </View>
+            <Text style={styles.privacyText}>Photos stay on your phone until you match.</Text>
           ) : (
-            <View style={styles.vibeWrap}>
+            <Animated.View style={[styles.vibeWrap, revealStyle(vibeReveal)]}>
               <VibeGrid
+                variant="compact"
                 selected={selectedVibe}
                 onSelect={(id) => { triggerHaptic('light'); setSelectedVibe(id); }}
               />
-            </View>
+            </Animated.View>
           )}
         </ScrollView>
 
@@ -371,60 +386,44 @@ const OnboardingScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: OB.bg },
   flex: { flex: 1 },
-  scroll: { paddingBottom: Spacing.xl },
-  tasteChip: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: Spacing.md,
-    marginHorizontal: Spacing.lg,
-    minHeight: 36,
-    paddingHorizontal: 12,
-    borderRadius: 18,
-    backgroundColor: OB.surface,
-    borderWidth: 1,
-    borderColor: OB.border,
-    maxWidth: '90%',
-  },
-  tasteChipText: { color: OB.textDim, fontSize: OB.caption, flexShrink: 1 },
-  tasteChipEdit: { color: OB.primary, fontSize: OB.caption, fontWeight: '700', marginLeft: 4 },
+  scroll: { paddingBottom: Spacing.md },
+  tasteRow: { paddingHorizontal: OB.margin, marginTop: Spacing.md },
   dropzone: {
-    marginTop: Spacing.lg,
-    marginHorizontal: Spacing.lg,
-    minHeight: 260,
+    marginTop: Spacing.md,
+    marginHorizontal: OB.margin,
+    aspectRatio: 4 / 3,
     borderRadius: 20,
     borderWidth: 1.5,
     borderStyle: 'dashed',
-    borderColor: OB.border,
-    backgroundColor: OB.surface,
+    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 6,
     padding: Spacing.lg,
   },
   dropzoneIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: OB.primary,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(244,37,140,0.16)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 4,
+    marginBottom: 6,
   },
-  dropzoneTitle: { color: OB.text, fontSize: 17, fontWeight: '700' },
-  dropzoneHint: { color: OB.textDim, fontSize: OB.caption },
-  privacyRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
+  dropzoneTitle: { color: OB.text, fontSize: 16, fontWeight: '700' },
+  dropzoneHint: { color: 'rgba(255,255,255,0.5)', fontSize: OB.caption },
+  privacyText: {
+    color: OB.textFaint,
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'center',
     marginTop: Spacing.md,
-    marginHorizontal: Spacing.lg,
+    marginHorizontal: OB.margin,
   },
-  privacyText: { color: OB.textFaint, fontSize: OB.caption, lineHeight: 18, flex: 1 },
   photoWrap: {
-    marginTop: Spacing.lg,
-    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.md,
+    marginHorizontal: OB.margin,
     borderRadius: 20,
     overflow: 'hidden',
     backgroundColor: OB.surface,
@@ -434,16 +433,17 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 10,
     top: 10,
-    minHeight: 36,
+    minHeight: 30,
     paddingHorizontal: 12,
-    borderRadius: 18,
+    borderRadius: 15,
     backgroundColor: 'rgba(0,0,0,0.55)',
-    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
   },
-  changeBtnText: { color: OB.text, fontSize: OB.caption, fontWeight: '600' },
-  vibeWrap: { marginTop: Spacing.lg, paddingHorizontal: Spacing.md },
+  changeBtnText: { color: OB.text, fontSize: OB.caption, fontWeight: '700' },
+  vibeWrap: { marginTop: 14, paddingHorizontal: OB.margin },
 });
 
 export default OnboardingScreen;
