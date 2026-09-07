@@ -493,6 +493,10 @@ function translateBulgarianToSearchQuery(text: string): string[] {
   return queries.length > 0 ? queries : [text.trim()];
 }
 
+// Mirrors ERA_TAG_PREFIX in lib/taste.ts. Chosen decades travel inside
+// top_genres because spotify_taste_profiles has no column of its own for them.
+const ERA_TAG_PREFIX = "era:";
+
 type TasteProfile = {
   top_artists?: Array<{ name: string; genres?: string[] }>;
   top_tracks?: Array<{ name: string; artist: string }>;
@@ -514,13 +518,24 @@ function buildTasteBlock(profile: TasteProfile | null): string {
   const artists = (profile.top_artists ?? []).slice(0, 25).map((a) => a.name);
   const tracks = (profile.top_tracks ?? []).slice(0, 20).map((t) => `${t.name} — ${t.artist}`);
   const recent = (profile.recently_played ?? []).slice(0, 15).map((t) => `${t.name} — ${t.artist}`);
-  const genres = (profile.top_genres ?? []).slice(0, 10);
+  // The in-app picker has no era column to write to, so it tags chosen decades
+  // into top_genres as "era:1980s" (see ERA_TAG_PREFIX in lib/taste.ts). Split
+  // them back out: a decade the user chose deliberately is a strong signal and
+  // must not sit in the deliberately-downweighted genre line.
+  const allGenres = (profile.top_genres ?? []).filter((g) => typeof g === "string");
+  const eras = allGenres
+    .filter((g) => g.startsWith(ERA_TAG_PREFIX))
+    .map((g) => g.slice(ERA_TAG_PREFIX.length))
+    .filter(Boolean)
+    .slice(0, 5);
+  const genres = allGenres.filter((g) => !g.startsWith(ERA_TAG_PREFIX)).slice(0, 10);
 
   const parts: string[] = [];
   if (saved.length) parts.push(`Saved (high-intent — songs they chose to keep): ${saved.join("; ")}`);
   if (artists.length) parts.push(`Most-listened artists: ${artists.join(", ")}`);
   if (tracks.length) parts.push(`Most-listened tracks: ${tracks.join("; ")}`);
   if (recent.length) parts.push(`Currently in rotation: ${recent.join("; ")}`);
+  if (eras.length) parts.push(`Decades they chose (deliberate, high-intent): ${eras.join(", ")}`);
   if (genres.length) parts.push(`Spotify-tagged genres (noisy hint — derived from listening, can be skewed by short binges): ${genres.join(", ")}`);
 
   if (parts.length === 0) return "";
@@ -533,7 +548,8 @@ function buildTasteGuidance(hasTaste: boolean): string {
 - The user's Spotify listening profile is provided below. Treat it as their SONIC DNA, not a genre filter.
 - "Sonic DNA" = the production style, instrumentation, vocal qualities, mood, era, rhythmic feel, and lyrical sensibility that runs through their saved tracks and top artists.
 - DO NOT anchor on top_genres alone. Spotify's auto-tagged genres reflect short listening windows and can be a temporary obsession (e.g. one week of italo-disco does not make someone an italo-disco listener). Use genres only as one weak signal among many.
-- Weight signals: saved tracks > top artists > top tracks > recently played > top_genres. Saved = high intent. Genres = lowest weight.
+- Weight signals: saved tracks > top artists > chosen decades > top tracks > recently played > top_genres. Saved and hand-chosen decades = high intent. Auto-tagged genres = lowest weight.
+- WHEN DECADES ARE LISTED, THEY ARE A HARD PREFERENCE: the user picked them by hand. Draw the majority of picks from those decades, or from records that unmistakably wear that decade's production. A 2024 synthwave record is a legitimate answer for someone who chose the 1980s; a 2024 hyperpop record is not. If a decade genuinely cannot carry the image's mood, you may reach outside it for at most one of the six picks.
 - Cross-genre is fine and encouraged: if a folk listener saves moody electronic tracks, electronic is in-bounds. Trust the audible patterns over the tag.
 - DISCOVERY IS THE PRODUCT: EVERY one of the 6 picks must be an artist NOT listed anywhere in the user's profile (not in saved, top tracks, recently-played, or top artists). Zero exceptions. Surface adjacent artists, label-mates, contemporaries, influences, or proteges of artists they already love - songs they probably haven't heard but will recognize as "their kind of thing."
 - Do NOT reach for a "deep cut" from an artist they already listen to. A track the user could have surfaced themselves is a failed pick, however well it fits.

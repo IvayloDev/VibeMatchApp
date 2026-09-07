@@ -24,8 +24,10 @@ import { triggerHaptic } from '../../lib/utils/haptics';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
 import {
   GENRE_OPTIONS,
+  ERA_OPTIONS,
   MAX_TASTE_ARTISTS,
   MAX_TASTE_GENRES,
+  MAX_TASTE_ERAS,
   TasteSaveError,
   searchArtists,
   saveManualTasteProfile,
@@ -99,7 +101,8 @@ const TastePickerScreen: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedArtists, setSelectedArtists] = useState<TasteArtist[]>([]);
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
-  const [limitHint, setLimitHint] = useState<'artists' | 'genres' | null>(null);
+  const [selectedEras, setSelectedEras] = useState<string[]>([]);
+  const [limitHint, setLimitHint] = useState<'artists' | 'genres' | 'eras' | null>(null);
   const [saving, setSaving] = useState(false);
 
   // Only the latest search may touch state: a slow early response must not
@@ -127,6 +130,7 @@ const TastePickerScreen: React.FC = () => {
         }))
       );
       setSelectedGenres((profile.picked_genres ?? []).slice(0, MAX_TASTE_GENRES));
+      setSelectedEras((profile.picked_eras ?? []).slice(0, MAX_TASTE_ERAS));
     });
     return () => {
       cancelled = true;
@@ -183,7 +187,7 @@ const TastePickerScreen: React.FC = () => {
     return () => clearTimeout(timer);
   }, [query, runSearch]);
 
-  const flashLimitHint = (kind: 'artists' | 'genres') => {
+  const flashLimitHint = (kind: 'artists' | 'genres' | 'eras') => {
     setLimitHint(kind);
     if (limitHintTimer.current) clearTimeout(limitHintTimer.current);
     limitHintTimer.current = setTimeout(() => setLimitHint(null), LIMIT_HINT_MS);
@@ -245,7 +249,23 @@ const TastePickerScreen: React.FC = () => {
     return [...orphaned, ...GENRE_OPTIONS.filter((g) => !artistGenres.includes(g))];
   }, [artistGenres, selectedGenres]);
 
-  const canSave = selectedArtists.length > 0 || selectedGenres.length > 0;
+  const toggleEra = (era: string) => {
+    if (selectedEras.includes(era)) {
+      triggerHaptic('light');
+      setSelectedEras((prev) => prev.filter((e) => e !== era));
+      return;
+    }
+    if (selectedEras.length >= MAX_TASTE_ERAS) {
+      triggerHaptic('warning');
+      flashLimitHint('eras');
+      return;
+    }
+    triggerHaptic('light');
+    setSelectedEras((prev) => [...prev, era]);
+  };
+
+  const canSave =
+    selectedArtists.length > 0 || selectedGenres.length > 0 || selectedEras.length > 0;
 
   const leave = useCallback(() => {
     if (returnTo === 'back') {
@@ -271,10 +291,15 @@ const TastePickerScreen: React.FC = () => {
     setSaving(true);
     Keyboard.dismiss();
     try {
-      await saveManualTasteProfile({ artists: selectedArtists, genres: selectedGenres });
+      await saveManualTasteProfile({
+        artists: selectedArtists,
+        genres: selectedGenres,
+        eras: selectedEras,
+      });
       trackEvent('taste_picker_completed', {
         artists: selectedArtists.length,
         genres: selectedGenres.length,
+        eras: selectedEras.length,
         source,
       });
       triggerHaptic('success');
@@ -313,7 +338,10 @@ const TastePickerScreen: React.FC = () => {
     selectedGenres.length > 0
       ? `${selectedGenres.length} genre${selectedGenres.length === 1 ? '' : 's'}`
       : null,
-  ].filter(Boolean).join(' and ');
+    selectedEras.length > 0
+      ? `${selectedEras.length} era${selectedEras.length === 1 ? '' : 's'}`
+      : null,
+  ].filter(Boolean).join(', ');
 
   const renderGenreChip = (genre: string) => {
     const selected = selectedGenres.includes(genre);
@@ -495,11 +523,47 @@ const TastePickerScreen: React.FC = () => {
               </>
             )}
             <View style={styles.chipRow}>{moreGenres.map(renderGenreChip)}</View>
+
+            {/* Step 3: eras. A decade is a stronger steer than a genre alone
+                and costs one tap, so it sits last but is worth asking for. */}
+            <View style={[styles.stepHeader, styles.stepHeaderSpaced]}>
+              <Text style={styles.stepLabel}>STEP 3</Text>
+              <Text style={styles.stepCount}>{selectedEras.length} of {MAX_TASTE_ERAS}</Text>
+            </View>
+            <Text style={styles.title}>Pick up to {MAX_TASTE_ERAS} decades</Text>
+            <Text style={styles.subtitle}>Where does your music live? Optional.</Text>
+
+            {limitHint === 'eras' && (
+              <Text style={styles.limitHint}>
+                That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
+              </Text>
+            )}
+
+            <View style={styles.chipRow}>
+              {ERA_OPTIONS.map((era) => {
+                const selected = selectedEras.includes(era);
+                return (
+                  <TouchableOpacity
+                    key={era}
+                    style={[styles.genreChip, selected && styles.genreChipSelected]}
+                    onPress={() => toggleEra(era)}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                  >
+                    {selected && <MaterialCommunityIcons name="check" size={14} color={C.primary} />}
+                    <Text style={[styles.genreChipText, selected && styles.genreChipTextSelected]}>
+                      {era}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </ScrollView>
 
           <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
             <Text style={styles.footerSummary} numberOfLines={1}>
-              {summary ? `${summary} picked` : 'Pick at least one artist or genre'}
+              {summary ? `${summary} picked` : 'Pick at least one artist, genre or decade'}
             </Text>
             <TouchableOpacity
               style={[styles.saveBtn, (!canSave || saving) && styles.saveBtnDisabled]}

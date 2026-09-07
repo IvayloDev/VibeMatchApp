@@ -25,6 +25,19 @@ import type { SpotifyTasteProfile } from './spotify';
 
 export const MAX_TASTE_ARTISTS = 3;
 export const MAX_TASTE_GENRES = 3;
+export const MAX_TASTE_ERAS = 3;
+
+/**
+ * Eras are stored INSIDE top_genres, tagged with this prefix.
+ *
+ * spotify_taste_profiles has a fixed column set and no era column, so a
+ * registered user's eras would be dropped at save time. top_genres is a free
+ * text array that both the guest cache and the table already carry, and
+ * recommend-songs splits the tagged entries back out into their own prompt
+ * line, so a tag survives everywhere with no migration. Promote it to a real
+ * column if eras ever need querying.
+ */
+export const ERA_TAG_PREFIX = 'era:';
 // Same cap as deriveTopGenres in sync-spotify-profile.
 const MAX_TOP_GENRES = 15;
 const MAX_GENRES_PER_ARTIST = 5;
@@ -61,6 +74,36 @@ export const GENRE_OPTIONS: readonly string[] = [
   'dancehall',
 ];
 
+/**
+ * Decades a listener picks from. A decade is a far stronger steer for the
+ * matcher than a genre alone ("80s synth-pop" beats "pop"), and unlike artist
+ * search it needs no typing, so it is the cheapest taste signal in the picker.
+ * Newest first: recent decades are the common answer.
+ */
+export const ERA_OPTIONS: readonly string[] = [
+  '2020s',
+  '2010s',
+  '2000s',
+  '1990s',
+  '1980s',
+  '1970s',
+  '1960s',
+];
+
+/** "1980s" -> "era:1980s". */
+export function toEraTag(era: string): string {
+  return `${ERA_TAG_PREFIX}${era.trim().toLowerCase()}`;
+}
+
+/** Pull the eras back out of a top_genres array, in stored order. */
+export function erasFromTopGenres(topGenres: unknown): string[] {
+  if (!Array.isArray(topGenres)) return [];
+  return topGenres
+    .filter((g): g is string => typeof g === 'string' && g.startsWith(ERA_TAG_PREFIX))
+    .map((g) => g.slice(ERA_TAG_PREFIX.length))
+    .filter(Boolean);
+}
+
 /** One artist as returned by spotify-search; same shape as a top_artists entry. */
 export type TasteArtist = {
   id: string;
@@ -85,11 +128,15 @@ export type ManualTasteProfile = SpotifyTasteProfile & {
   // The genres chosen by hand, separate from those inherited from the picked
   // artists, so the picker can restore the exact selection later.
   picked_genres: string[];
+  // Decades chosen by hand, untagged. Also present tagged inside top_genres,
+  // which is the copy that reaches a registered user's row.
+  picked_eras: string[];
 };
 
 export type ManualTasteInput = {
   artists: TasteArtist[];
   genres: string[];
+  eras?: string[];
 };
 
 /**
@@ -176,7 +223,7 @@ export async function searchArtists(
  * Build the profile object without persisting it. `top_genres` leads with the
  * hand-picked genres, then those of the picked artists, deduplicated.
  */
-export function buildManualTasteProfile({ artists, genres }: ManualTasteInput): ManualTasteProfile {
+export function buildManualTasteProfile({ artists, genres, eras }: ManualTasteInput): ManualTasteProfile {
   const topArtists = artists.slice(0, MAX_TASTE_ARTISTS).map((a) => ({
     id: a.id,
     name: a.name,
@@ -184,6 +231,7 @@ export function buildManualTasteProfile({ artists, genres }: ManualTasteInput): 
     image: a.image ?? null,
   }));
   const pickedGenres = uniqueGenres(genres).slice(0, MAX_TASTE_GENRES);
+  const pickedEras = uniqueGenres(eras ?? []).slice(0, MAX_TASTE_ERAS);
   const artistGenres = topArtists.flatMap((a) => a.genres);
 
   return {
@@ -191,10 +239,18 @@ export function buildManualTasteProfile({ artists, genres }: ManualTasteInput): 
     top_tracks: [],
     recently_played: [],
     saved_tracks: [],
-    top_genres: uniqueGenres([...pickedGenres, ...artistGenres]).slice(0, MAX_TOP_GENRES),
+    // Eras ride along tagged so they survive the save for registered users,
+    // whose row has no column of their own. Kept ahead of the artist-derived
+    // genres, which are the weakest signal here.
+    top_genres: uniqueGenres([
+      ...pickedGenres,
+      ...pickedEras.map(toEraTag),
+      ...artistGenres,
+    ]).slice(0, MAX_TOP_GENRES),
     refreshed_at: new Date().toISOString(),
     source: 'manual',
     picked_genres: pickedGenres,
+    picked_eras: pickedEras,
   };
 }
 
@@ -228,7 +284,7 @@ export async function saveManualTasteProfile(
 ): Promise<{ profile: ManualTasteProfile; storedOnServer: boolean }> {
   const profile = buildManualTasteProfile(input);
   if (profile.top_artists.length === 0 && profile.top_genres.length === 0) {
-    throw new TasteSaveError('local', 'Pick at least one artist or genre');
+    throw new TasteSaveError('local', 'Pick at least one artist, genre or era');
   }
 
   try {

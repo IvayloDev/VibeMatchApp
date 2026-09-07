@@ -21,6 +21,7 @@ import { identifyUser as posthogIdentify, resetUser as posthogReset, trackScreen
 import { rescheduleEngagementReminders } from './lib/notifications';
 import { primeFeatureFlags, isSpotifyConnectEnabled } from './lib/featureFlags';
 import TastePickerScreen from './app/onboarding/TastePickerScreen';
+import DebugResetButton from './lib/components/DebugResetButton';
 
 const Stack = createNativeStackNavigator();
 
@@ -255,6 +256,9 @@ export default function App() {
       <PaperProvider theme={PaperTheme}>
         <AuthProvider>
           <AppContent />
+          {/* Debug-only, renders nothing in a production build. Outside the
+              navigator so it floats over every screen. */}
+          <DebugResetButton />
         </AuthProvider>
       </PaperProvider>
     </SafeAreaProvider>
