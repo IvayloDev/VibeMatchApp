@@ -30,9 +30,9 @@ import {
   Chip,
   SectionHeader,
 } from '../../lib/components/OnboardingChrome';
+import { DecadeDial } from '../../lib/components/DecadeDial';
 import {
   GENRE_OPTIONS,
-  ERA_OPTIONS,
   MAX_TASTE_ARTISTS,
   MAX_TASTE_GENRES,
   MAX_TASTE_ERAS,
@@ -582,6 +582,10 @@ const TastePickerScreen: React.FC = () => {
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            // The dial owns drags on the decades stage; the screen fits
+            // without scrolling there, and a scroll view would steal any
+            // drag with a vertical component.
+            scrollEnabled={stage !== 'decades'}
           >
             {stage === 'decades' ? (
               <>
@@ -595,19 +599,7 @@ const TastePickerScreen: React.FC = () => {
                     That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
                   </Text>
                 )}
-                <View style={styles.grid}>
-                  {ERA_OPTIONS.map((era) => (
-                    <Chip
-                      key={era}
-                      size="grid"
-                      label={era}
-                      selected={selectedEras.includes(era)}
-                      dimmed={erasFull}
-                      onPress={() => toggleEra(era)}
-                      accessibilityLabel={`${era}, decade`}
-                    />
-                  ))}
-                </View>
+                <DecadeDial selected={selectedEras} onToggle={toggleEra} />
               </>
             ) : (
               <>
