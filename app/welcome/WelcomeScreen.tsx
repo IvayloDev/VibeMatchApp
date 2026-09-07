@@ -66,31 +66,44 @@ interface MatchCardSpec {
 }
 
 // Index 0 starts in front; the next index sits back-left, the one after
-// back-right. Rotation advances the front by one each swap.
-// The photos are placeholders until real ones land in assets/welcome/ under
-// the same names: romantic.jpg (a sunset), chill.jpg (a calm scene),
-// moody.jpg (a night scene). Square crops read best, 800x800 is plenty.
+// back-right. Rotation advances the front by one each swap and cycles
+// through all five. Photos are the user's own, cropped square at 800px in
+// assets/welcome/.
 const MATCH_CARDS: MatchCardSpec[] = [
   {
     tag: 'Romantic',
     gradient: ['#ffb36b', '#f4258c', '#4a1d6e'],
-    photo: require('../../assets/welcome/romantic.jpg'),
+    photo: require('../../assets/welcome/oleander.jpg'),
     song: 'Golden Hour',
     artist: 'JVKE',
   },
   {
     tag: 'Chill',
     gradient: ['#1de9b6', '#1c7ed6', '#0b1a3a'],
-    photo: require('../../assets/welcome/chill.jpg'),
+    photo: require('../../assets/welcome/plane.jpg'),
     song: 'Weightless',
     artist: 'Marconi Union',
   },
   {
     tag: 'Moody',
     gradient: ['#8b5cf6', '#2a1444', '#0f0a1c'],
-    photo: require('../../assets/welcome/moody.jpg'),
+    photo: require('../../assets/welcome/tram.jpg'),
     song: 'Nightcall',
     artist: 'Kavinsky',
+  },
+  {
+    tag: 'Hype',
+    gradient: ['#ff6b35', '#f4258c', '#4a1d6e'],
+    photo: require('../../assets/welcome/harbour.jpg'),
+    song: 'Digital Love',
+    artist: 'Daft Punk',
+  },
+  {
+    tag: 'Chill',
+    gradient: ['#c4b5fd', '#1c7ed6', '#0b1a3a'],
+    photo: require('../../assets/welcome/prague.jpg'),
+    song: 'Holocene',
+    artist: 'Bon Iver',
   },
 ];
 
@@ -162,7 +175,7 @@ const WelcomeScreen = () => {
   // brand-new users get a pure Start Matching screen.
   const [hadAccount, setHadAccount] = useState(false);
 
-  // Hero rotation: step counts completed swaps. step % 3 picks the front
+  // Hero rotation: step counts completed swaps. step % MATCH_CARDS.length picks the front
   // card, step % 2 picks which layer of each slot is on top.
   const [step, setStep] = useState(0);
   const stepRef = useRef(0);
@@ -290,7 +303,7 @@ const WelcomeScreen = () => {
     }
   };
 
-  const front = step % 3;
+  const front = step % MATCH_CARDS.length;
   const topIsCurrent = step % 2 === 0;
   const topOpacity = swap.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
   const lift = swap.interpolate({ inputRange: [0, 0.5, 1], outputRange: [-6, -10, -6] });
