@@ -41,6 +41,7 @@ import {
   suggestArtists,
   saveManualTasteProfile,
   loadManualTasteProfile,
+  SpotifyEndpointError,
 } from '../../lib/taste';
 import type { TasteArtist, ArtistSuggestions } from '../../lib/taste';
 
@@ -83,6 +84,27 @@ const formatGenre = (genre: string) =>
   genre.replace(/(^|[\s&-])([a-z])/g, (_match, lead: string, letter: string) => lead + letter.toUpperCase());
 
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
+
+/**
+ * Report a failed Spotify-backed call. A 429 is the app hitting Spotify's
+ * per-app quota, which is shared across every user, so it gets its own event
+ * to watch rather than being buried in a generic failure count.
+ */
+function reportSpotifyFailure(surface: 'search' | 'suggest', err: unknown) {
+  const status = err instanceof SpotifyEndpointError ? err.status : null;
+  if (status === 429) {
+    trackEvent('spotify_rate_limited', {
+      surface,
+      retry_after: err instanceof SpotifyEndpointError ? err.retryAfter : null,
+    });
+    return;
+  }
+  trackEvent('spotify_request_failed', {
+    surface,
+    status,
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
 
 // Round artist image with a gradient-free placeholder: Spotify has no artwork
 // for some smaller artists, and a broken image would look like a bug.
@@ -231,6 +253,7 @@ const TastePickerScreen: React.FC = () => {
         .catch((err) => {
           if (controller.signal.aborted) return;
           console.warn('Artist suggestions failed:', err);
+          reportSpotifyFailure('suggest', err);
           setSuggestions(null);
         })
         .finally(() => {
@@ -264,6 +287,7 @@ const TastePickerScreen: React.FC = () => {
       setSearchedFor(q);
       setSearchError(controller.signal.aborted ? SEARCH_ERROR_TIMEOUT : SEARCH_ERROR_NETWORK);
       console.warn('Artist search failed:', err);
+      reportSpotifyFailure('search', err);
     } finally {
       clearTimeout(timeout);
       if (requestId === requestIdRef.current) setSearching(false);

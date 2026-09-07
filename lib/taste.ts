@@ -213,13 +213,29 @@ export async function searchArtists(
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new Error(json?.error || `spotify-search failed (${resp.status})`);
+    throw new SpotifyEndpointError(
+      json?.error || `spotify-search failed (${resp.status})`,
+      resp.status,
+      typeof json?.retry_after === 'number' ? json.retry_after : null
+    );
   }
   const artists: unknown[] = Array.isArray(json?.artists) ? json.artists : [];
   return artists.map(normalizeArtist).filter((a) => a.id && a.name);
 }
 
 export type ArtistSuggestions = { artists: TasteArtist[]; basis: 'artists' | 'taste' | 'none' };
+
+/** An error from the Spotify-backed endpoints, carrying the HTTP status. */
+export class SpotifyEndpointError extends Error {
+  status: number;
+  retryAfter: number | null;
+  constructor(message: string, status: number, retryAfter: number | null = null) {
+    super(message);
+    this.name = 'SpotifyEndpointError';
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
 
 /**
  * Starter artists for the picker. With artists already picked the server
@@ -242,7 +258,11 @@ export async function suggestArtists(
   });
   const json = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new Error(json?.error || `spotify-search suggest failed (${resp.status})`);
+    throw new SpotifyEndpointError(
+      json?.error || `spotify-search suggest failed (${resp.status})`,
+      resp.status,
+      typeof json?.retry_after === 'number' ? json.retry_after : null
+    );
   }
   const artists: unknown[] = Array.isArray(json?.artists) ? json.artists : [];
   const basis = json?.basis === 'artists' || json?.basis === 'taste' ? json.basis : 'none';

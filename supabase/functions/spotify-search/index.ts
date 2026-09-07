@@ -117,6 +117,16 @@ function searchSpotify(q: string, limit: number, token: string, type = "artist")
 // ---------- suggestions ----------
 
 const SUGGEST_MAX = 8;
+// Set when any Spotify call in a suggest request comes back 429, so the
+// handler can log it once even though the helpers swallow failures.
+const rateLimited: { hit: boolean; retryAfter: string | null } = { hit: false, retryAfter: null };
+function noteStatus(resp: Response) {
+  if (resp.status === 429) {
+    rateLimited.hit = true;
+    rateLimited.retryAfter = resp.headers.get("Retry-After");
+  }
+  return resp;
+}
 const ERA_RE = /^(19|20)\d0s$/;
 const eraToYears = (era: string) => {
   const start = parseInt(era.slice(0, 4), 10);
@@ -141,7 +151,7 @@ async function suggestFromTaste(genres: string[], eras: string[], token: string,
     queries.slice(0, 6).map(async (q) => {
       // Each refresh reads the next page of tracks, so the artists change.
       const params = new URLSearchParams({ type: "track", limit: "10", offset: String(page * 10), q });
-      const resp = await fetch(`${SPOTIFY_SEARCH_URL}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } });
+      const resp = noteStatus(await fetch(`${SPOTIFY_SEARCH_URL}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } }));
       if (!resp.ok) return [];
       const data = await resp.json();
       const items: any[] = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
@@ -162,9 +172,9 @@ async function suggestFromTaste(genres: string[], eras: string[], token: string,
   }
   if (ids.length === 0) return [];
 
-  const resp = await fetch(`https://api.spotify.com/v1/artists?ids=${ids.slice(0, 20).join(",")}`, {
+  const resp = noteStatus(await fetch(`https://api.spotify.com/v1/artists?ids=${ids.slice(0, 20).join(",")}`, {
     headers: { Authorization: `Bearer ${token}` },
-  });
+  }));
   if (!resp.ok) return [];
   const data = await resp.json();
   const artists: any[] = Array.isArray(data?.artists) ? data.artists : [];
@@ -202,7 +212,7 @@ Name 12 other artists they would probably love: contemporaries, influences, labe
 
   const resolved = await Promise.all(
     names.map(async (name) => {
-      const r = await searchSpotify(name, 1, token);
+      const r = noteStatus(await searchSpotify(name, 1, token));
       if (!r.ok) return null;
       const d = await r.json();
       const a = compactArtist(d?.artists?.items?.[0]);
@@ -241,6 +251,8 @@ serve(async (req) => {
     const genres = strs(body.suggest.genres, 3);
     const eras = strs(body.suggest.eras, 3);
     const artists = strs(body.suggest.artists, 6);
+    rateLimited.hit = false;
+    rateLimited.retryAfter = null;
     // Refresh: ids (Spotify) and names already shown, plus which page to read.
     const excludeIds = new Set(strs(body.suggest.exclude, 60));
     const rawPage = Number(body.suggest.page);
@@ -251,6 +263,9 @@ serve(async (req) => {
       const token = await getAppToken();
       const exclude = new Set(artists.map(norm));
       const fresh = (a: CompactArtist) => !exclude.has(norm(a.name)) && !excludeIds.has(a.id);
+      if (rateLimited.hit) {
+        console.error("SPOTIFY_RATE_LIMITED mode=suggest retry_after=" + (rateLimited.retryAfter ?? "unknown"));
+      }
       if (artists.length > 0) {
         const excludeNames = strs(body.suggest.excludeNames, 60);
         const out = (await suggestFromArtists(artists, genres, eras, token, excludeNames)).filter(fresh);
@@ -292,6 +307,9 @@ serve(async (req) => {
     if (resp.status === 429) {
       const retryAfterHeader = resp.headers.get("Retry-After");
       const retryAfter = retryAfterHeader === null ? NaN : Number(retryAfterHeader);
+      // Greppable in the Supabase function logs: this is the app hitting
+      // Spotify's per-app quota, which is shared across all users.
+      console.error("SPOTIFY_RATE_LIMITED mode=search retry_after=" + (retryAfterHeader ?? "unknown"));
       return json({
         error: "Spotify is rate limiting searches, try again in a moment",
         retry_after: Number.isFinite(retryAfter) ? retryAfter : null,

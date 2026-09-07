@@ -338,6 +338,9 @@ async function findTrackOnSpotify(
 
     if (!response.ok) {
       if (state) state.lastHttpStatus = response.status;
+      if (response.status === 429) {
+        console.error("SPOTIFY_RATE_LIMITED mode=resolve retry_after=" + (response.headers.get("Retry-After") ?? "unknown"));
+      }
       const errText = await response.text();
       const detail = parseSpotifyApiErrorBody(errText);
       if (response.status === 403 || response.status === 401) {
@@ -374,6 +377,9 @@ async function findTrackOnSpotify(
 
       if (!response.ok) {
         if (state) state.lastHttpStatus = response.status;
+      if (response.status === 429) {
+        console.error("SPOTIFY_RATE_LIMITED mode=resolve retry_after=" + (response.headers.get("Retry-After") ?? "unknown"));
+      }
         const errText = await response.text();
         const detail = parseSpotifyApiErrorBody(errText);
         if (response.status === 403 || response.status === 401) {
