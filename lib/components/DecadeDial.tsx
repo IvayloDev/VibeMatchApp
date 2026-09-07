@@ -1,22 +1,22 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Pressable } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, Image } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { OB } from './OnboardingChrome';
+import { searchArtists } from '../taste';
 import { triggerHaptic } from '../utils/haptics';
 
 /**
- * Decades on an arc, oldest on the left. Every stop is a toggle: tap to pick
- * or unpick it, or drag across several to pick them in one sweep. Up to
- * `max` at a time. A fixed card above the arc lists the picks and the
- * flavour of the one touched last, so nothing on the arc ever points at a
- * decade that is not picked.
+ * The decades, newest first, as a vertical list.
  *
- * Geometry: a circle of radius R sits with its centre below the visible area,
- * so only the top of it shows. Stops spread over +-SPREAD degrees from
- * straight up.
+ * This was an arc with the decades spread around it. It looked like a control
+ * but spent most of the screen to say seven words, and left no room to say
+ * what any decade actually sounded like. A list fits the same seven choices
+ * in less space and carries a face and a line of flavour on each one.
  */
 
-// Oldest first: a timeline reads left to right.
-export const DECADES: readonly string[] = ['1960s', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'];
+// Newest first: most people are picking recent music, and it puts the
+// likeliest taps nearest the thumb.
+export const DECADES: readonly string[] = ['2020s', '2010s', '2000s', '1990s', '1980s', '1970s', '1960s'];
 
 const FLAVOUR: Record<string, string> = {
   '1960s': 'Motown, psychedelia, the British invasion',
@@ -28,14 +28,50 @@ const FLAVOUR: Record<string, string> = {
   '2020s': 'Right now',
 };
 
-const SPREAD_DEG = 54;
-const STEP_DEG = (SPREAD_DEG * 2) / (DECADES.length - 1);
-const TRACK = 10;
-const CARD_H = 76;
-const RING_TOP = CARD_H + 26; // the card sits above the topmost stop
-const HEIGHT = RING_TOP + 200;
-const STOP = 18;
-const STOP_ON = 30;
+/**
+ * One artist per decade, used only as the face on that row. Picked for
+ * instant recognition rather than for being anyone's favourite, and fetched
+ * from Spotify at runtime so no artwork ships in the bundle.
+ */
+const DECADE_FACES: Record<string, string> = {
+  '1960s': 'The Beatles',
+  '1970s': 'ABBA',
+  '1980s': 'Michael Jackson',
+  '1990s': 'Nirvana',
+  '2000s': 'Beyonce',
+  '2010s': 'Drake',
+  '2020s': 'Billie Eilish',
+};
+
+// Resolved once per app run: this step is entered and left repeatedly while
+// someone moves back and forth through the questions.
+let faceCache: Record<string, string | null> | null = null;
+let facePromise: Promise<Record<string, string | null>> | null = null;
+
+async function loadDecadeFaces(): Promise<Record<string, string | null>> {
+  if (faceCache) return faceCache;
+  if (!facePromise) {
+    facePromise = Promise.all(
+      DECADES.map(async (decade) => {
+        try {
+          const [artist] = await searchArtists(DECADE_FACES[decade], { limit: 1 });
+          return [decade, artist?.image ?? null] as const;
+        } catch {
+          return [decade, null] as const;
+        }
+      })
+    )
+      .then((pairs) => {
+        faceCache = Object.fromEntries(pairs);
+        return faceCache;
+      })
+      .finally(() => {
+        facePromise = null;
+      });
+  }
+  return facePromise;
+}
+
 const HINT_MS = 2200;
 
 type Props = {
@@ -44,246 +80,116 @@ type Props = {
   onChange: (decades: string[]) => void;
 };
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const angleOf = (index: number) => -SPREAD_DEG + STEP_DEG * index;
-
 export const DecadeDial: React.FC<Props> = ({ value, max, onChange }) => {
-  const [width, setWidth] = useState(0);
-  // The decade touched last, for the flavour line.
-  const [last, setLast] = useState<string | null>(value[value.length - 1] ?? null);
-  // Brief "that's three" message when a fourth pick is attempted.
+  const [faces, setFaces] = useState<Record<string, string | null>>(() => faceCache ?? {});
   const [full, setFull] = useState(false);
   const fullTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const valueRef = useRef<readonly string[]>(value);
   useEffect(() => {
-    valueRef.current = value;
-  }, [value]);
+    if (faceCache) return;
+    let live = true;
+    loadDecadeFaces()
+      .then((f) => { if (live) setFaces(f); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+
   useEffect(() => () => { if (fullTimer.current) clearTimeout(fullTimer.current); }, []);
 
-  const wrapRef = useRef<View>(null);
-  const originRef = useRef({ x: 0, y: 0 });
-  const measure = () => {
-    wrapRef.current?.measureInWindow((x, y) => {
-      originRef.current = { x, y };
-    });
-  };
-
-  const R = Math.round(width * 0.535);
-  const cx = width / 2;
-  const cy = RING_TOP + R;
-
-  const stops = useMemo(
-    () =>
-      DECADES.map((decade, i) => {
-        const a = (angleOf(i) * Math.PI) / 180;
-        return { decade, x: cx + R * Math.sin(a), y: cy - R * Math.cos(a) };
-      }),
-    [cx, cy, R]
-  );
-
-  const indexAt = (pageX: number, pageY: number) => {
-    const x = pageX - originRef.current.x;
-    const y = pageY - originRef.current.y;
-    const deg = (Math.atan2(x - cx, cy - y) * 180) / Math.PI;
-    return clamp(Math.round((deg + SPREAD_DEG) / STEP_DEG), 0, DECADES.length - 1);
-  };
-
-  const flashFull = () => {
-    triggerHaptic('warning');
-    setFull(true);
-    if (fullTimer.current) clearTimeout(fullTimer.current);
-    fullTimer.current = setTimeout(() => setFull(false), HINT_MS);
-  };
-
-  // Pick a decade (never unpicks): used while sweeping.
-  const pick = (i: number) => {
-    const decade = DECADES[i];
-    const cur = valueRef.current;
-    if (cur.includes(decade)) return;
-    if (cur.length >= max) {
-      flashFull();
-      return;
-    }
-    const next = [...cur, decade];
-    valueRef.current = next;
-    setLast(decade);
-    triggerHaptic('light');
-    onChange(next);
-  };
-
-  const toggle = (i: number) => {
-    const decade = DECADES[i];
-    const cur = valueRef.current;
-    if (cur.includes(decade)) {
-      const next = cur.filter((d) => d !== decade);
-      valueRef.current = next;
-      setLast(next[next.length - 1] ?? null);
+  const toggle = (decade: string) => {
+    if (value.includes(decade)) {
       triggerHaptic('light');
-      onChange(next);
+      onChange(value.filter((d) => d !== decade));
       return;
     }
-    pick(i);
+    if (value.length >= max) {
+      triggerHaptic('warning');
+      setFull(true);
+      if (fullTimer.current) clearTimeout(fullTimer.current);
+      fullTimer.current = setTimeout(() => setFull(false), HINT_MS);
+      return;
+    }
+    triggerHaptic('light');
+    onChange([...value, decade]);
   };
-
-  // A touch is a tap until the finger crosses into another stop; from then
-  // on it is a sweep that picks every stop it passes.
-  const startRef = useRef<number | null>(null);
-  const sweepRef = useRef(false);
-
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
-        onPanResponderGrant: (e) => {
-          measure();
-          startRef.current = indexAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
-          sweepRef.current = false;
-        },
-        onPanResponderMove: (e) => {
-          const i = indexAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
-          if (startRef.current === null) return;
-          if (!sweepRef.current) {
-            if (i === startRef.current) return;
-            // The sweep starts at the stop the finger landed on.
-            sweepRef.current = true;
-            pick(startRef.current);
-          }
-          pick(i);
-        },
-        onPanResponderRelease: () => {
-          if (startRef.current !== null && !sweepRef.current) toggle(startRef.current);
-          startRef.current = null;
-          sweepRef.current = false;
-        },
-        onPanResponderTerminate: () => {
-          startRef.current = null;
-          sweepRef.current = false;
-        },
-      }),
-    [cx, cy, R, max, onChange]
-  );
-
-  const sorted = DECADES.filter((d) => value.includes(d));
-  const title = sorted.length > 0 ? sorted.join(' · ') : 'Tap up to three decades';
-  const caption = full
-    ? `That's ${max}. Tap one to remove it.`
-    : sorted.length === 0
-      ? 'Or drag across a few.'
-      : FLAVOUR[last && value.includes(last) ? last : sorted[sorted.length - 1]];
 
   return (
-    <View
-      ref={wrapRef}
-      style={styles.wrap}
-      onLayout={(e: LayoutChangeEvent) => {
-        setWidth(e.nativeEvent.layout.width);
-        measure();
-      }}
-      {...pan.panHandlers}
-      accessible={false}
-    >
-      {width > 0 ? (
-        <>
-          <View style={[styles.card, sorted.length > 0 && styles.cardOn]} pointerEvents="none">
-            <Text style={[styles.cardTitle, sorted.length === 0 && styles.cardTitleEmpty]} numberOfLines={1}>
-              {title}
-            </Text>
-            <Text style={[styles.cardCaption, full && styles.cardCaptionFull]} numberOfLines={1}>
-              {caption}
-            </Text>
-          </View>
+    <View style={styles.list}>
+      {full ? <Text style={styles.hint}>That's {max}. Tap one to remove it.</Text> : null}
 
-          <View
-            pointerEvents="none"
-            style={[styles.ring, { width: R * 2, height: R * 2, borderRadius: R, left: cx - R, top: RING_TOP }]}
-          />
+      {DECADES.map((decade) => {
+        const on = value.includes(decade);
+        const face = faces[decade];
+        return (
+          <Pressable
+            key={decade}
+            onPress={() => toggle(decade)}
+            style={({ pressed }) => [styles.row, on && styles.rowOn, pressed && styles.rowPressed]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: on }}
+            accessibilityLabel={`${decade}. ${FLAVOUR[decade]}`}
+          >
+            <View style={[styles.faceWrap, on && styles.faceWrapOn]}>
+              {face ? <Image source={{ uri: face }} style={styles.face} /> : null}
+              {face && !on ? <View style={styles.faceVeil} /> : null}
+            </View>
 
-          {stops.map((s, i) => {
-            const on = value.includes(s.decade);
-            const size = on ? STOP_ON : STOP;
-            return (
-              <React.Fragment key={s.decade}>
-                <Pressable
-                  // Touch is handled by the dial; this stays a Pressable so
-                  // VoiceOver exposes each stop as a toggle.
-                  onPress={() => toggle(i)}
-                  style={[
-                    styles.stop,
-                    on && styles.stopOn,
-                    { width: size, height: size, borderRadius: size / 2, left: s.x - size / 2, top: s.y - size / 2 },
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
-                  accessibilityLabel={`${s.decade}, decade`}
-                />
-                <Text
-                  pointerEvents="none"
-                  style={[styles.label, on && styles.labelOn, { left: s.x - 30, top: s.y + 18 }]}
-                >
-                  {s.decade}
-                </Text>
-              </React.Fragment>
-            );
-          })}
-        </>
-      ) : null}
+            <View style={styles.rowText}>
+              <Text style={styles.decade}>{decade}</Text>
+              <Text style={styles.flavour} numberOfLines={1}>
+                {FLAVOUR[decade]}
+              </Text>
+            </View>
+
+            <View style={[styles.check, on && styles.checkOn]}>
+              {on ? <MaterialCommunityIcons name="check" size={15} color={OB.text} /> : null}
+            </View>
+          </Pressable>
+        );
+      })}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  wrap: { height: HEIGHT, overflow: 'hidden', marginTop: 8 },
-  ring: {
-    position: 'absolute',
-    borderWidth: TRACK,
-    borderColor: OB.track,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-  },
-  stop: {
-    position: 'absolute',
-    backgroundColor: OB.bg,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.4)',
-  },
-  stopOn: {
-    backgroundColor: OB.primary,
-    borderWidth: 3,
-    borderColor: OB.text,
-    shadowColor: OB.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  label: {
-    position: 'absolute',
-    width: 60,
-    textAlign: 'center',
-    color: OB.textFaint,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  labelOn: { color: OB.text },
-  card: {
-    position: 'absolute',
-    left: OB.margin,
-    right: OB.margin,
-    top: 0,
-    minHeight: CARD_H,
-    borderRadius: 14,
+  list: { paddingHorizontal: OB.margin, marginTop: 14, gap: 8 },
+  hint: { color: OB.primary, fontSize: OB.caption, fontWeight: '600', marginBottom: 2 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 62,
+    paddingHorizontal: 12,
+    borderRadius: 16,
     backgroundColor: OB.surface,
     borderWidth: 1,
     borderColor: OB.border,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  },
+  rowOn: { backgroundColor: 'rgba(244,37,140,0.14)', borderColor: OB.primary },
+  rowPressed: { transform: [{ scale: 0.985 }] },
+  faceWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  faceWrapOn: { borderColor: OB.primary },
+  face: { ...StyleSheet.absoluteFillObject, resizeMode: 'cover' },
+  faceVeil: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(34,16,25,0.35)' },
+  rowText: { flex: 1, gap: 1 },
+  decade: { color: OB.text, fontSize: 17, fontWeight: '700' },
+  flavour: { color: OB.textFaint, fontSize: 12 },
+  check: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardOn: { backgroundColor: OB.surfaceRaised },
-  cardTitle: { color: OB.text, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
-  cardTitleEmpty: { color: OB.textDim, fontSize: 17, fontWeight: '700' },
-  cardCaption: { color: OB.textDim, fontSize: 12, lineHeight: 16, textAlign: 'center', marginTop: 4 },
-  cardCaptionFull: { color: OB.primary, fontWeight: '600' },
+  checkOn: { backgroundColor: OB.primary, borderColor: OB.primary },
 });
