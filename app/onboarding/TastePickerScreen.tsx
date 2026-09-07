@@ -38,10 +38,11 @@ import {
   MAX_TASTE_ERAS,
   TasteSaveError,
   searchArtists,
+  suggestArtists,
   saveManualTasteProfile,
   loadManualTasteProfile,
 } from '../../lib/taste';
-import type { TasteArtist } from '../../lib/taste';
+import type { TasteArtist, ArtistSuggestions } from '../../lib/taste';
 
 type RootStackParamList = {
   TastePicker: { returnTo?: 'back' } | undefined;
@@ -124,6 +125,11 @@ const TastePickerScreen: React.FC = () => {
   // Eleven common genres show by default; "More" unfolds the rest in place.
   const [allGenresOpen, setAllGenresOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  // Starter artists on the artists stage: from the picked decades and genres
+  // at first, then "similar to" the artists picked so far.
+  const [suggestions, setSuggestions] = useState<ArtistSuggestions | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const suggestAbort = useRef<AbortController | null>(null);
 
   // Only the latest search may touch state: a slow early response must not
   // overwrite the results of a later, more specific query.
@@ -177,6 +183,39 @@ const TastePickerScreen: React.FC = () => {
     const frame = requestAnimationFrame(() => searchInputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [stage]);
+
+  // Refresh suggestions whenever the inputs change while on the artists
+  // stage. Debounced so adding two artists in a row makes one request.
+  const artistKey = selectedArtists.map((a) => a.id).join(',');
+  useEffect(() => {
+    if (stage !== 'artists') return;
+    const timer = setTimeout(() => {
+      suggestAbort.current?.abort();
+      const controller = new AbortController();
+      suggestAbort.current = controller;
+      setSuggesting(true);
+      suggestArtists(
+        { genres: selectedGenres, eras: selectedEras, artists: selectedArtists.map((a) => a.name) },
+        { signal: controller.signal }
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setSuggestions(result);
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          console.warn('Artist suggestions failed:', err);
+          setSuggestions(null);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSuggesting(false);
+        });
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, artistKey, selectedGenres.join(','), selectedEras.join(',')]);
+
+  useEffect(() => () => suggestAbort.current?.abort(), []);
 
   const runSearch = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -469,6 +508,15 @@ const TastePickerScreen: React.FC = () => {
   const stageIndex = stage === 'decades' ? 1 : stage === 'genres' ? 2 : 3;
   const editing = returnTo === 'back';
 
+  // Suggestions minus what is already picked, and where they came from.
+  const visibleSuggestions = (suggestions?.artists ?? []).filter((a) => !isArtistSelected(a.id));
+  const suggestionBasis =
+    suggestions?.basis === 'artists' && selectedArtists.length > 0
+      ? `Because you picked ${selectedArtists.map((a) => a.name).slice(0, 2).join(' and ')}`
+      : selectedGenres.length > 0 || selectedEras.length > 0
+        ? 'From your decades and genres'
+        : 'Popular right now';
+
   const artistsStage = (
     <View style={styles.artists}>
       {selectedArtistChips}
@@ -529,8 +577,48 @@ const TastePickerScreen: React.FC = () => {
         </Text>
       )}
 
-      {showSearchHint && !searchError && (
-        <Text style={styles.statusText}>Type a name to search Spotify's catalog.</Text>
+      {trimmedQuery.length < SEARCH_MIN_CHARS && !searchError && (
+        visibleSuggestions.length > 0 ? (
+          <View style={styles.suggest}>
+            <View style={styles.suggestHeader}>
+              <Text style={styles.suggestTitle}>Suggested for you</Text>
+              {suggesting ? <ActivityIndicator size="small" color={OB.textFaint} /> : null}
+            </View>
+            <Text style={styles.suggestCaption}>{suggestionBasis}</Text>
+            <View style={styles.resultsList}>
+              {visibleSuggestions.map((artist) => (
+                <TouchableOpacity
+                  key={artist.id}
+                  style={styles.resultRow}
+                  onPress={() => toggleArtist(artist)}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add ${artist.name}`}
+                >
+                  <ArtistAvatar uri={artist.image} size={44} />
+                  <View style={styles.resultText}>
+                    <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
+                    {artist.genres.length > 0 && (
+                      <Text style={styles.resultGenres} numberOfLines={1}>
+                        {artist.genres.slice(0, 2).map(formatGenre).join(' · ')}
+                      </Text>
+                    )}
+                  </View>
+                  <View style={styles.addBtn}>
+                    <Text style={styles.addBtnText}>Add</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        ) : suggesting ? (
+          <View style={styles.suggestHeader}>
+            <Text style={styles.statusText}>Finding artists you might like</Text>
+            <ActivityIndicator size="small" color={OB.textFaint} />
+          </View>
+        ) : showSearchHint ? (
+          <Text style={styles.statusText}>Type a name to search Spotify's catalog.</Text>
+        ) : null
       )}
 
       {showResults && (
@@ -736,6 +824,10 @@ const styles = StyleSheet.create({
   addArtistsTitle: { color: OB.text, fontSize: OB.body, fontWeight: '600' },
   addArtistsCaption: { color: OB.textDim, fontSize: OB.caption },
 
+  suggest: { gap: 6 },
+  suggestHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  suggestTitle: { color: OB.text, fontSize: OB.section, fontWeight: '700' },
+  suggestCaption: { color: OB.textFaint, fontSize: OB.caption, marginBottom: 4 },
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',

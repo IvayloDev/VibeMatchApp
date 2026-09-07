@@ -219,6 +219,36 @@ export async function searchArtists(
   return artists.map(normalizeArtist).filter((a) => a.id && a.name);
 }
 
+export type ArtistSuggestions = { artists: TasteArtist[]; basis: 'artists' | 'taste' | 'none' };
+
+/**
+ * Starter artists for the picker. With artists already picked the server
+ * names similar ones; with only decades and genres it pulls the artists
+ * behind Spotify's top tracks for those genres and years.
+ */
+export async function suggestArtists(
+  input: { genres: string[]; eras: string[]; artists: string[] },
+  options: { limit?: number; signal?: AbortSignal } = {}
+): Promise<ArtistSuggestions> {
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/spotify-search`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+    body: JSON.stringify({ suggest: input, limit: options.limit ?? 8 }),
+    signal: options.signal,
+  });
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(json?.error || `spotify-search suggest failed (${resp.status})`);
+  }
+  const artists: unknown[] = Array.isArray(json?.artists) ? json.artists : [];
+  const basis = json?.basis === 'artists' || json?.basis === 'taste' ? json.basis : 'none';
+  return { artists: artists.map(normalizeArtist).filter((a) => a.id && a.name), basis };
+}
+
 /**
  * Build the profile object without persisting it. `top_genres` leads with the
  * hand-picked genres, then those of the picked artists, deduplicated.

@@ -7,6 +7,12 @@
 //
 // POST { q: string, limit?: number }
 //   -> 200 { artists: [{ id, name, genres: string[], image: string | null }] }
+// POST { suggest: { genres: string[], eras: string[], artists: string[] }, limit?: number }
+//   -> 200 { artists: [...], basis: "artists" | "taste" | "none" }
+//   Starter suggestions for the taste picker. With artists already picked
+//   the model names similar ones and each is resolved on Spotify; with only
+//   decades and genres, Spotify's catalog is searched by genre and year and
+//   the artists behind the top tracks are returned.
 //   -> 400 { error } on a blank query, 429 when Spotify rate limits us,
 //      502 { error } when Spotify or its token endpoint fails.
 //
@@ -101,11 +107,114 @@ function compactArtist(a: any): CompactArtist {
   };
 }
 
-function searchSpotify(q: string, limit: number, token: string): Promise<Response> {
-  const params = new URLSearchParams({ type: "artist", limit: String(limit), q });
+function searchSpotify(q: string, limit: number, token: string, type = "artist"): Promise<Response> {
+  const params = new URLSearchParams({ type, limit: String(limit), q });
   return fetch(`${SPOTIFY_SEARCH_URL}?${params.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+}
+
+// ---------- suggestions ----------
+
+const SUGGEST_MAX = 8;
+const ERA_RE = /^(19|20)\d0s$/;
+const eraToYears = (era: string) => {
+  const start = parseInt(era.slice(0, 4), 10);
+  return `${start}-${start + 9}`;
+};
+const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** Artists behind the top Spotify tracks for each genre x decade pair. */
+async function suggestFromTaste(genres: string[], eras: string[], token: string): Promise<CompactArtist[]> {
+  const years = eras.filter((e) => ERA_RE.test(e)).map(eraToYears);
+  const queries: string[] = [];
+  const gs = genres.length ? genres : [""];
+  const ys = years.length ? years : [""];
+  for (const g of gs) for (const y of ys) {
+    const parts = [g ? `genre:"${g}"` : "", y ? `year:${y}` : ""].filter(Boolean);
+    if (parts.length) queries.push(parts.join(" "));
+  }
+  if (queries.length === 0) return [];
+
+  // Round-robin over the pairs so one genre does not crowd out the others.
+  const perQuery: string[][] = await Promise.all(
+    queries.slice(0, 6).map(async (q) => {
+      const resp = await searchSpotify(q, 10, token, "track");
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      const items: any[] = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
+      return items.map((t) => t?.artists?.[0]?.id).filter((id: unknown): id is string => typeof id === "string");
+    })
+  );
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; ids.length < SUGGEST_MAX * 2; i++) {
+    let any = false;
+    for (const list of perQuery) {
+      const id = list[i];
+      if (id === undefined) continue;
+      any = true;
+      if (!seen.has(id)) { seen.add(id); ids.push(id); }
+    }
+    if (!any) break;
+  }
+  if (ids.length === 0) return [];
+
+  const resp = await fetch(`https://api.spotify.com/v1/artists?ids=${ids.slice(0, 20).join(",")}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const artists: any[] = Array.isArray(data?.artists) ? data.artists : [];
+  return artists.map(compactArtist).filter((a) => a.id && a.name);
+}
+
+/** Similar-artist names from the model, each resolved on Spotify. */
+async function suggestFromArtists(artists: string[], genres: string[], eras: string[], token: string): Promise<CompactArtist[]> {
+  const key = Deno.env.get("OPENAI_API_KEY");
+  if (!key) return [];
+  const prompt = `A listener likes these artists: ${artists.join(", ")}.${genres.length ? ` Genres they picked: ${genres.join(", ")}.` : ""}${eras.length ? ` Decades they picked: ${eras.join(", ")}.` : ""}
+Name 12 other artists they would probably love: contemporaries, influences, label-mates, proteges. Mix well-known and less obvious. Never repeat an artist they already listed. Return JSON: {"artists": ["Name", ...]} with canonical artist names only.`;
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      temperature: 0.6,
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!resp.ok) {
+    console.error("suggest: OpenAI failed", resp.status, await resp.text());
+    return [];
+  }
+  const data = await resp.json();
+  let names: string[] = [];
+  try {
+    const parsed = JSON.parse(data?.choices?.[0]?.message?.content ?? "{}");
+    names = Array.isArray(parsed?.artists) ? parsed.artists.filter((n: unknown) => typeof n === "string") : [];
+  } catch { names = []; }
+  const already = new Set(artists.map(norm));
+  names = names.filter((n) => !already.has(norm(n))).slice(0, 12);
+
+  const resolved = await Promise.all(
+    names.map(async (name) => {
+      const r = await searchSpotify(name, 1, token);
+      if (!r.ok) return null;
+      const d = await r.json();
+      const a = compactArtist(d?.artists?.items?.[0]);
+      // Only keep it when Spotify's top hit really is that artist.
+      if (!a.id || !a.name || norm(a.name) !== norm(name)) return null;
+      return a;
+    })
+  );
+  const out: CompactArtist[] = [];
+  const seen = new Set<string>();
+  for (const a of resolved) {
+    if (a && !seen.has(a.id) && !already.has(norm(a.name))) { seen.add(a.id); out.push(a); }
+  }
+  return out;
 }
 
 serve(async (req) => {
@@ -121,6 +230,33 @@ serve(async (req) => {
     body = await req.json();
   } catch {
     return json({ error: "Bad request JSON" }, 400);
+  }
+
+  // Suggestion mode: no free-text query, the picks are the input.
+  if (body?.suggest && typeof body.suggest === "object") {
+    const strs = (v: unknown, cap: number) =>
+      (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string").map((x) => x.trim().slice(0, 60)).filter(Boolean).slice(0, cap);
+    const genres = strs(body.suggest.genres, 3);
+    const eras = strs(body.suggest.eras, 3);
+    const artists = strs(body.suggest.artists, 3);
+    const rawLimit = Number(body?.limit);
+    const limit = Number.isFinite(rawLimit) ? Math.min(SUGGEST_MAX, Math.max(1, Math.floor(rawLimit))) : SUGGEST_MAX;
+    try {
+      const token = await getAppToken();
+      const exclude = new Set(artists.map(norm));
+      if (artists.length > 0) {
+        const out = (await suggestFromArtists(artists, genres, eras, token)).filter((a) => !exclude.has(norm(a.name)));
+        if (out.length > 0) return json({ artists: out.slice(0, limit), basis: "artists" });
+      }
+      if (genres.length > 0 || eras.length > 0) {
+        const out = (await suggestFromTaste(genres, eras, token)).filter((a) => !exclude.has(norm(a.name)));
+        return json({ artists: out.slice(0, limit), basis: out.length ? "taste" : "none" });
+      }
+      return json({ artists: [], basis: "none" });
+    } catch (err: any) {
+      console.error("spotify-search suggest error:", err);
+      return json({ error: err?.message ?? "Suggestions failed" }, 502);
+    }
   }
 
   const q = typeof body?.q === "string" ? body.q.trim().slice(0, MAX_QUERY_LENGTH) : "";
