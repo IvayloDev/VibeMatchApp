@@ -170,10 +170,13 @@ export const PrimaryButton: React.FC<{
       .catch(() => false)
       .then((reduceMotion) => {
         if (!active || reduceMotion) return;
+        // A beat, not a sine wave: a quick dip, a slower return, then a rest.
+        // The pause is what makes it read as a pulse rather than a wobble.
         loop = Animated.loop(
           Animated.sequence([
-            Animated.timing(breathe, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-            Animated.timing(breathe, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+            Animated.timing(breathe, { toValue: 1, duration: 480, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+            Animated.timing(breathe, { toValue: 0, duration: 620, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+            Animated.timing(breathe, { toValue: 0, duration: 850, useNativeDriver: true }),
           ])
         );
         loop.start();
@@ -188,7 +191,7 @@ export const PrimaryButton: React.FC<{
   // Breathes inward, never outward: at rest the button sits exactly on the
   // 20pt content column, and a pulse that overflowed it would undo the
   // alignment everywhere else on the screen.
-  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 0.985] });
+  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 0.955] });
 
   return (
     <Animated.View style={pulse ? { transform: [{ scale }] } : undefined}>

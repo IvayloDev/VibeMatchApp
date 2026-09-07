@@ -149,18 +149,17 @@ const MatchCard = ({ card }: { card: MatchCardSpec }) => (
 // left. With photos on the cards, the old crossfade read as a double
 // exposure and the back cards snapped when state flipped.
 const N = MATCH_CARDS.length;
-const PHASES = [0, 1, 2, 3, 4, 5];
-// The two hidden poses sit exactly on top of the visible back poses, so a
-// card fades out where it already is and the next one fades in where it will
-// stay. Nothing translucent ever travels across the stack, which is what made
-// the old swap look like a double exposure.
-const POSE_X = [0, CARD_SPREAD, CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD, 0];
-const POSE_Y = [-6, 16, 16, 16, 16, -6];
-const POSE_ROT = ['0deg', '10deg', '10deg', '-11deg', '-11deg', '0deg'];
-const POSE_SCALE = [1, 0.96, 0.96, 0.96, 0.96, 1];
-const POSE_OPACITY = [1, 0.92, 0, 0, 0.92, 1];
-// Layer order for the duration of a step, keyed by the phase a card is
-// heading to: the card arriving at the front slides over the old front.
+// Keyframes, not just poses: the card arriving at the front gets an extra one
+// half way (4.5) where it lifts up and overshoots in scale. Without it the
+// layer order flipped instantly at the start of the move and the left card
+// simply appeared on top of the middle one. The lift makes that change of
+// depth read as the card being picked up off the pile.
+const PHASES = [0, 1, 2, 3, 4, 4.5, 5];
+const POSE_X = [0, CARD_SPREAD, CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD * 0.45, 0];
+const POSE_Y = [-6, 16, 16, 16, 16, -30, -6];
+const POSE_ROT = ['0deg', '10deg', '10deg', '-11deg', '-11deg', '-5deg', '0deg'];
+const POSE_SCALE = [1, 0.96, 0.96, 0.96, 0.96, 1.06, 1];
+const POSE_OPACITY = [1, 1, 0, 0, 1, 1, 1];
 // Front on top, then the card arriving from the left, then the right card.
 const Z_BY_END_PHASE = [5, 3, 1, 1, 4];
 
@@ -352,9 +351,9 @@ const WelcomeScreen = () => {
 
           <View style={styles.copy}>
             <Text style={styles.headline} maxFontSizeMultiplier={1.3}>
-              Match music to your mood.
+              Match music to{'\n'}your mood.
             </Text>
-            <Text style={styles.subtitle}>Pick a photo. We find the songs that fit it, and you.</Text>
+            <Text style={styles.subtitle}>Your photo, your taste. Three songs that fit.</Text>
           </View>
 
           <View style={styles.bottom}>
