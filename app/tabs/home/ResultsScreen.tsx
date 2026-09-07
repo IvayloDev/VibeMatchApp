@@ -19,15 +19,12 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as SecureStore from 'expo-secure-store';
 import { getImageSignedUrl, supabase } from '../../../lib/supabase';
 import { Spacing } from '../../../lib/designSystem';
 import { OB, OnboardingFooter } from '../../../lib/components/OnboardingChrome';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
-import { hasProEntitlement } from '../../../lib/revenuecat';
 import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
-import { trackEvent } from '../../../lib/posthog';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
 import { ExpandableText } from '../../../lib/components/ExpandableText';
@@ -42,9 +39,6 @@ import { ExpandableText } from '../../../lib/components/ExpandableText';
  * "It's a match" animation. See the "TuneMatch first run" design page,
  * section "The result", for the removal test behind this layout.
  */
-
-// Once-ever flag for the post-first-scan paywall pitch (device-scoped).
-const RESULTS_PAYWALL_SHOWN_KEY = 'tunematch_results_paywall_shown';
 
 // "Swallowed - Remastered" -> "Swallowed". Spotify's catalog title carries
 // edition suffixes the model was told not to produce; strip them for display
@@ -199,27 +193,12 @@ const ResultsScreen = () => {
   };
 
   const handleContinue = async () => {
-    // Show the subscription paywall exactly once per device, at the peak of
-    // the first match. Every later tap goes to the Vault; the paywall stays
-    // reachable from the Dashboard banner, the credits pill and the
-    // out-of-credits gate, so this moment is a single pitch, not a toll
-    // booth. Subscribers skip it.
-    let showPaywall = false;
-    try {
-      const alreadyShown = await SecureStore.getItemAsync(RESULTS_PAYWALL_SHOWN_KEY);
-      if (!alreadyShown && !(await hasProEntitlement())) {
-        await SecureStore.setItemAsync(RESULTS_PAYWALL_SHOWN_KEY, 'true');
-        showPaywall = true;
-      }
-    } catch {
-      showPaywall = false;
-    }
-
-    if (showPaywall) {
-      trackEvent('paywall_cta_tapped', { source: 'results_explore' });
-      navigation.navigate('Payment');
-      return;
-    }
+    // No paywall here. Someone who has just had their first match still has
+    // credits left, so the pitch lands before they have any reason to buy and
+    // reads as a toll booth on the one screen that was supposed to be the
+    // payoff. The paywall stays reachable from the Dashboard banner, the
+    // credits pill and the out-of-credits wall, which is where the want
+    // actually appears.
 
     // The Vault holds the match they just made, guest or not. Discover would
     // be a 0-credit upload prompt, a dead end.

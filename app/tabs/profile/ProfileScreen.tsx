@@ -514,6 +514,13 @@ const ProfileScreen = () => {
                           />
                         )}
                       </View>
+                      {/* At zero the number alone is a dead end. Say when the
+                          next free match lands instead. */}
+                      {!loading && credits === 0 && (
+                        <Text style={styles.creditCountdown}>
+                          Next free match in {resetIn}
+                        </Text>
+                      )}
                     </>
                   )}
                 </View>
@@ -564,15 +571,9 @@ const ProfileScreen = () => {
             </TouchableOpacity>
           </>
         ) : (
-          /* Guest: prompt to create an account for a free credit */
-          <TouchableOpacity
-            style={styles.registerCtaButton}
-            onPress={handleRegister}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="account-plus" size={20} color="#FFFFFF" />
-            <Text style={styles.registerCtaButtonText}>Create account - get 1 free credit</Text>
-          </TouchableOpacity>
+          /* Guest: the account prompt lives under the taste card now, since
+             taste changes every match and an account only adds one credit. */
+          null
         )}
 
         {/* Spotify link, shown only to people who skipped it in onboarding.
@@ -581,24 +582,35 @@ const ProfileScreen = () => {
         {/* Taste picker entry: artists and genres chosen in-app. This is where
             taste comes from for the public now (see lib/featureFlags.ts). */}
         <TouchableOpacity
-          style={styles.spotifyConnectCard}
+          style={[styles.spotifyConnectCard, styles.tasteCard]}
           onPress={() => {
             trackEvent('taste_picker_opened', { source: 'profile', is_authenticated: !!user });
             (navigation as any).navigate('TastePicker', { returnTo: 'back' });
           }}
           activeOpacity={0.85}
         >
-          <View style={styles.spotifyIconWrap}>
+          <View style={[styles.spotifyIconWrap, styles.tasteIconWrap]}>
             <MaterialCommunityIcons name="music-note-plus" size={22} color="#f4258c" />
           </View>
           <View style={styles.spotifyTextWrap}>
-            <Text style={styles.spotifyConnectTitle}>Your music taste</Text>
+            <Text style={[styles.spotifyConnectTitle, styles.tasteTitle]}>Your music taste</Text>
             <Text style={styles.spotifyConnectSubtitle}>
               Pick the artists and genres you love so every match is tuned to you.
             </Text>
           </View>
-          <MaterialCommunityIcons name="chevron-right" size={22} color="rgba(255,255,255,0.5)" />
+          <MaterialCommunityIcons name="chevron-right" size={22} color="#f4258c" />
         </TouchableOpacity>
+
+        {!user && (
+          <TouchableOpacity
+            style={styles.registerQuietButton}
+            onPress={handleRegister}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="account-plus-outline" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.registerQuietText}>Create an account, get 1 free credit</Text>
+          </TouchableOpacity>
+        )}
 
         {spotifyResolved && !spotifyChecking && !spotifyConnected && isSpotifyConnectEnabled() && (
           <TouchableOpacity
@@ -628,26 +640,25 @@ const ProfileScreen = () => {
           </TouchableOpacity>
         )}
 
-        {/* Report a Bug - available to guests and signed-in users alike */}
-        <TouchableOpacity
-          style={styles.reportBugButton}
-          onPress={handleReportBug}
-          activeOpacity={0.8}
-        >
-          <MaterialCommunityIcons name="bug-outline" size={20} color="rgba(255,255,255,0.75)" />
-          <Text style={styles.reportBugButtonText}>Report a Bug</Text>
-        </TouchableOpacity>
-
-        {/* Subscription housekeeping + the legal links Apple requires
-            alongside auto-renewable subscriptions. */}
-        <TouchableOpacity
-          style={styles.reportBugButton}
-          onPress={handleRestorePurchases}
-          activeOpacity={0.8}
-        >
-          <MaterialCommunityIcons name="restore" size={20} color="rgba(255,255,255,0.75)" />
-          <Text style={styles.reportBugButtonText}>Restore Purchases</Text>
-        </TouchableOpacity>
+        {/* Housekeeping, side by side: neither is worth a full row. */}
+        <View style={styles.utilityRow}>
+          <TouchableOpacity
+            style={[styles.reportBugButton, styles.utilityButton]}
+            onPress={handleReportBug}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="bug-outline" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.utilityButtonText}>Report a Bug</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reportBugButton, styles.utilityButton]}
+            onPress={handleRestorePurchases}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="restore" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.utilityButtonText}>Restore</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.legalRow}>
           <TouchableOpacity
@@ -819,6 +830,25 @@ const styles = StyleSheet.create({
     lineHeight: 56, // Ensure proper line height
     minWidth: 60, // Minimum width for number display
   },
+  creditCountdown: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  utilityRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  utilityButton: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  utilityButtonText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   creditCardIcon: {
     width: 48,
     height: 48,
@@ -842,6 +872,32 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#FF3B30',
+  },
+  // The taste card outranks everything else here: it changes every match.
+  tasteCard: {
+    backgroundColor: 'rgba(244,37,140,0.12)',
+    borderColor: 'rgba(244,37,140,0.45)',
+    paddingVertical: Spacing.md + 2,
+  },
+  tasteIconWrap: { backgroundColor: 'rgba(244,37,140,0.20)' },
+  tasteTitle: { fontSize: 17 },
+  // The account prompt buys one credit. It should read as an aside.
+  registerQuietButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.sm + 4,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  registerQuietText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    fontWeight: '600',
   },
   registerCtaButton: {
     marginHorizontal: Spacing.md,

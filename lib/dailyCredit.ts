@@ -9,8 +9,10 @@ import { trackEvent } from './posthog';
  *
  * Guests burn their 3 starter credits in minutes and then hit a wall with
  * nothing to come back for. This hands out exactly one credit per local
- * calendar day, but only when the balance is already 0, so it never stacks
- * into a stockpile and never touches anyone who still has credits or Pro.
+ * calendar day and never more: the day is marked as spoken for whether or not
+ * anything was granted, so a balance that already covers today does not earn
+ * a second free match later the same day. Nothing ever stacks, and Pro is
+ * untouched (it has its own daily quota).
  *
  * The "last granted on" date is keyed by the device id from freeCredits.ts,
  * which lives in the Keychain and survives a reinstall on iOS - the same
@@ -70,8 +72,9 @@ let inFlight: Promise<DailyCreditResult> | null = null;
 /**
  * Grant today's free credit if it is due. Rules:
  *   - never for Pro (they have a daily quota already)
- *   - only when the current balance is exactly 0
- *   - only once per local calendar day per device
+ *   - at most once per local calendar day per device
+ *   - tops the balance up to 1; a balance that already has a match in hand
+ *     consumes the day without granting, so free credits never accumulate
  * Never throws. `nextAt` is always the next local midnight, whether or not
  * anything was granted.
  */
@@ -91,13 +94,19 @@ async function claimDailyCredit(isPro: boolean, isAuthenticated: boolean): Promi
   try {
     if (isPro) return { granted: false, nextAt };
 
-    const balance = isAuthenticated ? await getUserCredits() : await getLocalCredits();
-    if (balance !== 0) return { granted: false, nextAt };
-
     const key = await storageKey();
     const lastGrantedOn = await SecureStore.getItemAsync(key);
     const today = localDateKey();
     if (lastGrantedOn === today) return { granted: false, nextAt };
+
+    const balance = isAuthenticated ? await getUserCredits() : await getLocalCredits();
+    if (balance > 0) {
+      // Already holding a match, so today's is effectively in hand. Marking
+      // the day is the whole point of the rule: spending that credit an hour
+      // from now must not hand out another one today.
+      await SecureStore.setItemAsync(key, today).catch(() => {});
+      return { granted: false, nextAt };
+    }
 
     // Mark first, grant second (same order as the starter-credit grant) so a
     // crash between the two costs the user one credit rather than handing out
