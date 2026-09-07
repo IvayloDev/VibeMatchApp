@@ -154,7 +154,8 @@ const TastePickerScreen: React.FC = () => {
       setSelectedArtists(artists);
       if (artists.length > 0) setArtistsOpen(true);
       setSelectedGenres((profile.picked_genres ?? []).slice(0, MAX_TASTE_GENRES));
-      setSelectedEras((profile.picked_eras ?? []).slice(0, MAX_TASTE_ERAS));
+      // The dial picks one decade; older profiles may hold up to three.
+      setSelectedEras((profile.picked_eras ?? []).slice(0, 1));
     });
     return () => {
       cancelled = true;
@@ -591,15 +592,13 @@ const TastePickerScreen: React.FC = () => {
               <>
                 <OnboardingIntro
                   eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
-                  title="Which decades?"
-                  subtitle="Up to three. We pick songs from those years."
+                  title="Which decade?"
+                  subtitle="The one you listen to most. We pick songs from those years."
                 />
-                {limitHint === 'eras' && (
-                  <Text style={[styles.limitHint, styles.limitHintInline]}>
-                    That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
-                  </Text>
-                )}
-                <DecadeDial selected={selectedEras} onToggle={toggleEra} />
+                <DecadeDial
+                  value={selectedEras[0] ?? null}
+                  onChange={(decade) => setSelectedEras([decade])}
+                />
               </>
             ) : (
               <>
@@ -643,7 +642,7 @@ const TastePickerScreen: React.FC = () => {
 
           {stage === 'decades' ? (
             <OnboardingFooter
-              summary={eraSummary ?? 'Pick up to three, or continue'}
+              summary={eraSummary ?? 'Pick a decade, or continue'}
               ctaLabel="Continue"
               onPress={goToGenres}
               bottomInset={insets.bottom}

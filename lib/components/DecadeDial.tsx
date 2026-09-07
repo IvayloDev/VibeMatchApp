@@ -1,21 +1,21 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Pressable } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Animated, Pressable } from 'react-native';
 import { OB } from './OnboardingChrome';
 import { triggerHaptic } from '../utils/haptics';
 
 /**
- * Decades on an arc, oldest on the left, newest on the right. Drag along the
- * arc or tap a stop. Tapping a lit stop clears it; up to three stay lit. The
- * stop you touched last lifts a card that names the decade and what it
- * sounded like.
+ * A slider along an arc: one knob, seven stops, oldest decade on the left.
+ * Drag the knob or tap a stop; the decade under the knob is the pick. The
+ * card above the knob names the decade and what it sounded like.
  *
  * Geometry: a circle of radius R sits with its centre below the visible area,
- * so only the top of it shows. Stops are spread over +-SPREAD degrees from
- * straight up, so the arc spans the width without any label clipping.
+ * so only the top of it shows. Stops spread over +-SPREAD degrees from
+ * straight up. The knob's position is an animated angle, mapped to x and y
+ * piecewise between the stops, so it can spring from one stop to the next.
  */
 
 // Oldest first: a timeline reads left to right.
-const DECADES: readonly string[] = ['1960s', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'];
+export const DECADES: readonly string[] = ['1960s', '1970s', '1980s', '1990s', '2000s', '2010s', '2020s'];
 
 const FLAVOUR: Record<string, string> = {
   '1960s': 'Motown, psychedelia, the British invasion',
@@ -30,25 +30,28 @@ const FLAVOUR: Record<string, string> = {
 const SPREAD_DEG = 54;
 const STEP_DEG = (SPREAD_DEG * 2) / (DECADES.length - 1);
 const TRACK = 10;
-const HEIGHT = 290;
-const RING_TOP = 72; // room for the lifted card above the topmost stop
-const CARD_W = 140;
+const HEIGHT = 310;
+const RING_TOP = 112; // room for the card above the topmost stop
+const CARD_W = 150;
 const CARD_H = 74;
+const KNOB = 32;
 
 type Props = {
-  selected: string[];
-  onToggle: (decade: string) => void;
+  value: string | null;
+  onChange: (decade: string) => void;
 };
 
-export const DecadeDial: React.FC<Props> = ({ selected, onToggle }) => {
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const angleOf = (index: number) => -SPREAD_DEG + STEP_DEG * index;
+
+export const DecadeDial: React.FC<Props> = ({ value, onChange }) => {
   const [width, setWidth] = useState(0);
-  const [active, setActive] = useState<string | null>(() => selected[selected.length - 1] ?? null);
-  // The stop the finger is over mid-drag, so the card follows the drag.
-  const [hover, setHover] = useState<number | null>(null);
-  const hoverRef = useRef<number | null>(null);
-  // Touches arrive with pageX/pageY; the wrap's window origin turns them into
-  // dial coordinates. locationX/Y would be relative to whichever child was
-  // hit, which put taps on a stop at the wrong angle.
+  // The stop the knob is nearest to, for the card and the label emphasis.
+  const [nearest, setNearest] = useState<number | null>(value ? DECADES.indexOf(value) : null);
+  const [dragging, setDragging] = useState(false);
+  const angle = useRef(new Animated.Value(value ? angleOf(DECADES.indexOf(value)) : 0)).current;
+  const nearestRef = useRef<number | null>(nearest);
+
   const wrapRef = useRef<View>(null);
   const originRef = useRef({ x: 0, y: 0 });
   const measure = () => {
@@ -64,59 +67,92 @@ export const DecadeDial: React.FC<Props> = ({ selected, onToggle }) => {
   const stops = useMemo(
     () =>
       DECADES.map((decade, i) => {
-        const a = ((-SPREAD_DEG + STEP_DEG * i) * Math.PI) / 180;
-        return { decade, x: cx + R * Math.sin(a), y: cy - R * Math.cos(a) };
+        const a = (angleOf(i) * Math.PI) / 180;
+        return { decade, angle: angleOf(i), x: cx + R * Math.sin(a), y: cy - R * Math.cos(a) };
       }),
     [cx, cy, R]
   );
 
-  const indexAt = (x: number, y: number) => {
-    const deg = (Math.atan2(x - cx, cy - y) * 180) / Math.PI;
-    return Math.max(0, Math.min(DECADES.length - 1, Math.round((deg + SPREAD_DEG) / STEP_DEG)));
+  // Angle -> position, piecewise between stops. Close enough to the arc.
+  const angleRange = stops.map((s) => s.angle);
+  const knobX = angle.interpolate({ inputRange: angleRange, outputRange: stops.map((s) => s.x - KNOB / 2), extrapolate: 'clamp' });
+  const knobY = angle.interpolate({ inputRange: angleRange, outputRange: stops.map((s) => s.y - KNOB / 2), extrapolate: 'clamp' });
+  const cardX = angle.interpolate({
+    inputRange: angleRange,
+    outputRange: stops.map((s) => clamp(s.x - CARD_W / 2, 4, Math.max(4, width - CARD_W - 4))),
+    extrapolate: 'clamp',
+  });
+  const cardY = angle.interpolate({ inputRange: angleRange, outputRange: stops.map((s) => s.y - CARD_H - 24), extrapolate: 'clamp' });
+
+  // Keep the knob on the parent's value when it changes from outside (a
+  // restored profile arriving after mount).
+  useEffect(() => {
+    if (!value) return;
+    const i = DECADES.indexOf(value);
+    if (i < 0 || i === nearestRef.current) return;
+    nearestRef.current = i;
+    setNearest(i);
+    Animated.spring(angle, { toValue: angleOf(i), useNativeDriver: false, tension: 90, friction: 11 }).start();
+  }, [value, angle]);
+
+  const touchAngle = (pageX: number, pageY: number) => {
+    const x = pageX - originRef.current.x;
+    const y = pageY - originRef.current.y;
+    return clamp((Math.atan2(x - cx, cy - y) * 180) / Math.PI, -SPREAD_DEG, SPREAD_DEG);
+  };
+  const indexAt = (deg: number) => clamp(Math.round((deg + SPREAD_DEG) / STEP_DEG), 0, DECADES.length - 1);
+
+  const settle = (i: number) => {
+    Animated.spring(angle, { toValue: angleOf(i), useNativeDriver: false, tension: 90, friction: 11 }).start();
+    if (i !== nearestRef.current) {
+      nearestRef.current = i;
+      setNearest(i);
+    }
+    triggerHaptic('light');
+    onChange(DECADES[i]);
   };
 
   const pan = useMemo(
     () =>
       PanResponder.create({
-        // The dial owns every touch inside it, so a tap on a stop is one
-        // grant and one release, never a press plus a pan.
         onStartShouldSetPanResponderCapture: () => true,
         onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderGrant: (e) => {
           measure();
-          const i = indexAt(e.nativeEvent.pageX - originRef.current.x, e.nativeEvent.pageY - originRef.current.y);
-          hoverRef.current = i;
-          setHover(i);
+          setDragging(true);
+          const deg = touchAngle(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          const i = indexAt(deg);
+          if (i !== nearestRef.current) {
+            nearestRef.current = i;
+            setNearest(i);
+          }
+          // Jump the knob under the finger straight away; springing to the
+          // stop happens on release.
+          Animated.spring(angle, { toValue: deg, useNativeDriver: false, tension: 120, friction: 12 }).start();
         },
         onPanResponderMove: (e) => {
-          const i = indexAt(e.nativeEvent.pageX - originRef.current.x, e.nativeEvent.pageY - originRef.current.y);
-          if (i !== hoverRef.current) {
-            hoverRef.current = i;
-            setHover(i);
+          const deg = touchAngle(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          angle.setValue(deg);
+          const i = indexAt(deg);
+          if (i !== nearestRef.current) {
+            nearestRef.current = i;
+            setNearest(i);
             triggerHaptic('light');
           }
         },
-        onPanResponderRelease: () => {
-          const i = hoverRef.current;
-          hoverRef.current = null;
-          setHover(null);
-          if (i === null) return;
-          const decade = DECADES[i];
-          setActive(decade);
-          onToggle(decade);
+        onPanResponderRelease: (e) => {
+          setDragging(false);
+          settle(indexAt(touchAngle(e.nativeEvent.pageX, e.nativeEvent.pageY)));
         },
         onPanResponderTerminate: () => {
-          hoverRef.current = null;
-          setHover(null);
+          setDragging(false);
+          if (nearestRef.current !== null) settle(nearestRef.current);
         },
       }),
-    // indexAt closes over the layout; rebuild when it changes.
-    [cx, cy, R, onToggle]
+    [cx, cy, R, onChange]
   );
 
-  const shown = hover !== null ? DECADES[hover] : active;
-  const shownStop = stops.find((s) => s.decade === shown);
-  const cardLeft = shownStop ? Math.max(4, Math.min(width - CARD_W - 4, shownStop.x - CARD_W / 2)) : 0;
+  const shown = nearest !== null ? DECADES[nearest] : null;
 
   return (
     <View
@@ -133,40 +169,25 @@ export const DecadeDial: React.FC<Props> = ({ selected, onToggle }) => {
         <>
           <View
             pointerEvents="none"
-            style={[
-              styles.ring,
-              { width: R * 2, height: R * 2, borderRadius: R, left: cx - R, top: RING_TOP },
-            ]}
+            style={[styles.ring, { width: R * 2, height: R * 2, borderRadius: R, left: cx - R, top: RING_TOP }]}
           />
 
           {stops.map((s, i) => {
-            const on = selected.includes(s.decade);
-            const isShown = s.decade === shown;
-            const size = isShown ? 28 : 18;
+            const isNearest = i === nearest;
             return (
               <React.Fragment key={s.decade}>
-                {isShown ? (
-                  <View pointerEvents="none" style={[styles.halo, { left: s.x - 22, top: s.y - 22 }]} />
-                ) : null}
                 <Pressable
                   // Touch is handled by the dial; this stays a Pressable so
                   // VoiceOver exposes each stop as a button.
-                  onPress={() => {
-                    setActive(s.decade);
-                    onToggle(s.decade);
-                  }}
-                  style={[
-                    styles.stop,
-                    on && styles.stopOn,
-                    { width: size, height: size, borderRadius: size / 2, left: s.x - size / 2, top: s.y - size / 2 },
-                  ]}
+                  onPress={() => settle(i)}
+                  style={[styles.stop, { left: s.x - 7, top: s.y - 7 }]}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
+                  accessibilityState={{ selected: value === s.decade }}
                   accessibilityLabel={`${s.decade}, decade`}
                 />
                 <Text
                   pointerEvents="none"
-                  style={[styles.label, on && styles.labelOn, { left: s.x - 30, top: s.y + 16 }]}
+                  style={[styles.label, isNearest && styles.labelOn, { left: s.x - 30, top: s.y + 16 }]}
                 >
                   {s.decade}
                 </Text>
@@ -174,14 +195,22 @@ export const DecadeDial: React.FC<Props> = ({ selected, onToggle }) => {
             );
           })}
 
-          {shownStop ? (
-            <View pointerEvents="none" style={[styles.card, { left: cardLeft, top: shownStop.y - CARD_H - 22 }]}>
-              <Text style={styles.cardDecade}>{shownStop.decade}</Text>
-              <Text style={styles.cardFlavour} numberOfLines={2}>
-                {FLAVOUR[shownStop.decade]}
-              </Text>
-              <View style={[styles.cardTail, { left: shownStop.x - cardLeft - 6 }]} />
-            </View>
+          {shown ? (
+            <>
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.knob, dragging && styles.knobDragging, { transform: [{ translateX: knobX }, { translateY: knobY }] }]}
+              />
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.card, { transform: [{ translateX: cardX }, { translateY: cardY }] }]}
+              >
+                <Text style={styles.cardDecade}>{shown}</Text>
+                <Text style={styles.cardFlavour} numberOfLines={2}>
+                  {FLAVOUR[shown]}
+                </Text>
+              </Animated.View>
+            </>
           ) : (
             <Text pointerEvents="none" style={[styles.hint, { top: RING_TOP - 46 }]}>
               Drag along the arc, or tap a decade
@@ -203,17 +232,12 @@ const styles = StyleSheet.create({
   },
   stop: {
     position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
     backgroundColor: OB.bg,
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.4)',
-  },
-  stopOn: { backgroundColor: OB.primary, borderColor: OB.text },
-  halo: {
-    position: 'absolute',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(244,37,140,0.22)',
   },
   label: {
     position: 'absolute',
@@ -224,8 +248,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   labelOn: { color: OB.text },
+  knob: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: KNOB,
+    height: KNOB,
+    borderRadius: KNOB / 2,
+    backgroundColor: OB.primary,
+    borderWidth: 3,
+    borderColor: OB.text,
+    shadowColor: OB.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  knobDragging: { transform: [{ scale: 1.15 }] },
   card: {
     position: 'absolute',
+    left: 0,
+    top: 0,
     width: CARD_W,
     minHeight: CARD_H,
     borderRadius: 14,
@@ -238,17 +281,6 @@ const styles = StyleSheet.create({
   },
   cardDecade: { color: OB.text, fontSize: 22, fontWeight: '800', letterSpacing: -0.4 },
   cardFlavour: { color: OB.textDim, fontSize: 11, lineHeight: 14, textAlign: 'center', marginTop: 2 },
-  cardTail: {
-    position: 'absolute',
-    bottom: -7,
-    width: 12,
-    height: 12,
-    backgroundColor: OB.surfaceRaised,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: OB.border,
-    transform: [{ rotate: '45deg' }],
-  },
   hint: {
     position: 'absolute',
     left: 0,
