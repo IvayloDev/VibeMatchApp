@@ -22,7 +22,10 @@ import { describeScanFailure, noMatchFailure, networkScanFailure } from '../../.
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
-import { addGuestHistoryItem } from '../../../lib/guestHistory';
+import { addGuestHistoryItem, loadGuestHistory } from '../../../lib/guestHistory';
+
+// How many past guest matches feed the avoid list (6 songs each).
+const GUEST_AVOID_ITEMS = 12;
 
 const { width, height } = Dimensions.get('window');
 
@@ -474,10 +477,28 @@ const AnalyzingScreen = () => {
         // Send the storage path, not a signed URL. The function reads the object
         // with the service role, so the client needs no read access to storage -
         // which is what lets guests work with an INSERT-only anon role.
+        // Registered users get their past matches excluded server-side from
+        // the history table. Guests have no row there, so their history goes
+        // up with the request; without it a guest sees the same two songs for
+        // every sunset.
+        let avoidTracks: string[] = [];
+        let avoidArtists: string[] = [];
+        try {
+          const recent = (await loadGuestHistory())
+            .slice(0, GUEST_AVOID_ITEMS)
+            .flatMap((item) => (Array.isArray(item.songs) ? item.songs : []));
+          avoidTracks = Array.from(new Set(recent.map((s) => s?.title).filter((t): t is string => !!t)));
+          avoidArtists = Array.from(new Set(recent.map((s) => s?.artist).filter((a): a is string => !!a)));
+        } catch (err) {
+          console.warn('Could not load guest history for the avoid list:', err);
+        }
+
         const payload = {
           imagePath: filePath,
           vibe: selectedVibe,
           tasteProfile: guestTasteProfile ?? undefined,
+          avoidTracks: avoidTracks.length ? avoidTracks : undefined,
+          avoidArtists: avoidArtists.length ? avoidArtists : undefined,
         };
         
         let accessToken: string | undefined;

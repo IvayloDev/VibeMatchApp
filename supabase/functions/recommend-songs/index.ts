@@ -503,7 +503,12 @@ type TasteProfile = {
   recently_played?: Array<{ name: string; artist: string }>;
   saved_tracks?: Array<{ name: string; artist: string }>;
   top_genres?: string[];
+  // 'manual' = picked by hand in the app's taste picker. Absent or 'spotify' =
+  // derived from Spotify listening data, where genres are auto-tagged noise.
+  source?: string;
 };
+
+const isManualTaste = (profile: TasteProfile | null | undefined) => profile?.source === "manual";
 
 /**
  * Format a compact taste-profile block for the LLM prompt.
@@ -536,14 +541,37 @@ function buildTasteBlock(profile: TasteProfile | null): string {
   if (tracks.length) parts.push(`Most-listened tracks: ${tracks.join("; ")}`);
   if (recent.length) parts.push(`Currently in rotation: ${recent.join("; ")}`);
   if (eras.length) parts.push(`Decades they chose (deliberate, high-intent): ${eras.join(", ")}`);
-  if (genres.length) parts.push(`Spotify-tagged genres (noisy hint — derived from listening, can be skewed by short binges): ${genres.join(", ")}`);
+  if (genres.length) {
+    // A genre typed into the picker is a choice; a genre Spotify auto-tagged
+    // from one week of listening is a hint. Label them so the model weights
+    // them differently.
+    parts.push(
+      isManualTaste(profile)
+        ? `Genres they chose (deliberate, high-intent): ${genres.join(", ")}`
+        : `Spotify-tagged genres (noisy hint - derived from listening, can be skewed by short binges): ${genres.join(", ")}`
+    );
+  }
 
   if (parts.length === 0) return "";
   return parts.join("\n");
 }
 
-function buildTasteGuidance(hasTaste: boolean): string {
+function buildTasteGuidance(hasTaste: boolean, manual: boolean = false): string {
   if (!hasTaste) return "";
+  if (manual) {
+    // Picker profiles are short and every line in them was typed on purpose.
+    // Without this branch the model reads "rock, 1990s" through the Spotify
+    // rules below, treats the genre as noise, and answers the vibe alone: the
+    // same two songs for every sunset regardless of what the user chose.
+    return `\n\nUSER MUSIC TASTE - READ THIS CAREFULLY:
+- The user typed this profile by hand in the app. Every decade, genre and artist listed is a deliberate choice, not a listening statistic. There is no noise in it.
+- CHOSEN DECADES AND GENRES ARE A HARD PREFERENCE. Position 1 MUST be a track released in one of the chosen decades AND belonging to one of the chosen genres (or a direct subgenre of it). At least 4 of the 6 picks must satisfy both. The remaining picks may stretch one of the two, never both.
+- "Released in the decade" means the original release year. A 2019 record that sounds like 1994 is not a 1990s pick; put those in the stretch slots only.
+- Chosen artists are anchors: pick contemporaries, label-mates, influences or proteges of those artists, never the artists themselves.
+- The image mood and the chosen vibe decide WHICH tracks from that space fit; they never override the decade or the genre. If the image is a sunset and the user chose 1990s rock, the answer is a 1990s rock song that feels like a sunset, not a sunset song from another era.
+- DISCOVERY IS THE PRODUCT: never pick an artist listed in the profile. Surface songs the user probably has not heard but will recognise as their kind of thing.
+- A pick is GREAT when a friend who knows the user's taste would say "of course, this is so them" while also "wait, how did you find this?"`;
+  }
   return `\n\nUSER MUSIC TASTE — READ THIS CAREFULLY:
 - The user's Spotify listening profile is provided below. Treat it as their SONIC DNA, not a genre filter.
 - "Sonic DNA" = the production style, instrumentation, vocal qualities, mood, era, rhythmic feel, and lyrical sensibility that runs through their saved tracks and top artists.
@@ -563,13 +591,14 @@ function buildTasteGuidance(hasTaste: boolean): string {
 function buildSystemPrompt(
   avoidTracks: string[],
   avoidArtists: string[],
-  hasTaste: boolean = false
+  hasTaste: boolean = false,
+  manualTaste: boolean = false
 ): string {
   const avoidSection = avoidTracks.length > 0 || avoidArtists.length > 0
     ? `\n\nAVOID THESE (do not recommend):\n${avoidTracks.length > 0 ? `- Tracks: ${avoidTracks.join(", ")}\n` : ""}${avoidArtists.length > 0 ? `- Artists: ${avoidArtists.join(", ")}\n` : ""}`
     : "";
 
-  const tasteGuidance = buildTasteGuidance(hasTaste);
+  const tasteGuidance = buildTasteGuidance(hasTaste, manualTaste);
 
   return `You are VibeMatch, a personalized music curator. You combine the visual/emotional read of an image with the user's overall sonic taste to surface songs they'll love — including ones they haven't discovered yet.${tasteGuidance}
 
@@ -830,10 +859,14 @@ serve(async (req) => {
   // 5) Build OpenAI prompt
   const tasteBlock = buildTasteBlock(tasteProfile);
   const hasTaste = !!tasteBlock;
-  const systemPrompt = buildSystemPrompt(avoidTracks, avoidArtists, hasTaste);
+  const manualTaste = hasTaste && isManualTaste(tasteProfile);
+  const systemPrompt = buildSystemPrompt(avoidTracks, avoidArtists, hasTaste, manualTaste);
   let userText = buildUserPrompt({ vibe });
   if (hasTaste) {
-    userText = `USER'S SPOTIFY LISTENING PROFILE (personalize recommendations to match):\n${tasteBlock}\n\n${userText}`;
+    const header = manualTaste
+      ? "USER'S CHOSEN TASTE (typed by hand in the app; decades and genres are hard requirements):"
+      : "USER'S SPOTIFY LISTENING PROFILE (personalize recommendations to match):";
+    userText = `${header}\n${tasteBlock}\n\n${userText}`;
   }
 
   console.log("📝 System prompt length:", systemPrompt.length);
