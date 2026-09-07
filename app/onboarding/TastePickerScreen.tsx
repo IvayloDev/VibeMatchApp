@@ -592,13 +592,9 @@ const TastePickerScreen: React.FC = () => {
                 <OnboardingIntro
                   eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
                   title="Which decades?"
-                  subtitle="Tap one, then drag the ends to cover up to three."
+                  subtitle="Up to three. We pick songs from those years."
                 />
-                <DecadeDial
-                  value={selectedEras}
-                  maxSpan={MAX_TASTE_ERAS}
-                  onChange={setSelectedEras}
-                />
+                <DecadeDial value={selectedEras} max={MAX_TASTE_ERAS} onChange={setSelectedEras} />
               </>
             ) : (
               <>
@@ -642,7 +638,7 @@ const TastePickerScreen: React.FC = () => {
 
           {stage === 'decades' ? (
             <OnboardingFooter
-              summary={eraSummary ?? 'Pick your decades, or continue'}
+              summary={eraSummary ?? 'Pick up to three, or continue'}
               ctaLabel="Continue"
               onPress={goToGenres}
               bottomInset={insets.bottom}

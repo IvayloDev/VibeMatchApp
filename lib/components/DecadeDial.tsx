@@ -1,18 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Animated, Pressable } from 'react-native';
+import { View, Text, StyleSheet, PanResponder, LayoutChangeEvent, Pressable } from 'react-native';
 import { OB } from './OnboardingChrome';
 import { triggerHaptic } from '../utils/haptics';
 
 /**
- * A range slider along an arc: two knobs, seven stops, oldest decade on the
- * left. Drag either knob or tap a stop; every decade between the knobs is
- * picked, up to MAX_SPAN of them. With both knobs on one stop it is a single
- * decade. The card above the range names it and what it sounded like.
+ * Decades on an arc, oldest on the left. Every stop is a toggle: tap to pick
+ * or unpick it, or drag across several to pick them in one sweep. Up to
+ * `max` at a time. A fixed card above the arc lists the picks and the
+ * flavour of the one touched last, so nothing on the arc ever points at a
+ * decade that is not picked.
  *
  * Geometry: a circle of radius R sits with its centre below the visible area,
  * so only the top of it shows. Stops spread over +-SPREAD degrees from
- * straight up. Each knob's position is an animated angle mapped to x and y
- * piecewise between the stops, so it can spring from one stop to the next.
+ * straight up.
  */
 
 // Oldest first: a timeline reads left to right.
@@ -31,45 +31,35 @@ const FLAVOUR: Record<string, string> = {
 const SPREAD_DEG = 54;
 const STEP_DEG = (SPREAD_DEG * 2) / (DECADES.length - 1);
 const TRACK = 10;
-const HEIGHT = 310;
-const RING_TOP = 112; // room for the card above the topmost stop
-const CARD_W = 176;
-const CARD_H = 74;
-const KNOB = 30;
+const CARD_H = 76;
+const RING_TOP = CARD_H + 26; // the card sits above the topmost stop
+const HEIGHT = RING_TOP + 200;
+const STOP = 18;
+const STOP_ON = 30;
+const HINT_MS = 2200;
 
 type Props = {
-  /** Picked decades, contiguous. Empty means nothing picked yet. */
   value: readonly string[];
-  /** How many decades the range may cover. */
-  maxSpan: number;
+  max: number;
   onChange: (decades: string[]) => void;
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const angleOf = (index: number) => -SPREAD_DEG + STEP_DEG * index;
-const springTo = (v: Animated.Value, to: number) =>
-  Animated.spring(v, { toValue: to, useNativeDriver: false, tension: 90, friction: 11 }).start();
 
-// The picked decades as a [first, last] index pair, or null when empty.
-const boundsOf = (value: readonly string[]): [number, number] | null => {
-  const idx = value.map((d) => DECADES.indexOf(d)).filter((i) => i >= 0);
-  if (idx.length === 0) return null;
-  return [Math.min(...idx), Math.max(...idx)];
-};
-
-export const DecadeDial: React.FC<Props> = ({ value, maxSpan, onChange }) => {
+export const DecadeDial: React.FC<Props> = ({ value, max, onChange }) => {
   const [width, setWidth] = useState(0);
-  const initial = boundsOf(value);
-  // Stop indices the two knobs sit on (or are heading to). Null = untouched.
-  const [range, setRange] = useState<[number, number] | null>(initial);
-  const rangeRef = useRef<[number, number] | null>(initial);
-  // Which knob the finger holds during a drag.
-  const [held, setHeld] = useState<0 | 1 | null>(null);
-  const heldRef = useRef<0 | 1 | null>(null);
-  const angles = useRef([
-    new Animated.Value(initial ? angleOf(initial[0]) : 0),
-    new Animated.Value(initial ? angleOf(initial[1]) : 0),
-  ]).current;
+  // The decade touched last, for the flavour line.
+  const [last, setLast] = useState<string | null>(value[value.length - 1] ?? null);
+  // Brief "that's three" message when a fourth pick is attempted.
+  const [full, setFull] = useState(false);
+  const fullTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const valueRef = useRef<readonly string[]>(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+  useEffect(() => () => { if (fullTimer.current) clearTimeout(fullTimer.current); }, []);
 
   const wrapRef = useRef<View>(null);
   const originRef = useRef({ x: 0, y: 0 });
@@ -87,61 +77,59 @@ export const DecadeDial: React.FC<Props> = ({ value, maxSpan, onChange }) => {
     () =>
       DECADES.map((decade, i) => {
         const a = (angleOf(i) * Math.PI) / 180;
-        return { decade, angle: angleOf(i), x: cx + R * Math.sin(a), y: cy - R * Math.cos(a) };
+        return { decade, x: cx + R * Math.sin(a), y: cy - R * Math.cos(a) };
       }),
     [cx, cy, R]
   );
 
-  // Angle -> position, piecewise between stops. Close enough to the arc.
-  const angleRange = stops.map((s) => s.angle);
-  const knobX = (a: Animated.Value) =>
-    a.interpolate({ inputRange: angleRange, outputRange: stops.map((s) => s.x - KNOB / 2), extrapolate: 'clamp' });
-  const knobY = (a: Animated.Value) =>
-    a.interpolate({ inputRange: angleRange, outputRange: stops.map((s) => s.y - KNOB / 2), extrapolate: 'clamp' });
-  // The card hangs over the middle of the range.
-  const mid = Animated.divide(Animated.add(angles[0], angles[1]), 2);
-  const cardX = mid.interpolate({
-    inputRange: angleRange,
-    outputRange: stops.map((s) => clamp(s.x - CARD_W / 2, 4, Math.max(4, width - CARD_W - 4))),
-    extrapolate: 'clamp',
-  });
-  const cardY = mid.interpolate({
-    inputRange: angleRange,
-    outputRange: stops.map((s) => s.y - CARD_H - 26),
-    extrapolate: 'clamp',
-  });
-
-  const commit = (next: [number, number]) => {
-    rangeRef.current = next;
-    setRange(next);
-    onChange(DECADES.slice(next[0], next[1] + 1) as string[]);
-  };
-
-  // Follow the parent's value when it changes from outside (a restored
-  // profile arriving after mount).
-  useEffect(() => {
-    const b = boundsOf(value);
-    if (!b) return;
-    const cur = rangeRef.current;
-    if (cur && cur[0] === b[0] && cur[1] === b[1]) return;
-    rangeRef.current = b;
-    setRange(b);
-    springTo(angles[0], angleOf(b[0]));
-    springTo(angles[1], angleOf(b[1]));
-  }, [value, angles]);
-
-  const touchAngle = (pageX: number, pageY: number) => {
+  const indexAt = (pageX: number, pageY: number) => {
     const x = pageX - originRef.current.x;
     const y = pageY - originRef.current.y;
-    return clamp((Math.atan2(x - cx, cy - y) * 180) / Math.PI, -SPREAD_DEG, SPREAD_DEG);
+    const deg = (Math.atan2(x - cx, cy - y) * 180) / Math.PI;
+    return clamp(Math.round((deg + SPREAD_DEG) / STEP_DEG), 0, DECADES.length - 1);
   };
-  const indexAt = (deg: number) => clamp(Math.round((deg + SPREAD_DEG) / STEP_DEG), 0, DECADES.length - 1);
 
-  // Where a knob may go: never past its partner, never wider than maxSpan.
-  const limitFor = (knob: 0 | 1, cur: [number, number]): [number, number] =>
-    knob === 0
-      ? [Math.max(0, cur[1] - (maxSpan - 1)), cur[1]]
-      : [cur[0], Math.min(DECADES.length - 1, cur[0] + (maxSpan - 1))];
+  const flashFull = () => {
+    triggerHaptic('warning');
+    setFull(true);
+    if (fullTimer.current) clearTimeout(fullTimer.current);
+    fullTimer.current = setTimeout(() => setFull(false), HINT_MS);
+  };
+
+  // Pick a decade (never unpicks): used while sweeping.
+  const pick = (i: number) => {
+    const decade = DECADES[i];
+    const cur = valueRef.current;
+    if (cur.includes(decade)) return;
+    if (cur.length >= max) {
+      flashFull();
+      return;
+    }
+    const next = [...cur, decade];
+    valueRef.current = next;
+    setLast(decade);
+    triggerHaptic('light');
+    onChange(next);
+  };
+
+  const toggle = (i: number) => {
+    const decade = DECADES[i];
+    const cur = valueRef.current;
+    if (cur.includes(decade)) {
+      const next = cur.filter((d) => d !== decade);
+      valueRef.current = next;
+      setLast(next[next.length - 1] ?? null);
+      triggerHaptic('light');
+      onChange(next);
+      return;
+    }
+    pick(i);
+  };
+
+  // A touch is a tap until the finger crosses into another stop; from then
+  // on it is a sweep that picks every stop it passes.
+  const startRef = useRef<number | null>(null);
+  const sweepRef = useRef(false);
 
   const pan = useMemo(
     () =>
@@ -150,83 +138,40 @@ export const DecadeDial: React.FC<Props> = ({ value, maxSpan, onChange }) => {
         onMoveShouldSetPanResponderCapture: () => true,
         onPanResponderGrant: (e) => {
           measure();
-          const deg = touchAngle(e.nativeEvent.pageX, e.nativeEvent.pageY);
-          const i = indexAt(deg);
-          const cur = rangeRef.current;
-          if (!cur) {
-            // First touch: both knobs land on this stop.
-            angles[0].setValue(deg);
-            angles[1].setValue(deg);
-            heldRef.current = 1;
-            setHeld(1);
-            commit([i, i]);
-            triggerHaptic('light');
-            return;
-          }
-          // Grab the knob nearer to the finger; ties go to the one that lets
-          // the range grow in the direction of the touch.
-          const dLo = Math.abs(deg - angleOf(cur[0]));
-          const dHi = Math.abs(deg - angleOf(cur[1]));
-          const knob: 0 | 1 = dLo < dHi ? 0 : dLo > dHi ? 1 : deg < angleOf(cur[0]) ? 0 : 1;
-          heldRef.current = knob;
-          setHeld(knob);
-          const [lo, hi] = limitFor(knob, cur);
-          Animated.spring(angles[knob], {
-            toValue: clamp(deg, angleOf(lo), angleOf(hi)),
-            useNativeDriver: false,
-            tension: 120,
-            friction: 12,
-          }).start();
-          const ni = clamp(i, lo, hi);
-          if (ni !== cur[knob]) {
-            const next: [number, number] = knob === 0 ? [ni, cur[1]] : [cur[0], ni];
-            rangeRef.current = next;
-            setRange(next);
-          }
+          startRef.current = indexAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          sweepRef.current = false;
         },
         onPanResponderMove: (e) => {
-          const knob = heldRef.current;
-          const cur = rangeRef.current;
-          if (knob === null || !cur) return;
-          const [lo, hi] = limitFor(knob, cur);
-          const deg = clamp(touchAngle(e.nativeEvent.pageX, e.nativeEvent.pageY), angleOf(lo), angleOf(hi));
-          angles[knob].setValue(deg);
-          const ni = indexAt(deg);
-          if (ni !== cur[knob]) {
-            const next: [number, number] = knob === 0 ? [ni, cur[1]] : [cur[0], ni];
-            rangeRef.current = next;
-            setRange(next);
-            triggerHaptic('light');
+          const i = indexAt(e.nativeEvent.pageX, e.nativeEvent.pageY);
+          if (startRef.current === null) return;
+          if (!sweepRef.current) {
+            if (i === startRef.current) return;
+            // The sweep starts at the stop the finger landed on.
+            sweepRef.current = true;
+            pick(startRef.current);
           }
+          pick(i);
         },
         onPanResponderRelease: () => {
-          const knob = heldRef.current;
-          const cur = rangeRef.current;
-          heldRef.current = null;
-          setHeld(null);
-          if (knob === null || !cur) return;
-          springTo(angles[knob], angleOf(cur[knob]));
-          triggerHaptic('light');
-          commit(cur);
+          if (startRef.current !== null && !sweepRef.current) toggle(startRef.current);
+          startRef.current = null;
+          sweepRef.current = false;
         },
         onPanResponderTerminate: () => {
-          const knob = heldRef.current;
-          const cur = rangeRef.current;
-          heldRef.current = null;
-          setHeld(null);
-          if (knob !== null && cur) springTo(angles[knob], angleOf(cur[knob]));
+          startRef.current = null;
+          sweepRef.current = false;
         },
       }),
-    [cx, cy, R, onChange, maxSpan]
+    [cx, cy, R, max, onChange]
   );
 
-  const single = range && range[0] === range[1];
-  const title = !range ? null : single ? DECADES[range[0]] : `${DECADES[range[0]]} to ${DECADES[range[1]]}`;
-  const caption = !range
-    ? null
-    : single
-      ? FLAVOUR[DECADES[range[0]]]
-      : `${range[1] - range[0] + 1} decades. Drag a knob to change the span.`;
+  const sorted = DECADES.filter((d) => value.includes(d));
+  const title = sorted.length > 0 ? sorted.join(' · ') : 'Tap up to three decades';
+  const caption = full
+    ? `That's ${max}. Tap one to remove it.`
+    : sorted.length === 0
+      ? 'Or drag across a few.'
+      : FLAVOUR[last && value.includes(last) ? last : sorted[sorted.length - 1]];
 
   return (
     <View
@@ -241,77 +186,47 @@ export const DecadeDial: React.FC<Props> = ({ value, maxSpan, onChange }) => {
     >
       {width > 0 ? (
         <>
+          <View style={[styles.card, sorted.length > 0 && styles.cardOn]} pointerEvents="none">
+            <Text style={[styles.cardTitle, sorted.length === 0 && styles.cardTitleEmpty]} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={[styles.cardCaption, full && styles.cardCaptionFull]} numberOfLines={1}>
+              {caption}
+            </Text>
+          </View>
+
           <View
             pointerEvents="none"
             style={[styles.ring, { width: R * 2, height: R * 2, borderRadius: R, left: cx - R, top: RING_TOP }]}
           />
 
           {stops.map((s, i) => {
-            const inRange = !!range && i >= range[0] && i <= range[1];
+            const on = value.includes(s.decade);
+            const size = on ? STOP_ON : STOP;
             return (
               <React.Fragment key={s.decade}>
                 <Pressable
                   // Touch is handled by the dial; this stays a Pressable so
-                  // VoiceOver exposes each stop as a button.
-                  onPress={() => {
-                    const cur = rangeRef.current;
-                    if (!cur) {
-                      springTo(angles[0], angleOf(i));
-                      springTo(angles[1], angleOf(i));
-                      commit([i, i]);
-                      return;
-                    }
-                    const knob: 0 | 1 = Math.abs(i - cur[0]) <= Math.abs(i - cur[1]) ? 0 : 1;
-                    const [lo, hi] = limitFor(knob, cur);
-                    const ni = clamp(i, lo, hi);
-                    springTo(angles[knob], angleOf(ni));
-                    commit(knob === 0 ? [ni, cur[1]] : [cur[0], ni]);
-                  }}
-                  style={[styles.stop, inRange && styles.stopOn, { left: s.x - 8, top: s.y - 8 }]}
+                  // VoiceOver exposes each stop as a toggle.
+                  onPress={() => toggle(i)}
+                  style={[
+                    styles.stop,
+                    on && styles.stopOn,
+                    { width: size, height: size, borderRadius: size / 2, left: s.x - size / 2, top: s.y - size / 2 },
+                  ]}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: inRange }}
+                  accessibilityState={{ selected: on }}
                   accessibilityLabel={`${s.decade}, decade`}
                 />
                 <Text
                   pointerEvents="none"
-                  style={[styles.label, inRange && styles.labelOn, { left: s.x - 30, top: s.y + 16 }]}
+                  style={[styles.label, on && styles.labelOn, { left: s.x - 30, top: s.y + 18 }]}
                 >
                   {s.decade}
                 </Text>
               </React.Fragment>
             );
           })}
-
-          {range ? (
-            <>
-              {([0, 1] as const).map((k) => (
-                <Animated.View
-                  key={k}
-                  pointerEvents="none"
-                  style={[
-                    styles.knob,
-                    held === k && styles.knobHeld,
-                    { transform: [{ translateX: knobX(angles[k]) }, { translateY: knobY(angles[k]) }] },
-                  ]}
-                />
-              ))}
-              <Animated.View
-                pointerEvents="none"
-                style={[styles.card, { transform: [{ translateX: cardX }, { translateY: cardY }] }]}
-              >
-                <Text style={styles.cardTitle} numberOfLines={1}>
-                  {title}
-                </Text>
-                <Text style={styles.cardCaption} numberOfLines={2}>
-                  {caption}
-                </Text>
-              </Animated.View>
-            </>
-          ) : (
-            <Text pointerEvents="none" style={[styles.hint, { top: RING_TOP - 46 }]}>
-              Tap a decade, then drag the ends to widen
-            </Text>
-          )}
         </>
       ) : null}
     </View>
@@ -328,30 +243,11 @@ const styles = StyleSheet.create({
   },
   stop: {
     position: 'absolute',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
     backgroundColor: OB.bg,
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.4)',
   },
-  stopOn: { backgroundColor: OB.primary, borderColor: OB.primary },
-  label: {
-    position: 'absolute',
-    width: 60,
-    textAlign: 'center',
-    color: OB.textFaint,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  labelOn: { color: OB.text },
-  knob: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    width: KNOB,
-    height: KNOB,
-    borderRadius: KNOB / 2,
+  stopOn: {
     backgroundColor: OB.primary,
     borderWidth: 3,
     borderColor: OB.text,
@@ -361,29 +257,33 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 6,
   },
-  knobHeld: { transform: [{ scale: 1.15 }] },
-  card: {
+  label: {
     position: 'absolute',
-    left: 0,
-    top: 0,
-    width: CARD_W,
-    minHeight: CARD_H,
-    borderRadius: 14,
-    backgroundColor: OB.surfaceRaised,
-    borderWidth: 1,
-    borderColor: OB.border,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-  },
-  cardTitle: { color: OB.text, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
-  cardCaption: { color: OB.textDim, fontSize: 11, lineHeight: 14, textAlign: 'center', marginTop: 2 },
-  hint: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
+    width: 60,
     textAlign: 'center',
     color: OB.textFaint,
-    fontSize: OB.caption,
+    fontSize: 12,
+    fontWeight: '600',
   },
+  labelOn: { color: OB.text },
+  card: {
+    position: 'absolute',
+    left: OB.margin,
+    right: OB.margin,
+    top: 0,
+    minHeight: CARD_H,
+    borderRadius: 14,
+    backgroundColor: OB.surface,
+    borderWidth: 1,
+    borderColor: OB.border,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardOn: { backgroundColor: OB.surfaceRaised },
+  cardTitle: { color: OB.text, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
+  cardTitleEmpty: { color: OB.textDim, fontSize: 17, fontWeight: '700' },
+  cardCaption: { color: OB.textDim, fontSize: 12, lineHeight: 16, textAlign: 'center', marginTop: 4 },
+  cardCaptionFull: { color: OB.primary, fontWeight: '600' },
 });
