@@ -370,14 +370,12 @@ const TastePickerScreen: React.FC = () => {
 
   // Genres of the picked artists come first: they are the most likely picks.
   // A chosen genre stays visible even after its artist is removed.
-  const artistGenres = useMemo(
-    () => uniqueStrings(selectedArtists.flatMap((a) => a.genres)),
-    [selectedArtists]
-  );
   const moreGenres = useMemo(() => {
-    const orphaned = selectedGenres.filter((g) => !artistGenres.includes(g) && !GENRE_OPTIONS.includes(g));
-    return [...orphaned, ...GENRE_OPTIONS.filter((g) => !artistGenres.includes(g))];
-  }, [artistGenres, selectedGenres]);
+    // Anything already picked that is not in the curated list stays visible,
+    // so a genre restored from an older profile can still be unpicked.
+    const orphaned = selectedGenres.filter((g) => !GENRE_OPTIONS.includes(g));
+    return [...orphaned, ...GENRE_OPTIONS];
+  }, [selectedGenres]);
 
   const toggleEra = (era: string) => {
     if (selectedEras.includes(era)) {
@@ -511,9 +509,15 @@ const TastePickerScreen: React.FC = () => {
 
   // Which genres are on screen: the featured eleven plus anything already
   // picked or suggested by a chosen artist, or everything once More is open.
+  // Only the curated list is offered. Spotify's own tags for the picked
+  // artists used to be spliced in here, which put raw machine vocabulary on
+  // the screen next to hand-written names: "Aor" (album-oriented rock) and
+  // "Rockabilly" appeared because an artist carried those tags. They still
+  // reach the matcher through the saved profile, they just are not something
+  // to ask the user to choose from.
   const visibleGenres = allGenresOpen
-    ? uniqueStrings([...artistGenres, ...moreGenres])
-    : uniqueStrings([...selectedGenres, ...artistGenres.slice(0, 3), ...FEATURED_GENRES]);
+    ? uniqueStrings(moreGenres)
+    : uniqueStrings([...selectedGenres, ...FEATURED_GENRES]);
   const hiddenGenreCount = GENRE_OPTIONS.filter((g) => !visibleGenres.includes(g)).length;
 
   const goToGenres = () => {
