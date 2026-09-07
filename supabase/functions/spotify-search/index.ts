@@ -125,7 +125,7 @@ const eraToYears = (era: string) => {
 const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 /** Artists behind the top Spotify tracks for each genre x decade pair. */
-async function suggestFromTaste(genres: string[], eras: string[], token: string): Promise<CompactArtist[]> {
+async function suggestFromTaste(genres: string[], eras: string[], token: string, page = 0): Promise<CompactArtist[]> {
   const years = eras.filter((e) => ERA_RE.test(e)).map(eraToYears);
   const queries: string[] = [];
   const gs = genres.length ? genres : [""];
@@ -139,7 +139,9 @@ async function suggestFromTaste(genres: string[], eras: string[], token: string)
   // Round-robin over the pairs so one genre does not crowd out the others.
   const perQuery: string[][] = await Promise.all(
     queries.slice(0, 6).map(async (q) => {
-      const resp = await searchSpotify(q, 10, token, "track");
+      // Each refresh reads the next page of tracks, so the artists change.
+      const params = new URLSearchParams({ type: "track", limit: "10", offset: String(page * 10), q });
+      const resp = await fetch(`${SPOTIFY_SEARCH_URL}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!resp.ok) return [];
       const data = await resp.json();
       const items: any[] = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
@@ -170,17 +172,17 @@ async function suggestFromTaste(genres: string[], eras: string[], token: string)
 }
 
 /** Similar-artist names from the model, each resolved on Spotify. */
-async function suggestFromArtists(artists: string[], genres: string[], eras: string[], token: string): Promise<CompactArtist[]> {
+async function suggestFromArtists(artists: string[], genres: string[], eras: string[], token: string, excludeNames: string[] = []): Promise<CompactArtist[]> {
   const key = Deno.env.get("OPENAI_API_KEY");
   if (!key) return [];
   const prompt = `A listener likes these artists: ${artists.join(", ")}.${genres.length ? ` Genres they picked: ${genres.join(", ")}.` : ""}${eras.length ? ` Decades they picked: ${eras.join(", ")}.` : ""}
-Name 12 other artists they would probably love: contemporaries, influences, label-mates, proteges. Mix well-known and less obvious. Never repeat an artist they already listed. Return JSON: {"artists": ["Name", ...]} with canonical artist names only.`;
+Name 12 other artists they would probably love: contemporaries, influences, label-mates, proteges. Mix well-known and less obvious. Never repeat an artist they already listed.${excludeNames.length ? ` They have already seen and passed on these, do not suggest them: ${excludeNames.join(", ")}.` : ""} Return JSON: {"artists": ["Name", ...]} with canonical artist names only.`;
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4.1-mini",
-      temperature: 0.6,
+      temperature: excludeNames.length ? 0.9 : 0.6,
       response_format: { type: "json_object" },
       messages: [{ role: "user", content: prompt }],
     }),
@@ -195,7 +197,7 @@ Name 12 other artists they would probably love: contemporaries, influences, labe
     const parsed = JSON.parse(data?.choices?.[0]?.message?.content ?? "{}");
     names = Array.isArray(parsed?.artists) ? parsed.artists.filter((n: unknown) => typeof n === "string") : [];
   } catch { names = []; }
-  const already = new Set(artists.map(norm));
+  const already = new Set([...artists, ...excludeNames].map(norm));
   names = names.filter((n) => !already.has(norm(n))).slice(0, 12);
 
   const resolved = await Promise.all(
@@ -238,18 +240,24 @@ serve(async (req) => {
       (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string").map((x) => x.trim().slice(0, 60)).filter(Boolean).slice(0, cap);
     const genres = strs(body.suggest.genres, 3);
     const eras = strs(body.suggest.eras, 3);
-    const artists = strs(body.suggest.artists, 3);
+    const artists = strs(body.suggest.artists, 6);
+    // Refresh: ids (Spotify) and names already shown, plus which page to read.
+    const excludeIds = new Set(strs(body.suggest.exclude, 60));
+    const rawPage = Number(body.suggest.page);
+    const page = Number.isFinite(rawPage) ? Math.min(5, Math.max(0, Math.floor(rawPage))) : 0;
     const rawLimit = Number(body?.limit);
     const limit = Number.isFinite(rawLimit) ? Math.min(SUGGEST_MAX, Math.max(1, Math.floor(rawLimit))) : SUGGEST_MAX;
     try {
       const token = await getAppToken();
       const exclude = new Set(artists.map(norm));
+      const fresh = (a: CompactArtist) => !exclude.has(norm(a.name)) && !excludeIds.has(a.id);
       if (artists.length > 0) {
-        const out = (await suggestFromArtists(artists, genres, eras, token)).filter((a) => !exclude.has(norm(a.name)));
+        const excludeNames = strs(body.suggest.excludeNames, 60);
+        const out = (await suggestFromArtists(artists, genres, eras, token, excludeNames)).filter(fresh);
         if (out.length > 0) return json({ artists: out.slice(0, limit), basis: "artists" });
       }
       if (genres.length > 0 || eras.length > 0) {
-        const out = (await suggestFromTaste(genres, eras, token)).filter((a) => !exclude.has(norm(a.name)));
+        const out = (await suggestFromTaste(genres, eras, token, page)).filter(fresh);
         return json({ artists: out.slice(0, limit), basis: out.length ? "taste" : "none" });
       }
       return json({ artists: [], basis: "none" });

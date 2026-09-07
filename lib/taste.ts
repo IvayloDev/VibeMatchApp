@@ -23,7 +23,7 @@ import type { SpotifyTasteProfile } from './spotify';
  * `source` marker and the genres the user picked by hand.
  */
 
-export const MAX_TASTE_ARTISTS = 3;
+export const MAX_TASTE_ARTISTS = 6;
 export const MAX_TASTE_GENRES = 3;
 export const MAX_TASTE_ERAS = 3;
 
@@ -227,7 +227,7 @@ export type ArtistSuggestions = { artists: TasteArtist[]; basis: 'artists' | 'ta
  * behind Spotify's top tracks for those genres and years.
  */
 export async function suggestArtists(
-  input: { genres: string[]; eras: string[]; artists: string[] },
+  input: { genres: string[]; eras: string[]; artists: string[]; exclude?: string[]; excludeNames?: string[]; page?: number },
   options: { limit?: number; signal?: AbortSignal } = {}
 ): Promise<ArtistSuggestions> {
   const resp = await fetch(`${SUPABASE_URL}/functions/v1/spotify-search`, {

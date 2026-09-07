@@ -130,6 +130,10 @@ const TastePickerScreen: React.FC = () => {
   const [suggestions, setSuggestions] = useState<ArtistSuggestions | null>(null);
   const [suggesting, setSuggesting] = useState(false);
   const suggestAbort = useRef<AbortController | null>(null);
+  // Everything shown so far, so Refresh never repeats; reset when the
+  // inputs change because the basis changed too.
+  const seenSuggestions = useRef<{ ids: string[]; names: string[] }>({ ids: [], names: [] });
+  const [suggestPage, setSuggestPage] = useState(0);
 
   // Only the latest search may touch state: a slow early response must not
   // overwrite the results of a later, more specific query.
@@ -187,19 +191,41 @@ const TastePickerScreen: React.FC = () => {
   // Refresh suggestions whenever the inputs change while on the artists
   // stage. Debounced so adding two artists in a row makes one request.
   const artistKey = selectedArtists.map((a) => a.id).join(',');
+  const inputKey = `${artistKey}|${selectedGenres.join(',')}|${selectedEras.join(',')}`;
+  const lastInputKey = useRef(inputKey);
   useEffect(() => {
     if (stage !== 'artists') return;
+    if (lastInputKey.current !== inputKey) {
+      // New basis, new deck: forget what the old one showed.
+      lastInputKey.current = inputKey;
+      seenSuggestions.current = { ids: [], names: [] };
+      if (suggestPage !== 0) {
+        setSuggestPage(0);
+        return;
+      }
+    }
     const timer = setTimeout(() => {
       suggestAbort.current?.abort();
       const controller = new AbortController();
       suggestAbort.current = controller;
       setSuggesting(true);
       suggestArtists(
-        { genres: selectedGenres, eras: selectedEras, artists: selectedArtists.map((a) => a.name) },
+        {
+          genres: selectedGenres,
+          eras: selectedEras,
+          artists: selectedArtists.map((a) => a.name),
+          exclude: seenSuggestions.current.ids,
+          excludeNames: seenSuggestions.current.names,
+          page: suggestPage,
+        },
         { signal: controller.signal }
       )
         .then((result) => {
           if (controller.signal.aborted) return;
+          seenSuggestions.current = {
+            ids: [...seenSuggestions.current.ids, ...result.artists.map((a) => a.id)].slice(-60),
+            names: [...seenSuggestions.current.names, ...result.artists.map((a) => a.name)].slice(-60),
+          };
           setSuggestions(result);
         })
         .catch((err) => {
@@ -213,7 +239,7 @@ const TastePickerScreen: React.FC = () => {
     }, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, artistKey, selectedGenres.join(','), selectedEras.join(',')]);
+  }, [stage, inputKey, suggestPage]);
 
   useEffect(() => () => suggestAbort.current?.abort(), []);
 
@@ -583,6 +609,17 @@ const TastePickerScreen: React.FC = () => {
             <View style={styles.suggestHeader}>
               <Text style={styles.suggestTitle}>Suggested for you</Text>
               {suggesting ? <ActivityIndicator size="small" color={OB.textFaint} /> : null}
+              <TouchableOpacity
+                onPress={() => { triggerHaptic('light'); setSuggestPage((p) => p + 1); }}
+                disabled={suggesting}
+                style={styles.refreshBtn}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Refresh suggestions"
+              >
+                <MaterialCommunityIcons name="refresh" size={18} color={OB.textDim} />
+                <Text style={styles.refreshText}>Refresh</Text>
+              </TouchableOpacity>
             </View>
             <Text style={styles.suggestCaption}>{suggestionBasis}</Text>
             <View style={styles.resultsList}>
@@ -690,7 +727,7 @@ const TastePickerScreen: React.FC = () => {
                 <OnboardingIntro
                   eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
                   title="Any favourite artists?"
-                  subtitle="Optional. Up to three, from Spotify's catalog."
+                  subtitle="Optional. Up to six, from Spotify's catalog."
                 />
                 {artistsStage}
               </>
@@ -749,7 +786,7 @@ const TastePickerScreen: React.FC = () => {
             />
           ) : (
             <OnboardingFooter
-              summary={selectedArtists.length > 0 ? selectedArtists.map((a) => a.name).join(' · ') : 'Add up to three, or continue'}
+              summary={selectedArtists.length > 0 ? selectedArtists.map((a) => a.name).join(' · ') : 'Add up to six, or continue'}
               ctaLabel={editing ? 'Save' : 'Continue'}
               onPress={finish}
               loading={saving}
@@ -826,6 +863,8 @@ const styles = StyleSheet.create({
 
   suggest: { gap: 6 },
   suggestHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  refreshBtn: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 32, paddingHorizontal: 4 },
+  refreshText: { color: OB.textDim, fontSize: OB.caption, fontWeight: '600' },
   suggestTitle: { color: OB.text, fontSize: OB.section, fontWeight: '700' },
   suggestCaption: { color: OB.textFaint, fontSize: OB.caption, marginBottom: 4 },
   searchBox: {
