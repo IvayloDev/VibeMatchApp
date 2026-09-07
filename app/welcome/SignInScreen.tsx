@@ -11,6 +11,7 @@ import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/des
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
 import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
+import { trackEvent } from '../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -54,25 +55,32 @@ const SignInScreen = () => {
       return;
     }
     setLoading(true);
+    trackEvent('sign_in_started', { method: 'email' });
     const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
+      trackEvent('sign_in_failed', { method: 'email', error: error.message });
       Alert.alert('Sign In Error', error.message);
     } else if (data?.user) {
+      trackEvent('sign_in_completed', { method: 'email' });
       await routeAfterAuth();
     }
   };
 
   const handleGoogleSignIn = async () => {
     setSocialLoading('google');
+    trackEvent('sign_in_started', { method: 'google' });
     try {
       const result = await signInWithGoogle();
       if (result.success) {
+        trackEvent('sign_in_completed', { method: 'google' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('sign_in_failed', { method: 'google', error: result.error });
         Alert.alert('Google Sign-In Error', result.error);
       }
     } catch (error) {
+      trackEvent('sign_in_failed', { method: 'google', error: String(error) });
       console.error('Google sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
@@ -81,14 +89,18 @@ const SignInScreen = () => {
 
   const handleAppleSignIn = async () => {
     setSocialLoading('apple');
+    trackEvent('sign_in_started', { method: 'apple' });
     try {
       const result = await signInWithApple();
       if (result.success) {
+        trackEvent('sign_in_completed', { method: 'apple' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('sign_in_failed', { method: 'apple', error: result.error });
         Alert.alert('Apple Sign-In Error', result.error);
       }
     } catch (error) {
+      trackEvent('sign_in_failed', { method: 'apple', error: String(error) });
       console.error('Apple sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }

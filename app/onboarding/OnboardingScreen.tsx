@@ -366,7 +366,11 @@ const OnboardingScreen: React.FC = () => {
               <VibeGrid
                 variant="compact"
                 selected={selectedVibe}
-                onSelect={(id) => { triggerHaptic('light'); setSelectedVibe(id); }}
+                onSelect={(id) => {
+                  triggerHaptic('light');
+                  trackEvent('vibe_selected', { vibe: id, from_onboarding: true });
+                  setSelectedVibe(id);
+                }}
               />
             </Animated.View>
           )}

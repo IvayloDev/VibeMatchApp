@@ -11,6 +11,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { supabase, getImageSignedUrl } from '../../../lib/supabase';
 import { loadGuestHistory } from '../../../lib/guestHistory';
+import { trackEvent } from '../../../lib/posthog';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { FloatingCard } from '../../../lib/components/FloatingCard';
@@ -79,6 +80,12 @@ const HistoryScreen = () => {
 
     console.log('History items:', { remote: data?.length || 0, local: guestItems.length });
     setHistory(merged);
+    // An empty Vault on a return visit is someone who never got a match.
+    trackEvent('vault_viewed', {
+      item_count: merged.length,
+      remote_count: data?.length || 0,
+      local_count: guestItems.length,
+    });
 
     // Generate fresh signed URLs for all images
     const urlPromises = merged.map(async (item) => {
@@ -144,6 +151,9 @@ const HistoryScreen = () => {
   };
 
   const handleItemPress = (item: HistoryItem, currentImageUrl: string) => {
+    trackEvent('history_item_opened', {
+      age_days: Math.floor((Date.now() - new Date(item.created_at).getTime()) / 86400000),
+    });
     navigation.navigate('HistoryResults', { 
       image: currentImageUrl || item.image_url,
       songs: item.songs,

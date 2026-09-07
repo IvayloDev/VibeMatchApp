@@ -156,7 +156,13 @@ const VibeSelectionScreen = () => {
           <Text style={styles.subtitle}>Choose your mood</Text>
 
           {/* Vibe grid 2x2 (shared component) */}
-          <VibeGrid selected={selectedVibe} onSelect={setSelectedVibe} />
+          <VibeGrid
+            selected={selectedVibe}
+            onSelect={(id) => {
+              trackEvent('vibe_selected', { vibe: id, from_onboarding: false });
+              setSelectedVibe(id);
+            }}
+          />
 
           {/* Continue button */}
           <View style={styles.footer}>

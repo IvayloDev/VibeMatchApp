@@ -24,6 +24,7 @@ import { Spacing } from '../../../lib/designSystem';
 import { OB, OnboardingFooter } from '../../../lib/components/OnboardingChrome';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
+import { trackEvent } from '../../../lib/posthog';
 import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
@@ -112,6 +113,18 @@ const ResultsScreen = () => {
     return () => clearTimeout(t);
   }, []);
 
+  // The payoff screen. Fresh against history separates activation from
+  // re-engagement, and the title says which songs people actually got.
+  useEffect(() => {
+    trackEvent('results_viewed', {
+      source: fromFreshMatch ? 'fresh' : 'history',
+      from_onboarding: !!fromOnboarding,
+      song_count: songs.length,
+      title: main?.title,
+      artist: main?.artist,
+    });
+  }, []);
+
   // The first result is a one-way step: hide the tab bar so Continue is the
   // only way forward. Restore on BLUR, not unmount: Continue can end in
   // `navigate('History', { screen: 'History' })` within this same stack, so
@@ -193,6 +206,7 @@ const ResultsScreen = () => {
   };
 
   const handleContinue = async () => {
+    trackEvent('results_continue_tapped', { from_onboarding: !!fromOnboarding });
     // No paywall here. Someone who has just had their first match still has
     // credits left, so the pitch lands before they have any reason to buy and
     // reads as a toll booth on the one screen that was supposed to be the
@@ -234,6 +248,7 @@ const ResultsScreen = () => {
             // Guest items live only in local storage: no row, no session.
             if (isGuestHistoryId(historyItemId)) {
               await removeGuestHistoryItem(historyItemId!);
+              trackEvent('history_item_deleted', { storage: 'local' });
               navigation.goBack();
               return;
             }
@@ -275,6 +290,7 @@ const ResultsScreen = () => {
               return;
             }
 
+            trackEvent('history_item_deleted', { storage: 'remote' });
             // Small delay so the list refresh sees the deletion.
             await new Promise((resolve) => setTimeout(resolve, 300));
             navigation.goBack();

@@ -7,6 +7,7 @@ import { Alert, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
 import { norm, artistMatches, catalogQuery } from './utils/trackMatch';
+import { trackEvent } from './posthog';
 
 type PreviewSong = {
   title: string;
@@ -158,6 +159,7 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
     if (!url) {
       // Never auto-open Spotify here: it starts playback in another app that we
       // cannot stop, which is what made music keep playing across screens.
+      trackEvent('preview_unavailable', { title: song.title, artist: song.artist });
       setActiveKey(null);
       setStatus('idle');
       setAvailability((prev) => ({ ...prev, [key]: 'unavailable' }));
@@ -184,6 +186,7 @@ export function TrackPreviewProvider({ children }: { children: React.ReactNode }
       playerRef.current.play();
       if (reqId !== reqIdRef.current) return;
       setStatus('playing');
+      trackEvent('preview_played', { title: song.title, artist: song.artist });
     } catch {
       setActiveKey(null);
       setStatus('idle');

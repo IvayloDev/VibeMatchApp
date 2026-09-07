@@ -630,6 +630,7 @@ const TastePickerScreen: React.FC = () => {
   const goToGenres = () => {
     if (saving) return;
     triggerHaptic('light');
+    trackEvent('taste_stage_completed', { stage: 'decades', picks: selectedEras.length, source });
     setStage('genres');
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   };
@@ -644,6 +645,7 @@ const TastePickerScreen: React.FC = () => {
   const goToArtists = () => {
     if (saving) return;
     triggerHaptic('light');
+    trackEvent('taste_stage_completed', { stage: 'genres', picks: selectedGenres.length, source });
     // The search is the whole screen here, so it opens with the keyboard up.
     focusSearchOnOpen.current = true;
     setArtistsOpen(true);
@@ -908,6 +910,7 @@ const TastePickerScreen: React.FC = () => {
               ctaLabel="Start"
               onPress={() => {
                 triggerHaptic('light');
+                trackEvent('taste_intro_started', { source });
                 setStage('decades');
               }}
               bottomInset={insets.bottom}

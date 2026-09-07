@@ -10,7 +10,17 @@ const POSTHOG_HOST = 'https://eu.i.posthog.com';
 const enabled = POSTHOG_API_KEY.startsWith('phc_') && !POSTHOG_API_KEY.includes('REPLACE_ME');
 
 export const posthog: PostHog | null = enabled
-  ? new PostHog(POSTHOG_API_KEY, { host: POSTHOG_HOST })
+  ? new PostHog(POSTHOG_API_KEY, {
+      host: POSTHOG_HOST,
+      // Application Installed / Opened / Backgrounded: the events every
+      // retention curve is built on. Explicit so a future default change
+      // cannot silently switch them off.
+      captureAppLifecycleEvents: true,
+      // Uncaught JS errors and unhandled promise rejections go to Error
+      // Tracking on their own. Without this a crash was invisible unless the
+      // user wrote in.
+      errorTracking: { autocapture: true },
+    })
   : null;
 
 if (!enabled) {
@@ -33,6 +43,15 @@ export function trackScreen(name: string) {
 
 export function trackEvent(name: string, properties?: Record<string, any>) {
   posthog?.capture(name, properties);
+}
+
+/**
+ * A caught error worth seeing in Error Tracking: something the app recovered
+ * from but that stopped the user getting what they came for. Pair it with a
+ * trackEvent that names the outcome so funnels and errors line up.
+ */
+export function trackError(error: unknown, properties?: Record<string, any>) {
+  posthog?.captureException(error, properties);
 }
 
 /**

@@ -14,7 +14,7 @@ import { getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
 import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
-import { trackEvent } from '../../../lib/posthog';
+import { trackEvent, registerSuperProperties } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import WallSheet from '../../../lib/components/WallSheet';
 import { claimDailyCreditIfDue, nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
@@ -52,6 +52,8 @@ const DashboardScreen = () => {
   // The AppState listener below outlives any single render.
   const userRef = useRef(user);
   userRef.current = user;
+  // dashboard_viewed fires once per session; loads happen on every foreground.
+  const dashboardTracked = useRef(false);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -77,6 +79,14 @@ const DashboardScreen = () => {
       }
       const userCredits = await getUserCredits();
       setCredits(userCredits);
+      // Where this person stands, stamped on every later event, so any funnel
+      // can be split by Pro / balance / signed-in without each screen
+      // plumbing it through.
+      registerSuperProperties({ is_pro: pro, credits_balance: userCredits, signed_in: !!userRef.current });
+      if (!dashboardTracked.current) {
+        dashboardTracked.current = true;
+        trackEvent('dashboard_viewed', { credits_balance: userCredits, is_pro: pro, signed_in: !!userRef.current });
+      }
       // Refreshed alongside credits so the badge is right after every scan.
       if (pro) setProScansToday(await getProScansToday());
     } catch (error) {

@@ -204,6 +204,11 @@ const WelcomeScreen = () => {
   // Single entrance fade for the whole screen
   const enter = useRef(new Animated.Value(0)).current;
 
+  // The first screen of a fresh install: the top of the activation funnel.
+  useEffect(() => {
+    trackEvent('welcome_viewed');
+  }, []);
+
   // Detect a returning-but-logged-out user to conditionally reveal Sign in
   useEffect(() => {
     let active = true;

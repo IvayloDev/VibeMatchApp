@@ -296,6 +296,7 @@ const ProfileScreen = () => {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            trackEvent('account_delete_started');
             try {
               console.log('Starting delete profile process...');
               
@@ -326,6 +327,7 @@ const ProfileScreen = () => {
               console.log('Response result:', result);
 
               if (response.ok && result.success) {
+                trackEvent('account_delete_completed');
                 console.log('Delete successful, clearing local data...');
 
                 // Clear all local storage (credits, taste profile, onboarding flag, Spotify tokens)
@@ -358,10 +360,12 @@ const ProfileScreen = () => {
                 );
               } else {
                 console.log('Delete failed:', result.error || 'Unknown error');
+                trackEvent('account_delete_failed', { http_status: response.status, error: result.error || 'unknown' });
                 Alert.alert('Error', 'Failed to delete profile. Please try again.');
               }
             } catch (error) {
               console.log('Exception during delete:', error);
+              trackEvent('account_delete_failed', { error: String(error) });
               Alert.alert('Error', 'Failed to delete profile. Please try again.');
             }
           },
