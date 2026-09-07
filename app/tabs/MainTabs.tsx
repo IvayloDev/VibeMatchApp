@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Platform, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { CommonActions } from '@react-navigation/native';
+import { CommonActions, StackActions } from '@react-navigation/native';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -203,19 +203,17 @@ const MainTabs = () => {
           tabBarLabel: 'Vault',
         }}
         listeners={({ navigation }) => ({
-          tabPress: (e) => {
+          tabPress: () => {
             triggerHaptic('light');
-            // Always navigate to History list screen when tab is pressed
-            // Use nested navigation to go to the History screen in the History stack
-            const state = navigation.getState();
-            const historyTab = state.routes.find((r: any) => r.name === 'History');
-            
-            if (historyTab?.state) {
-              const currentRoute = historyTab.state.routes[historyTab.state.index];
-              if (currentRoute.name !== 'History') {
-                // Navigate to History screen in the History stack
-                navigation.navigate('History', { screen: 'History' });
-              }
+            // The Vault always opens on the list. Open a match, switch tabs,
+            // come back a day later and the stack would otherwise still be
+            // sitting on that one result, which reads as the app being stuck.
+            const historyTab = navigation
+              .getState()
+              .routes.find((r: any) => r.name === 'History');
+            const stack = historyTab?.state as any;
+            if (stack?.key && (stack.index ?? 0) > 0) {
+              navigation.dispatch({ ...StackActions.popToTop(), target: stack.key });
             }
           },
         })}

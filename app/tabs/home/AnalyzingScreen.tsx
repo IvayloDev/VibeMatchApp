@@ -710,40 +710,47 @@ const AnalyzingScreen = () => {
         setProgress(95);
         setProgress(100);
 
+        // A fresh match belongs to the Discover flow, not the Vault. It used
+        // to be pushed onto the History stack, which parked that tab on a
+        // result: tapping Vault days later reopened the first match instead of
+        // the list, and the Vault tab sat highlighted while you looked at a
+        // brand new match. The Vault stack is now only ever the archive.
+        const resultParams = {
+          // Guests get no signed URL; the local photo is already on screen and
+          // is what the results view should show.
+          image: signedUrl ?? image,
+          songs,
+          imagePath: uploadedFilePath ?? undefined,
+          fromFreshMatch: true,
+        };
+
         const goToResults = () => {
           if (fromOnboarding) {
             // From root stack (OnboardingAnalyzing) - reset nav to MainTabs
-            // with History tab pre-showing results
+            // with the Discover tab showing the result.
             (navigation as any).reset({
               index: 0,
               routes: [{
                 name: 'MainTabs',
                 params: {
-                  screen: 'History',
+                  screen: 'Home',
                   params: {
-                    screen: 'HistoryResults',
-                    params: {
-                      // Guests get no signed URL; the local photo is already on
-                      // screen and is what the results view should show.
-                      image: signedUrl ?? image,
-                      songs,
-                      imagePath: uploadedFilePath ?? undefined,
-                      fromOnboarding: true,
-                      fromFreshMatch: true,
-                    },
+                    screen: 'Results',
+                    params: { ...resultParams, fromOnboarding: true },
                   },
                 },
               }],
             });
           } else {
-            (navigation as any).navigate('History', {
-              screen: 'HistoryResults',
-              params: {
-                image: signedUrl ?? image,
-                songs: songs,
-                imagePath: uploadedFilePath ?? undefined,
-                fromFreshMatch: true,
-              }
+            // Reset rather than push, so Analyzing is not left underneath:
+            // back from the result goes to the Dashboard, never to a spinner
+            // for a match that already finished.
+            (navigation as any).reset({
+              index: 1,
+              routes: [
+                { name: 'Dashboard' },
+                { name: 'Results', params: resultParams },
+              ],
             });
           }
         };
