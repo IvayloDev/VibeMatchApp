@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View,
   StyleSheet,
+  Animated,
+  Easing,
+  AccessibilityInfo,
   TextInput,
   TouchableOpacity,
   ScrollView,
@@ -120,6 +123,119 @@ const ArtistAvatar: React.FC<{ uri: string | null; size: number }> = ({ uri, siz
   );
 };
 
+const INTRO_ROWS = [
+  { icon: 'calendar-blank-outline', title: 'Decades', body: 'The years your music comes from.' },
+  { icon: 'playlist-music-outline', title: 'Genres', body: 'The sound you reach for.' },
+  { icon: 'account-music-outline', title: 'Artists', body: 'Optional, and the strongest signal of all.' },
+] as const;
+
+const BAR_COUNT = 13;
+
+/**
+ * The intro to the taste questions.
+ *
+ * A list of three bullet points explained the flow and was dull enough that
+ * nobody would read it. An equaliser carries the same idea without a
+ * sentence: the app is about sound, and it is alive. The rows then arrive one
+ * after another instead of all at once.
+ *
+ * Its own component so the animations mount and unmount with the stage, and
+ * so nothing here runs while someone is picking decades.
+ */
+const TasteIntro: React.FC = () => {
+  const bars = useRef(Array.from({ length: BAR_COUNT }, () => new Animated.Value(0.3))).current;
+  const rows = useRef(INTRO_ROWS.map(() => new Animated.Value(0))).current;
+  const head = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    let stopped = false;
+    const loops: Animated.CompositeAnimation[] = [];
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    Animated.stagger(90, [
+      Animated.spring(head, { toValue: 1, useNativeDriver: true, tension: 60, friction: 9 }),
+      ...rows.map((v) => Animated.spring(v, { toValue: 1, useNativeDriver: true, tension: 60, friction: 9 })),
+    ]).start();
+
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduceMotion) => {
+        if (stopped || reduceMotion) return;
+        bars.forEach((v, i) => {
+          const duration = 480 + ((i * 7) % 5) * 120;
+          const loop = Animated.loop(
+            Animated.sequence([
+              Animated.timing(v, { toValue: 1, duration, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+              Animated.timing(v, { toValue: 0.26, duration, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+            ])
+          );
+          loops.push(loop);
+          timers.push(setTimeout(() => { if (!stopped) loop.start(); }, i * 60));
+        });
+      });
+
+    return () => {
+      stopped = true;
+      timers.forEach(clearTimeout);
+      loops.forEach((l) => l.stop());
+    };
+  }, [bars, rows, head]);
+
+  return (
+    <>
+      <View style={styles.eqWrap} accessible={false} importantForAccessibility="no-hide-descendants">
+        {bars.map((v, i) => (
+          <Animated.View
+            key={i}
+            style={[
+              styles.eqBar,
+              {
+                opacity: 0.45 + (i % 3) * 0.2,
+                transform: [{ scaleY: v }],
+              },
+            ]}
+          />
+        ))}
+      </View>
+
+      <Animated.View
+        style={{
+          opacity: head,
+          transform: [{ translateY: head.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
+        }}
+      >
+        <OnboardingIntro
+          title="Let's tune it to you"
+          subtitle="Three quick questions, then every match sounds like you."
+        />
+      </Animated.View>
+
+      <View style={styles.introList}>
+        {INTRO_ROWS.map((row, i) => (
+          <Animated.View
+            key={row.title}
+            style={[
+              styles.introRow,
+              {
+                opacity: rows[i],
+                transform: [{ translateY: rows[i].interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }],
+              },
+            ]}
+          >
+            <View style={styles.introIcon}>
+              <MaterialCommunityIcons name={row.icon as any} size={20} color={OB.primary} />
+            </View>
+            <View style={styles.introRowText}>
+              <Text style={styles.introRowTitle}>{row.title}</Text>
+              <Text style={styles.introRowBody}>{row.body}</Text>
+            </View>
+          </Animated.View>
+        ))}
+      </View>
+    </>
+  );
+};
+
 const TastePickerScreen: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'TastePicker'>>();
@@ -143,7 +259,11 @@ const TastePickerScreen: React.FC = () => {
   const [artistsOpen, setArtistsOpen] = useState(false);
   // One question per screen: decades, genres, then artists. The stages
   // share this component so picks survive Back.
-  const [stage, setStage] = useState<'decades' | 'genres' | 'artists'>('decades');
+  // 'intro' explains why we are asking before asking. Editing from Profile
+  // skips it: that person already knows.
+  const [stage, setStage] = useState<'intro' | 'decades' | 'genres' | 'artists'>(
+    route.params?.returnTo === 'back' ? 'decades' : 'intro'
+  );
   // Eleven common genres show by default; "More" unfolds the rest in place.
   const [allGenresOpen, setAllGenresOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -560,6 +680,7 @@ const TastePickerScreen: React.FC = () => {
 
   const eraSummary = selectedEras.length > 0 ? [...selectedEras].sort().join(' · ') : null;
   const stageIndex = stage === 'decades' ? 1 : stage === 'genres' ? 2 : 3;
+  const isIntro = stage === 'intro';
   const editing = returnTo === 'back';
 
   // Suggestions minus what is already picked, and where they came from.
@@ -724,9 +845,19 @@ const TastePickerScreen: React.FC = () => {
       <SafeAreaView style={styles.flex} edges={['top']}>
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <OnboardingHeader
-            step={editing ? undefined : stageIndex}
-            total={editing ? undefined : TOTAL_STEPS}
-            onBack={stage === 'genres' ? backToDecades : stage === 'artists' ? backToGenres : editing ? handleSkip : undefined}
+            step={editing || isIntro ? undefined : stageIndex}
+            total={editing || isIntro ? undefined : TOTAL_STEPS}
+            onBack={
+              stage === 'genres'
+                ? backToDecades
+                : stage === 'artists'
+                  ? backToGenres
+                  : stage === 'decades' && !editing
+                    ? () => setStage('intro')
+                    : editing
+                      ? handleSkip
+                      : undefined
+            }
             onSkip={editing ? undefined : handleSkip}
           />
 
@@ -741,7 +872,9 @@ const TastePickerScreen: React.FC = () => {
             // drag with a vertical component.
             scrollEnabled={stage !== 'decades'}
           >
-            {stage === 'decades' ? (
+            {isIntro ? (
+              <TasteIntro />
+            ) : stage === 'decades' ? (
               <>
                 <OnboardingIntro
                   eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
@@ -798,7 +931,17 @@ const TastePickerScreen: React.FC = () => {
             )}
           </ScrollView>
 
-          {stage === 'decades' ? (
+          {isIntro ? (
+            <OnboardingFooter
+              summary="About twenty seconds"
+              ctaLabel="Start"
+              onPress={() => {
+                triggerHaptic('light');
+                setStage('decades');
+              }}
+              bottomInset={insets.bottom}
+            />
+          ) : stage === 'decades' ? (
             <OnboardingFooter
               summary={eraSummary ?? 'Pick up to three, or continue'}
               ctaLabel="Continue"
@@ -837,6 +980,33 @@ const styles = StyleSheet.create({
     gap: Spacing.lg,
   },
   section: { gap: LABEL_GAP },
+  eqWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    height: 96,
+    marginTop: Spacing.sm,
+  },
+  eqBar: {
+    width: 7,
+    height: 72,
+    borderRadius: 4,
+    backgroundColor: OB.primary,
+  },
+  introList: { paddingHorizontal: OB.margin, marginTop: 22, gap: 18 },
+  introRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },
+  introIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(244,37,140,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  introRowText: { flex: 1, gap: 2 },
+  introRowTitle: { color: OB.text, fontSize: OB.section, fontWeight: '700' },
+  introRowBody: { color: OB.textDim, fontSize: OB.body, lineHeight: 20 },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
