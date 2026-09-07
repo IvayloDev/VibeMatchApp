@@ -23,6 +23,7 @@ import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
 import { addGuestHistoryItem, loadGuestHistory } from '../../../lib/guestHistory';
+import { getDeviceId } from '../../../lib/utils/freeCredits';
 
 // How many past guest matches feed the avoid list (6 songs each).
 const GUEST_AVOID_ITEMS = 12;
@@ -499,6 +500,9 @@ const AnalyzingScreen = () => {
           tasteProfile: guestTasteProfile ?? undefined,
           avoidTracks: avoidTracks.length ? avoidTracks : undefined,
           avoidArtists: avoidArtists.length ? avoidArtists : undefined,
+          // Lets the server exclude what this install was already served,
+          // even after the local history is gone.
+          deviceId: await getDeviceId().catch(() => undefined),
         };
         
         let accessToken: string | undefined;

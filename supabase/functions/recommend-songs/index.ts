@@ -607,7 +607,7 @@ Hard rules:
 - Recommend exactly 6 tracks (no more, no less) — we need extras as fallbacks in case some can't be found on Spotify.
 - RANKING IS CRITICAL: Sort recommendations from BEST to WORST match. Position 1 must be the single most on-point pick that best combines the image mood + chosen vibe with the user's sonic DNA. Positions 2-3 are strong alternatives. Positions 4-6 are good fallbacks.
 - No repeated artist (each track must have a different artist).
-- Avoid ultra-mainstream, over-recommended staples and viral overplayed hits. Banned examples (do not pick these or their obvious equivalents): Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Physical (Dua Lipa), Shut Up and Dance, Sweater Weather, Riptide. If a track has been a TikTok/playlist default or has billions of streams, skip it.
+- Avoid ultra-mainstream, over-recommended staples and viral overplayed hits. Banned examples (do not pick these or their obvious equivalents): Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Physical (Dua Lipa), Shut Up and Dance, Sweater Weather, Riptide, Go (The Chemical Brothers), Midnight City (M83), Weightless (Marconi Union), Nightcall (Kavinsky), Intro (The xx). If a track has been a TikTok/playlist default or has billions of streams, skip it.
 - Ensure diversity: at least 3 distinct subgenres OR eras across the 6 tracks. Cross-genre picks are welcomed when the sonic DNA fits.
 - STRICT NO-REPEAT: do NOT recommend any track or artist that appears anywhere in the user's saved/top/recently-played/top-artists lists. All 6 must be artists they have NOT listened to. A repeat is an automatic failure - find adjacent, undiscovered music instead.
 - Only suggest songs you are confident exist (title + primary artist).
@@ -699,9 +699,16 @@ serve(async (req) => {
   let avoidTracks: string[] = [];
   let avoidArtists: string[] = [];
   let tasteProfile: TasteProfile | null = null;
+  // Opaque per-install id the client keeps in the keychain. Lets guests get
+  // server-side "already served" exclusion even when their local history is
+  // empty. Never used for anything else.
+  let deviceId: string | undefined;
 
   try {
     const body = await req.json();
+    if (typeof body.deviceId === "string" && /^[A-Za-z0-9._:-]{8,128}$/.test(body.deviceId)) {
+      deviceId = body.deviceId;
+    }
     imageUrl = body.imageUrl;
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
@@ -827,6 +834,36 @@ serve(async (req) => {
       } catch (err) {
         console.warn("⚠️ Could not fetch Spotify taste profile:", err);
       }
+    }
+  }
+
+  // 2b) Served-track exclusions from recommendation_log. Two lists:
+  //   - the most-served tracks for this vibe in the last 30 days, across
+  //     everyone: the model's reflex picks that every sunset used to get;
+  //   - what this device (or user) has been served recently, so guests are
+  //     covered even when their local history was wiped.
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? '';
+  const logClient = serviceKey ? createClient(Deno.env.get('SUPABASE_URL') ?? '', serviceKey) : null;
+  if (logClient) {
+    try {
+      const [{ data: popular }, { data: served }] = await Promise.all([
+        logClient.rpc('most_served_tracks', { p_vibe: vibe ?? null, p_days: 30, p_limit: 20 }),
+        deviceId || userId
+          ? logClient
+              .from('recommendation_log')
+              .select('title, artist')
+              .or([deviceId ? `device_id.eq.${deviceId}` : null, userId ? `user_id.eq.${userId}` : null].filter(Boolean).join(','))
+              .order('created_at', { ascending: false })
+              .limit(60)
+          : Promise.resolve({ data: [] as Array<{ title: string; artist: string }> }),
+      ]);
+      const label = (r: { title: string; artist: string }) => `${r.title} (${r.artist})`;
+      const popularTracks = (popular ?? []).map(label);
+      const servedTracks = (served ?? []).map(label);
+      avoidTracks = Array.from(new Set([...avoidTracks, ...servedTracks, ...popularTracks]));
+      console.log(`🚫 Excluding ${popularTracks.length} over-served + ${servedTracks.length} already-served tracks`);
+    } catch (err) {
+      console.warn("⚠️ recommendation_log lookup failed, continuing without it:", err);
     }
   }
 
@@ -1152,8 +1189,28 @@ serve(async (req) => {
     )
   );
 
+  const shipped = deduplicatedSongs.slice(0, 3);
+  // Record what we ship so the next request can avoid it. Fire and forget.
+  if (logClient) {
+    logClient
+      .from('recommendation_log')
+      .insert(
+        shipped.map((s: any) => ({
+          vibe: vibe ?? null,
+          title: s.title,
+          artist: s.artist,
+          spotify_url: s.spotify_url ?? null,
+          device_id: deviceId ?? null,
+          user_id: userId ?? null,
+        }))
+      )
+      .then(({ error }) => {
+        if (error) console.warn("⚠️ recommendation_log insert failed:", error.message);
+      });
+  }
+
   return jsonResponse({
-    songs: deduplicatedSongs.slice(0, 3), // Ensure exactly 3
+    songs: shipped, // Ensure exactly 3
     // Whether a Spotify taste profile shaped these picks, so the client can
     // tell personalized results from generic ones.
     has_taste: hasTaste
