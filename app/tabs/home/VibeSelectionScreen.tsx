@@ -23,6 +23,7 @@ import { VibeGrid } from '../../../lib/components/VibeGrid';
 import WallSheet from '../../../lib/components/WallSheet';
 import { claimDailyCreditIfDue, nextLocalMidnight } from '../../../lib/dailyCredit';
 import { useAuth } from '../../../lib/AuthContext';
+import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 
 const { width, height } = Dimensions.get('window');
 
@@ -56,6 +57,24 @@ const VibeSelectionScreen = () => {
   const [showWall, setShowWall] = useState(false);
   const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // The route param is the raw picked file, so the push could start on the
+  // frame after the picker closed. Show it immediately, then swap to the
+  // resized copy the moment it lands so this screen is not holding a
+  // full-resolution bitmap for the rest of the flow. In practice the prep has
+  // already finished by the time this screen mounts and the seed below is a
+  // hit, so no swap happens at all.
+  const [displayUri, setDisplayUri] = useState<string>(() => peekPreparedImage(image) ?? image);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPreparedImage(image).then((prepared) => {
+      if (!cancelled && prepared) setDisplayUri(prepared);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -139,8 +158,8 @@ const VibeSelectionScreen = () => {
                 style={StyleSheet.absoluteFill}
               />
               <View style={styles.previewInner}>
-                {image ? (
-                  <Image source={{ uri: image }} style={styles.previewImage} />
+                {displayUri ? (
+                  <Image source={{ uri: displayUri }} style={styles.previewImage} />
                 ) : null}
                 <LinearGradient
                   colors={[DesignColors.backgroundDark + 'CC', 'transparent']}

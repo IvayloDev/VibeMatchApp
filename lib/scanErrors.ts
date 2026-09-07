@@ -33,6 +33,21 @@ export function noMatchFailure(message?: string): ScanFailure {
 }
 
 /**
+ * The photo could not be turned into the resized JPEG the upload needs.
+ *
+ * Nothing has been uploaded or charged at this point, and retrying the same
+ * photo will fail the same way, so the honest advice is a different photo.
+ */
+export function imagePrepFailure(): ScanFailure {
+  return {
+    title: "Couldn't Use That Photo",
+    message: `We couldn't prepare this photo for matching. Try another one. ${NOT_CHARGED}`,
+    retryable: false,
+    reason: 'image_prep_failed',
+  };
+}
+
+/**
  * Classify a non-OK response body from the edge function.
  *
  * `data.code` is the reliable signal where present; otherwise the function's

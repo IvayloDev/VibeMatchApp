@@ -18,7 +18,8 @@ import { triggerHaptic } from '../../../lib/utils/haptics';
 import { deductCredits, getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement } from '../../../lib/revenuecat';
 import { getProScansToday, recordProScan, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
-import { describeScanFailure, noMatchFailure, networkScanFailure } from '../../../lib/scanErrors';
+import { describeScanFailure, noMatchFailure, networkScanFailure, imagePrepFailure } from '../../../lib/scanErrors';
+import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
@@ -196,7 +197,27 @@ const AnalyzingScreen = () => {
   const navigation = useNavigation<AnalyzingNavigationProp>();
   const route = useRoute();
   const { image, selectedVibe, userId, fromOnboarding } = (route.params || {}) as AnalyzingParams;
-  
+
+  // Never render the raw picked file here. Three <Image> of the same uri are
+  // mounted at once on this screen (the blurRadius 80 backdrop, the scanning
+  // preview and the blurRadius 18 reveal overlay), and a blur runs over the
+  // whole decoded bitmap, so the original would be decoded and blurred at full
+  // resolution three times over. The prep is started when the photo is picked
+  // and is finished long before this screen mounts, so the seed below is
+  // normally a hit; in the rare miss the frames render without the photo
+  // rather than with the original.
+  const [displayUri, setDisplayUri] = useState<string | null>(() => peekPreparedImage(image));
+
+  useEffect(() => {
+    let cancelled = false;
+    getPreparedImage(image).then((prepared) => {
+      if (!cancelled && prepared) setDisplayUri(prepared);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
+
   const [progress, setProgress] = useState(0);
   const [activeTagIndex, setActiveTagIndex] = useState(0);
   // Shuffle tags initially for random selection
@@ -393,6 +414,34 @@ const AnalyzingScreen = () => {
     const analyzePhoto = async () => {
       let uploadedFilePath: string | null = null;
       const scanStartTime = Date.now();
+
+      // The resize has been running in the background since the photo was
+      // picked; this is the first point the flow actually needs the bytes.
+      // Waiting here instead of on Discover means any leftover wait happens
+      // under the scanning animation, which already looks like work.
+      //
+      // No falling back to the original if it failed: the path (.jpg), the
+      // upload contentType (image/jpeg), the guest storage policy and both edge
+      // functions are all hardcoded for JPEG, so raw HEIC bytes would be stored
+      // mislabelled and come back as an unexplained failure much later.
+      const prepWaitStart = Date.now();
+      const preparedUri = await getPreparedImage(image);
+      const prepWaitMs = Date.now() - prepWaitStart;
+      if (!preparedUri) {
+        const prepFailure = imagePrepFailure();
+        trackEvent('scan_failed', {
+          reason: prepFailure.reason,
+          vibe: selectedVibe,
+          from_onboarding: !!fromOnboarding,
+          duration_ms: Date.now() - scanStartTime,
+        });
+        // Before the gate, so nothing has been read, charged or counted.
+        Alert.alert(prepFailure.title, prepFailure.message, [
+          { text: 'OK', onPress: leaveOnBlocked },
+        ]);
+        return;
+      }
+
       // Gate order: pro-with-quota scans free (counted), then credits, then
       // stop. A pro user at the daily cap with leftover credits falls through
       // to the credit path - balances stay usable forever.
@@ -447,6 +496,9 @@ const AnalyzingScreen = () => {
         is_pro: isPro,
         pro_scans_today: proScansToday,
         used_pro_quota: usingProQuota,
+        // How long the scan actually had to wait on the background resize.
+        // Should be ~0; anything else means the prep is not keeping up.
+        prep_wait_ms: prepWaitMs,
       });
 
       try {
@@ -457,7 +509,7 @@ const AnalyzingScreen = () => {
         // navigation) the two would disagree and the scan would 403.
         const { data: { session: uploadSession } } = await supabase.auth.getSession();
         const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(
-          image,
+          preparedUri,
           uploadSession?.user?.id
         );
         uploadedFilePath = filePath;
@@ -717,8 +769,9 @@ const AnalyzingScreen = () => {
         // brand new match. The Vault stack is now only ever the archive.
         const resultParams = {
           // Guests get no signed URL; the local photo is already on screen and
-          // is what the results view should show.
-          image: signedUrl ?? image,
+          // is what the results view should show. Use the prepared copy, which
+          // is also the object that was just uploaded.
+          image: signedUrl ?? preparedUri,
           songs,
           imagePath: uploadedFilePath ?? undefined,
           fromFreshMatch: true,
@@ -850,7 +903,9 @@ const AnalyzingScreen = () => {
       <View style={styles.backgroundBlur2} />
       {/* Background with blurred image overlay */}
       <View style={styles.backgroundImageContainer}>
-        <Image source={{ uri: image }} style={styles.backgroundImage} blurRadius={80} />
+        {displayUri ? (
+          <Image source={{ uri: displayUri }} style={styles.backgroundImage} blurRadius={80} />
+        ) : null}
         <LinearGradient
           colors={[DesignColors.backgroundDark + '60', DesignColors.backgroundDark + '80', DesignColors.backgroundDark]}
           start={{ x: 0, y: 0 }}
@@ -883,7 +938,7 @@ const AnalyzingScreen = () => {
           <View style={styles.mainContent}>
             {/* Image with scanning line and corner boxes */}
             <View style={[styles.imageContainer, { width: imageSize, height: imageSize * 1.25 }]}>
-              <Image source={{ uri: image }} style={styles.image} />
+              {displayUri ? <Image source={{ uri: displayUri }} style={styles.image} /> : null}
               <View style={styles.imageOverlay} />
               
               {/* Scanning line */}
@@ -1010,7 +1065,9 @@ const AnalyzingScreen = () => {
 
       {matchSong && (
         <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.revealOverlay, { opacity: revealBackdrop }]}>
-          <Image source={{ uri: image }} style={StyleSheet.absoluteFill} blurRadius={18} />
+          {displayUri ? (
+            <Image source={{ uri: displayUri }} style={StyleSheet.absoluteFill} blurRadius={18} />
+          ) : null}
           <View style={styles.revealScrim} />
           <View style={styles.revealCenter}>
             <Animated.View style={[styles.checkCircle, { opacity: checkOpacity, transform: [{ scale: checkScale }] }]}>

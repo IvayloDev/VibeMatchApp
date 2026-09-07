@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert, AppState } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +18,7 @@ import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../.
 import WallSheet from '../../../lib/components/WallSheet';
 import { claimDailyCreditIfDue, nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
 import { registerNotificationOpenedTracking, scheduleFreeMatchReminderIfAllowed } from '../../../lib/notifications';
+import { startImagePrep } from '../../../lib/imagePrep';
 
 const { width, height } = Dimensions.get('window');
 
@@ -186,12 +186,14 @@ const DashboardScreen = () => {
     if (!result.canceled && result.assets && result.assets.length > 0) {
       trackEvent('photo_selected', { source: 'library' });
       const uri = result.assets[0].uri;
-      const manipResult = await ImageManipulator.manipulateAsync(
-        uri,
-        [{ resize: { width: 800 } }],
-        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-      );
-      navigation.navigate('VibeSelection', { image: manipResult.uri });
+      // The resize used to be awaited right here, so the user watched Discover
+      // for the length of a full-resolution re-encode before the vibe screen
+      // even started moving. Start it in the background instead and navigate on
+      // the next frame with the raw file. AnalyzingScreen waits for the resized
+      // copy immediately before the upload, by which point it is done, so the
+      // bytes that reach storage are unchanged.
+      startImagePrep(uri);
+      navigation.navigate('VibeSelection', { image: uri });
     } else {
       // Closed the picker without choosing - the gap between tapping the CTA
       // and a scan ever starting.

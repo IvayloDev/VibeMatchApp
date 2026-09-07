@@ -16,7 +16,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
+import { startImagePrep, getPreparedImage, peekPreparedImage } from '../../lib/imagePrep';
 import { supabase } from '../../lib/supabase';
 import { loadGuestTasteProfile, getSpotifyConnectionStatus } from '../../lib/spotify';
 import { useAuth } from '../../lib/AuthContext';
@@ -98,6 +98,21 @@ const OnboardingScreen: React.FC = () => {
   const [profile, setProfile] = useState<TasteProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+  // What the card actually renders. photoUri is the raw pick so the photo can
+  // appear the instant the picker closes; this swaps to the resized copy once
+  // it lands, so onboarding is not animating over a full-resolution bitmap.
+  const [photoDisplayUri, setPhotoDisplayUri] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!photoUri) return;
+    let cancelled = false;
+    getPreparedImage(photoUri).then((prepared) => {
+      if (!cancelled && prepared) setPhotoDisplayUri(prepared);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [photoUri]);
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [goLiveLoading, setGoLiveLoading] = useState(false);
   // Set once the user launches a scan; onboarding is finished from then on.
@@ -220,14 +235,15 @@ const OnboardingScreen: React.FC = () => {
     });
     if (result.canceled || !result.assets?.[0]) return;
 
-    const { uri } = await ImageManipulator.manipulateAsync(
-      result.assets[0].uri,
-      [{ resize: { width: 800 } }],
-      { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
-    );
+    const raw = result.assets[0].uri;
+    // Start the resize in the background and show the photo now. The resize
+    // used to be awaited here, so the card stayed empty for the length of it;
+    // AnalyzingScreen waits for the resized copy just before the upload.
+    startImagePrep(raw);
 
     const firstPhoto = !photoUri;
-    setPhotoUri(uri);
+    setPhotoUri(raw);
+    setPhotoDisplayUri(peekPreparedImage(raw) ?? raw);
     if (!firstPhoto) return;
 
     // The photo lands, the vibes follow a beat later, and the title asks the
@@ -330,7 +346,7 @@ const OnboardingScreen: React.FC = () => {
 
           {photoUri ? (
             <Animated.View style={[styles.photoWrap, revealStyle(photoReveal)]}>
-              <Image source={{ uri: photoUri }} style={styles.photo} resizeMode="cover" accessibilityLabel="Your chosen photo" />
+              <Image source={{ uri: photoDisplayUri ?? photoUri }} style={styles.photo} resizeMode="cover" accessibilityLabel="Your chosen photo" />
               <TouchableOpacity
                 style={styles.changeBtn}
                 onPress={pickPhoto}
