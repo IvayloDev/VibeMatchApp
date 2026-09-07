@@ -86,7 +86,10 @@ export function TrackPreviewButton({
   variant,
 }: {
   song: PreviewSong;
-  variant: 'hero' | 'pill' | 'small';
+  // 'quiet': the result screen's neutral 44pt pill with the brand marks at
+  // 26pt. Preview is our action, so it wears the app's surface style, not
+  // Spotify green. 'row': a 36pt neutral circle for list rows.
+  variant: 'hero' | 'pill' | 'small' | 'quiet' | 'row';
 }) {
   const { activeKey, status, progress, availability, checkAvailability, toggle } = useTrackPreview();
   const key = song.spotify_url || `${song.title}·${song.artist}`;
@@ -113,6 +116,20 @@ export function TrackPreviewButton({
   // streaming links in its place, so tapping "play" never silently launches
   // another app.
   if (!canPreview) {
+    if (variant === 'quiet') {
+      return (
+        <View style={styles.quietRow}>
+          <StreamingLinks song={song} size={28} variant={variant} gap={Spacing.md} />
+        </View>
+      );
+    }
+    if (variant === 'row') {
+      return (
+        <View style={styles.rowLinks}>
+          <StreamingLinks song={song} size={24} variant={variant} gap={Spacing.sm} />
+        </View>
+      );
+    }
     if (variant === 'hero') {
       return (
         <View style={styles.heroWrap}>
@@ -130,6 +147,57 @@ export function TrackPreviewButton({
     return (
       <View style={styles.smallRow}>
         <StreamingLinks song={song} size={28} variant={variant} />
+      </View>
+    );
+  }
+
+  if (variant === 'quiet') {
+    return (
+      <View style={styles.quietRow}>
+        <TouchableOpacity
+          style={styles.quietPill}
+          onPress={onPress}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={isPlaying ? 'Pause preview' : 'Play preview'}
+        >
+          <View style={styles.iconWrap24}>
+            {isLoading ? (
+              <ActivityIndicator size="small" color={Colors.textPrimary} />
+            ) : (
+              <MaterialCommunityIcons name={icon} size={18} color={Colors.textPrimary} />
+            )}
+            {showRing ? (
+              <ProgressRing size={24} stroke={2.5} progress={progress} color="rgba(255,255,255,0.95)" trackColor="rgba(255,255,255,0.25)" />
+            ) : null}
+          </View>
+          <Text style={styles.quietText}>{isPlaying ? 'Pause' : isLoading ? 'Loading' : 'Play'}</Text>
+        </TouchableOpacity>
+        <StreamingLinks song={song} size={28} variant={variant} gap={Spacing.md} />
+      </View>
+    );
+  }
+
+  if (variant === 'row') {
+    return (
+      <View style={styles.rowWrap}>
+        {showRing ? (
+          <ProgressRing size={36} stroke={2.5} progress={progress} color="#FFFFFF" trackColor="rgba(255,255,255,0.25)" />
+        ) : null}
+        <TouchableOpacity
+          style={styles.rowBtn}
+          onPress={onPress}
+          activeOpacity={0.85}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={isPlaying ? `Pause ${song.title}` : `Play ${song.title}`}
+        >
+          {isLoading ? (
+            <ActivityIndicator size="small" color={Colors.textPrimary} />
+          ) : (
+            <MaterialCommunityIcons name={icon} size={18} color={Colors.textPrimary} />
+          )}
+        </TouchableOpacity>
       </View>
     );
   }
@@ -274,5 +342,50 @@ const styles = StyleSheet.create({
   smallLinks: {
     marginLeft: Spacing.xs,
     padding: Spacing.xs,
+  },
+
+  // quiet (result screen, first song)
+  quietRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    alignSelf: 'flex-start',
+  },
+  quietPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+    paddingLeft: 14,
+    paddingRight: 18,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+  },
+  quietText: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+
+  // row (result screen, other songs)
+  rowWrap: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowLinks: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

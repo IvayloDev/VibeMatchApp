@@ -1,47 +1,72 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Image, TouchableOpacity, Alert, Animated, Dimensions, Modal, ActivityIndicator, ScrollView } from 'react-native';
-import { Text, Card } from 'react-native-paper';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  View,
+  StyleSheet,
+  Image,
+  TouchableOpacity,
+  Alert,
+  Animated,
+  Dimensions,
+  Modal,
+  ActivityIndicator,
+  ScrollView,
+  Text,
+} from 'react-native';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { getImageSignedUrl } from '../../../lib/supabase';
-import { supabase } from '../../../lib/supabase';
-import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../../lib/designSystem';
-import { triggerHaptic } from '../../../lib/utils/haptics';
-import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
-import { maybeRequestReview } from '../../../lib/reviewPrompt';
 import * as SecureStore from 'expo-secure-store';
+import { getImageSignedUrl, supabase } from '../../../lib/supabase';
+import { Spacing } from '../../../lib/designSystem';
+import { OB, OnboardingFooter } from '../../../lib/components/OnboardingChrome';
+import { triggerHaptic } from '../../../lib/utils/haptics';
+import { maybeRequestReview } from '../../../lib/reviewPrompt';
 import { hasProEntitlement } from '../../../lib/revenuecat';
-
-// Once-ever flag for the post-first-scan paywall pitch (device-scoped).
-const RESULTS_PAYWALL_SHOWN_KEY = 'tunematch_results_paywall_shown';
 import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
 import { trackEvent } from '../../../lib/posthog';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
 import { ExpandableText } from '../../../lib/components/ExpandableText';
 
-const { width, height } = Dimensions.get('window');
+/**
+ * The match. Photo on top, the first song under it with its reason, play,
+ * two more songs as rows, and on the first result one Continue button.
+ *
+ * The previous version painted the song over the photo behind a gradient,
+ * floated a pulsing "Start Exploring" pill over the image, labelled both
+ * sections in uppercase, and carried a thousand lines of a retired
+ * "It's a match" animation. See the "TuneMatch first run" design page,
+ * section "The result", for the removal test behind this layout.
+ */
+
+// Once-ever flag for the post-first-scan paywall pitch (device-scoped).
+const RESULTS_PAYWALL_SHOWN_KEY = 'tunematch_results_paywall_shown';
+
+// "Swallowed - Remastered" -> "Swallowed". Spotify's catalog title carries
+// edition suffixes the model was told not to produce; strip them for display
+// only, the search and the links still use the catalog title.
+const displayTitle = (title: string) =>
+  title.replace(/\s+[-(]\s*(remaster(ed)?|\d{4} remaster(ed)?|radio edit|single version|deluxe|live|mono|stereo)[^)]*\)?\s*$/i, '').trim() || title;
 
 type Song = {
   title: string;
   artist: string;
   reason: string;
   spotify_url?: string;
-  album_cover?: string; // Album cover image URL
-  preview_url?: string | null; // 30s clip; may be null (client falls back to iTunes)
+  album_cover?: string;
+  preview_url?: string | null;
 };
 
 type ResultsParams = {
-  image: string; // This can be either a file path or signed URL
+  image: string; // file path or signed URL
   songs: Song[];
-  historyItemId?: string; // Optional history item ID for deletion
-  imagePath?: string; // Original storage path for refreshing signed URLs
+  historyItemId?: string;
+  imagePath?: string; // storage path for refreshing signed URLs
   fromOnboarding?: boolean;
-  fromFreshMatch?: boolean; // True only on a live new match (not history re-view)
+  fromFreshMatch?: boolean; // live new match, not a history re-view
 };
 
 type TabParamList = {
@@ -67,76 +92,19 @@ const ResultsScreen = () => {
   const route = useRoute();
   const navigation = useNavigation<ResultsNavigationProp>();
   const insets = useSafeAreaInsets();
-  const { image, songs = [], historyItemId, imagePath, fromOnboarding, fromFreshMatch } = (route.params || {}) as ResultsParams;
+  const { image, songs = [], historyItemId, imagePath, fromOnboarding, fromFreshMatch } =
+    (route.params || {}) as ResultsParams;
+
   const [imageUrl, setImageUrl] = useState<string>(image);
-  // The reveal moment is now the AnalyzingScreen "Match found" animation, so we
-  // land straight on the results (no in-screen 5s reveal overlay).
-  const [showAnimation, setShowAnimation] = useState(false);
-  const [showMatchCards, setShowMatchCards] = useState(false);
-  const [showContinueButton, setShowContinueButton] = useState(false);
   const [imageModalVisible, setImageModalVisible] = useState(false);
   const [modalImageSize, setModalImageSize] = useState<{ width: number; height: number } | null>(null);
-  
-  // Animation values
-  const matchTextOpacity = useRef(new Animated.Value(0)).current;
-  const matchTextScale = useRef(new Animated.Value(0.3)).current;
-  const matchTextRotation = useRef(new Animated.Value(0)).current;
-  const glowOpacity = useRef(new Animated.Value(0)).current;
-  const glowScale = useRef(new Animated.Value(0.5)).current;
-  const ring1Scale = useRef(new Animated.Value(0)).current;
-  const ring1Opacity = useRef(new Animated.Value(0)).current;
-  const ring2Scale = useRef(new Animated.Value(0)).current;
-  const ring2Opacity = useRef(new Animated.Value(0)).current;
-  const ring3Scale = useRef(new Animated.Value(0)).current;
-  const ring3Opacity = useRef(new Animated.Value(0)).current;
-  // Removed particle animations to avoid React Native tracking errors
-  // Using simpler visual effects instead
-  
-  // Confetti animation
-  const confettiScale = useRef(new Animated.Value(0)).current;
-  const confettiRotation = useRef(new Animated.Value(0)).current;
-  // Song card animation
-  const songCardOpacity = useRef(new Animated.Value(0)).current;
-  const songCardTranslateY = useRef(new Animated.Value(50)).current;
-  const songCardScale = useRef(new Animated.Value(0.9)).current;
-  // Play button animation
-  const playButtonScale = useRef(new Animated.Value(0)).current;
-  const playButtonOpacity = useRef(new Animated.Value(0)).current;
-  const backgroundPulse = useRef(new Animated.Value(0)).current;
-  const overlayOpacity = useRef(new Animated.Value(showAnimation ? 1 : 0)).current;
-  const imageScale = useRef(new Animated.Value(showAnimation ? 1.5 : 1)).current;
-  const imagePosition = useRef(new Animated.ValueXY(showAnimation ? { x: 0, y: 0 } : { x: 0, y: 0 })).current;
-  const contentOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
-  const mainSongOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
-  const alternativesOpacity = useRef(new Animated.Value(showAnimation ? 0 : 1)).current;
-  // Entrance animation for the redesigned results screen.
-  const heroEnter = useRef(new Animated.Value(0)).current;
-  const listEnter = useRef(new Animated.Value(0)).current;
-  // Slow pulse on the floating Start Exploring pill.
-  const explorePulse = useRef(new Animated.Value(0)).current;
-  const explorePulseScale = explorePulse.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.06],
-  });
-  
-  // Staggered animations for alternative songs (max 2 alternatives)
-  const alternativeAnimations = useRef([
-    { opacity: new Animated.Value(0), translateX: new Animated.Value(50) },
-    { opacity: new Animated.Value(0), translateX: new Animated.Value(50) },
-  ]).current;
-  
-  // Tinder-style match card animations
-  const userCardPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const albumCardPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const userCardRotation = useRef(new Animated.Value(0)).current;
-  const albumCardRotation = useRef(new Animated.Value(0)).current;
-  const userCardOpacity = useRef(new Animated.Value(0)).current;
-  const albumCardOpacity = useRef(new Animated.Value(0)).current;
-  const continueButtonOpacity = useRef(new Animated.Value(0)).current;
 
-  console.log('ResultsScreen params:', { image, songsCount: songs?.length, historyItemId, showAnimation });
+  // One entrance: the content fades and rises once. Nothing loops.
+  const enter = useRef(new Animated.Value(0)).current;
 
   const storageImagePath = imagePath || (image && !image.startsWith('http') ? image : undefined);
+  const main = songs[0];
+  const others = songs.slice(1, 3);
 
   // After a genuine fresh match, give the user a moment to see the result,
   // then (maybe) surface the native review sheet. Gated once-ever inside
@@ -149,59 +117,33 @@ const ResultsScreen = () => {
     return () => clearTimeout(t);
   }, []);
 
-  // The first result is a one-way step: hide the tab bar so Start Exploring is
-  // the only way forward. The paywall it opens still has its own back arrow,
-  // so this narrows the path without trapping anyone.
-  //
-  // Restore on BLUR, not unmount. Start Exploring can end in
-  // `navigate('History', { screen: 'History' })`, which moves within this same
-  // stack - the screen does not reliably unmount, so an unmount-only cleanup
-  // left the user on the History list with no tab bar and no back button, i.e.
-  // a dead end only an app restart escaped. useFocusEffect's cleanup runs on
-  // blur, which covers both navigating away and unmounting.
+  // The first result is a one-way step: hide the tab bar so Continue is the
+  // only way forward. Restore on BLUR, not unmount: Continue can end in
+  // `navigate('History', { screen: 'History' })` within this same stack, so
+  // the screen does not reliably unmount, and an unmount-only cleanup left
+  // the History list with no tab bar and no way out.
   useFocusEffect(
-    React.useCallback(() => {
+    useCallback(() => {
       if (!fromOnboarding) return;
       const tabNavigation = navigation.getParent();
       tabNavigation?.setOptions({ tabBarStyle: { display: 'none' } });
       return () => {
-        // Clearing the override lets the navigator's own screenOptions apply again.
         tabNavigation?.setOptions({ tabBarStyle: undefined });
       };
     }, [fromOnboarding, navigation])
   );
 
-  // Slow pulse so the pill reads as the live action on the screen.
   useEffect(() => {
-    if (!fromOnboarding) return;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(explorePulse, { toValue: 1, duration: 900, useNativeDriver: true }),
-        Animated.timing(explorePulse, { toValue: 0, duration: 900, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [fromOnboarding]);
-
-  // Smooth entrance: hero rises + fades in, alternatives follow with a slight stagger.
-  useEffect(() => {
-    Animated.stagger(110, [
-      Animated.timing(heroEnter, { toValue: 1, duration: 520, useNativeDriver: true }),
-      Animated.timing(listEnter, { toValue: 1, duration: 520, useNativeDriver: true }),
-    ]).start();
-  }, []);
+    Animated.timing(enter, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+  }, [enter]);
 
   useEffect(() => {
     let isMounted = true;
-
     const loadImage = async () => {
       if (storageImagePath) {
         try {
           const signedUrl = await getImageSignedUrl(storageImagePath);
-          if (signedUrl && isMounted) {
-            setImageUrl(signedUrl);
-          }
+          if (signedUrl && isMounted) setImageUrl(signedUrl);
         } catch (error) {
           console.error('Error fetching signed image URL:', error);
         }
@@ -209,9 +151,7 @@ const ResultsScreen = () => {
         setImageUrl(image);
       }
     };
-
     loadImage();
-
     return () => {
       isMounted = false;
     };
@@ -222,356 +162,26 @@ const ResultsScreen = () => {
       setModalImageSize(null);
       return;
     }
-
+    const window = Dimensions.get('window');
+    const maxWidth = Math.max(window.width - Spacing.lg * 2, 200);
+    const maxHeight = Math.max(window.height - (insets.top + insets.bottom + 120), 200);
     Image.getSize(
       imageUrl,
-      (width, height) => {
-        const window = Dimensions.get('window');
-        const maxWidth = Math.max(window.width - Spacing.lg * 2, 200);
-        const maxHeight = Math.max(window.height - (insets.top + insets.bottom + 120), 200);
-
+      (w, h) => {
         let displayWidth = maxWidth;
-        let displayHeight = (height / width) * displayWidth;
-
+        let displayHeight = (h / w) * displayWidth;
         if (displayHeight > maxHeight) {
           displayHeight = maxHeight;
-          displayWidth = (width / height) * displayHeight;
+          displayWidth = (w / h) * displayHeight;
         }
-
         setModalImageSize({ width: displayWidth, height: displayHeight });
       },
       (error) => {
         console.error('Error getting image size:', error);
-        const window = Dimensions.get('window');
-        setModalImageSize({
-          width: Math.max(window.width - Spacing.lg * 2, 200),
-          height: Math.max(window.height - (insets.top + insets.bottom + 120), 200),
-        });
+        setModalImageSize({ width: maxWidth, height: maxHeight });
       }
     );
   }, [imageUrl, insets.bottom, insets.top]);
-
-  // Animation sequence
-  useEffect(() => {
-    if (showAnimation && songs.length > 0) {
-      // Step 1: Initial pulse and glow (delay to let screen settle)
-      setTimeout(() => {
-        // Background pulse animation (continuous)
-        Animated.loop(
-          Animated.sequence([
-            Animated.timing(backgroundPulse, {
-              toValue: 1,
-              duration: 2000,
-              useNativeDriver: true,
-            }),
-            Animated.timing(backgroundPulse, {
-              toValue: 0,
-              duration: 2000,
-              useNativeDriver: true,
-            }),
-          ])
-        ).start();
-
-        // Glow effect
-        Animated.parallel([
-          Animated.timing(glowOpacity, {
-            toValue: 1,
-            duration: 600,
-            useNativeDriver: true,
-          }),
-          Animated.spring(glowScale, {
-            toValue: 1.2,
-            tension: 50,
-            friction: 7,
-            useNativeDriver: true,
-          }),
-        ]).start();
-
-        // Rotating rings animation - seamless loop
-        const createRingAnimation = (scale: Animated.Value, opacity: Animated.Value, delay: number) => {
-          const animateRing = () => {
-            // Reset values
-            scale.setValue(0);
-            opacity.setValue(0);
-            
-            Animated.parallel([
-              Animated.timing(scale, {
-                toValue: 2.5,
-                duration: 2000,
-                useNativeDriver: true,
-              }),
-              Animated.sequence([
-                Animated.timing(opacity, {
-                  toValue: 0.6,
-                  duration: 400,
-                  useNativeDriver: true,
-                }),
-                Animated.timing(opacity, {
-                  toValue: 0,
-                  duration: 1600,
-                  useNativeDriver: true,
-                }),
-              ]),
-            ]).start(() => {
-              // Loop seamlessly
-              animateRing();
-            });
-          };
-          
-          setTimeout(() => {
-            animateRing();
-          }, delay);
-        };
-
-        createRingAnimation(ring1Scale, ring1Opacity, 0);
-        createRingAnimation(ring2Scale, ring2Opacity, 666); // Stagger by 1/3 of duration
-        createRingAnimation(ring3Scale, ring3Opacity, 1332); // Stagger by 2/3 of duration
-
-        // Particle effects removed to avoid React Native tracking errors
-
-        // Haptic feedback sequence
-        triggerHaptic('success');
-        setTimeout(() => triggerHaptic('medium'), 200);
-        setTimeout(() => triggerHaptic('light'), 400);
-      }, 300);
-
-      // Step 2: Show "It's a Match!" text with dramatic entrance
-      setTimeout(() => {
-        Animated.parallel([
-          Animated.timing(matchTextOpacity, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.spring(matchTextScale, {
-            toValue: 1,
-            tension: 100,
-            friction: 8,
-            useNativeDriver: true,
-          }),
-          Animated.sequence([
-            Animated.timing(matchTextRotation, {
-              toValue: 1,
-              duration: 400,
-              useNativeDriver: true,
-            }),
-            Animated.timing(matchTextRotation, {
-              toValue: 0,
-              duration: 400,
-              useNativeDriver: true,
-            }),
-          ]),
-        ]).start();
-
-        // Continuous pulsing glow
-        Animated.loop(
-          Animated.sequence([
-            Animated.timing(glowScale, {
-              toValue: 1.3,
-              duration: 1000,
-              useNativeDriver: true,
-            }),
-            Animated.timing(glowScale, {
-              toValue: 1.1,
-              duration: 1000,
-              useNativeDriver: true,
-            }),
-          ])
-        ).start();
-
-        // Animate confetti emoji
-        setTimeout(() => {
-          Animated.parallel([
-            Animated.spring(confettiScale, {
-              toValue: 1,
-              tension: 80,
-              friction: 6,
-              useNativeDriver: true,
-            }),
-            Animated.sequence([
-              Animated.timing(confettiRotation, {
-                toValue: 1,
-                duration: 400,
-                useNativeDriver: true,
-              }),
-              Animated.timing(confettiRotation, {
-                toValue: -1,
-                duration: 400,
-                useNativeDriver: true,
-              }),
-              Animated.timing(confettiRotation, {
-                toValue: 0,
-                duration: 400,
-                useNativeDriver: true,
-              }),
-            ]),
-          ]).start();
-
-          // Continuous bounce animation for confetti
-          Animated.loop(
-            Animated.sequence([
-              Animated.timing(confettiScale, {
-                toValue: 1.15,
-                duration: 600,
-                useNativeDriver: true,
-              }),
-              Animated.timing(confettiScale, {
-                toValue: 1,
-                duration: 600,
-                useNativeDriver: true,
-              }),
-            ])
-          ).start();
-        }, 800);
-
-        // Animate song card (after text appears)
-        setTimeout(() => {
-          Animated.parallel([
-            Animated.timing(songCardOpacity, {
-              toValue: 1,
-              duration: 600,
-              useNativeDriver: true,
-            }),
-            Animated.spring(songCardTranslateY, {
-              toValue: 0,
-              tension: 60,
-              friction: 7,
-              useNativeDriver: true,
-            }),
-            Animated.spring(songCardScale, {
-              toValue: 1,
-              tension: 60,
-              friction: 7,
-              useNativeDriver: true,
-            }),
-          ]).start();
-
-          // Animate play button (after card appears)
-          setTimeout(() => {
-            Animated.parallel([
-              Animated.spring(playButtonScale, {
-                toValue: 1,
-                tension: 100,
-                friction: 6,
-                useNativeDriver: true,
-              }),
-              Animated.timing(playButtonOpacity, {
-                toValue: 1,
-                duration: 400,
-                useNativeDriver: true,
-              }),
-            ]).start();
-
-            // Pulse animation for play button
-            Animated.loop(
-              Animated.sequence([
-                Animated.timing(playButtonScale, {
-                  toValue: 1.1,
-                  duration: 800,
-                  useNativeDriver: true,
-                }),
-                Animated.timing(playButtonScale, {
-                  toValue: 1,
-                  duration: 800,
-                  useNativeDriver: true,
-                }),
-              ])
-            ).start();
-          }, 300);
-        }, 1200);
-      }, 500);
-
-      // Step 3: Hide match text, fade out overlay, and animate image to position (after 4.5 seconds - more time to see the song card)
-      setTimeout(() => {
-        Animated.parallel([
-          // Hide match text and effects
-          Animated.timing(matchTextOpacity, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          Animated.timing(glowOpacity, {
-            toValue: 0,
-            duration: 500,
-            useNativeDriver: true,
-          }),
-          // Fade out the entire overlay
-          Animated.timing(overlayOpacity, {
-            toValue: 0,
-            duration: 600,
-            useNativeDriver: true,
-          }),
-          // Move and scale image to final position
-          Animated.timing(imageScale, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-          }),
-          Animated.timing(imagePosition, {
-            toValue: { x: 0, y: 0 },
-            duration: 800,
-            useNativeDriver: true,
-          }),
-        ]).start(() => {
-          // Remove overlay from DOM after fade-out completes
-          setShowAnimation(false);
-        });
-      }, 5000); // Extended to 5 seconds to show song card longer
-
-      // Step 4: Show content with staggered animations (after image settles)
-      setTimeout(() => {
-        // Show main content
-        Animated.timing(contentOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }).start();
-
-        // Staggered reveal of main song
-        setTimeout(() => {
-          Animated.timing(mainSongOpacity, {
-            toValue: 1,
-            duration: 600,
-            useNativeDriver: true,
-          }).start();
-        }, 200);
-
-        // Staggered reveal of alternatives with slide-in
-        setTimeout(() => {
-          Animated.timing(alternativesOpacity, {
-            toValue: 1,
-            duration: 600,
-            useNativeDriver: true,
-          }).start();
-          
-          // Animate each alternative song card individually
-          alternativeAnimations.forEach((anim, index) => {
-            setTimeout(() => {
-              Animated.parallel([
-                Animated.timing(anim.opacity, {
-                  toValue: 1,
-                  duration: 500,
-                  useNativeDriver: true,
-                }),
-                Animated.spring(anim.translateX, {
-                  toValue: 0,
-                  tension: 50,
-                  friction: 7,
-                  useNativeDriver: true,
-                }),
-              ]).start();
-            }, index * 150);
-          });
-        }, 500);
-      }, 4500);
-    } else {
-      // If no animation, show alternatives immediately
-      alternativeAnimations.forEach((anim) => {
-        anim.opacity.setValue(1);
-        anim.translateX.setValue(0);
-      });
-    }
-  }, [showAnimation, songs.length]);
 
   const handleBackPress = () => {
     triggerHaptic('light');
@@ -579,25 +189,20 @@ const ResultsScreen = () => {
       (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
       return;
     }
-    // Check if we're in HistoryResults (History stack) or Results (Home stack)
-    const routeName = route.name;
-
-    if (routeName === 'HistoryResults') {
-      // If we're in HistoryResults, navigate to History list
-      // This ensures we always go back to History, not Analyzing
+    if (route.name === 'HistoryResults') {
+      // Always back to the History list, never to Analyzing.
       navigation.navigate('History', { screen: 'History' });
     } else {
-      // If we're in Results (Home stack), just go back normally
       navigation.goBack();
     }
   };
 
-  const handleStartExploring = async () => {
+  const handleContinue = async () => {
     // Show the subscription paywall exactly once per device, at the peak of
-    // the first match (this replaces the retired 30-min launch offer). Every
-    // later tap goes to the Vault - the paywall stays reachable from the
-    // Dashboard banner, the credits pill and the out-of-credits gate, so this
-    // moment is a single pitch, not a toll booth. Subscribers skip it.
+    // the first match. Every later tap goes to the Vault; the paywall stays
+    // reachable from the Dashboard banner, the credits pill and the
+    // out-of-credits gate, so this moment is a single pitch, not a toll
+    // booth. Subscribers skip it.
     let showPaywall = false;
     try {
       const alreadyShown = await SecureStore.getItemAsync(RESULTS_PAYWALL_SHOWN_KEY);
@@ -615,64 +220,17 @@ const ResultsScreen = () => {
       return;
     }
 
-    // Send them to the Vault rather than Discover. Discover is a 0-credit
-    // upload prompt - a dead end - while the Vault now holds the match they
-    // just made, guest or not.
+    // The Vault holds the match they just made, guest or not. Discover would
+    // be a 0-credit upload prompt, a dead end.
     navigation.navigate('History', { screen: 'History' });
   };
 
-  const handleContinueToResults = () => {
-    // Hide match cards and show main results content
-    setShowMatchCards(false);
-    setShowContinueButton(false);
-    setShowAnimation(false);
-    
-    // Animate to final results state
-    Animated.parallel([
-      Animated.timing(imageScale, {
-        toValue: 1,
-        duration: 800,
-        useNativeDriver: true,
-      }),
-      Animated.timing(imagePosition, {
-        toValue: { x: 0, y: 0 },
-        duration: 800,
-        useNativeDriver: true,
-      }),
-      Animated.timing(contentOpacity, {
-        toValue: 1,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      // Staggered reveal of content
-      setTimeout(() => {
-        Animated.timing(mainSongOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }).start();
-      }, 200);
-
-      setTimeout(() => {
-        Animated.timing(alternativesOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }).start();
-      }, 500);
-    });
-  };
-
-  const handleImagePress = React.useCallback(() => {
+  const handleImagePress = useCallback(() => {
     setImageModalVisible(true);
-
     if (storageImagePath) {
       getImageSignedUrl(storageImagePath)
         .then((refreshedUrl) => {
-          if (refreshedUrl) {
-            setImageUrl(refreshedUrl);
-          }
+          if (refreshedUrl) setImageUrl(refreshedUrl);
         })
         .catch((error) => {
           console.error('Error refreshing image URL:', error);
@@ -680,930 +238,284 @@ const ResultsScreen = () => {
     }
   }, [storageImagePath]);
 
-  const closeImageModal = () => {
-    setImageModalVisible(false);
-  };
+  const closeImageModal = () => setImageModalVisible(false);
 
   const handleDeletePress = () => {
-    if (!historyItemId) {
-      console.log('No historyItemId provided');
-      return;
-    }
+    if (!historyItemId) return;
 
-    console.log('Attempting to delete history item:', historyItemId);
-
-    Alert.alert(
-      'Delete Item',
-      'Are you sure you want to delete this history item? This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Delete', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              // Guest items live only in local storage - they have no row to
-              // delete and no session to check, so handle them before the
-              // Supabase path (which would reject them for being unauthed).
-              if (isGuestHistoryId(historyItemId)) {
-                await removeGuestHistoryItem(historyItemId!);
-                console.log('Deleted local history item:', historyItemId);
-                navigation.goBack();
-                return;
-              }
-
-              console.log('Deleting from Supabase with ID:', historyItemId);
-
-              // Check if user is authenticated
-              const { data: { session } } = await supabase.auth.getSession();
-              if (!session) {
-                console.error('No active session');
-                Alert.alert('Error', 'You must be logged in to delete items.');
-                return;
-              }
-
-              console.log('User authenticated, user ID:', session.user.id);
-              
-              // First, let's check if the item exists and belongs to this user
-              const { data: existingItem, error: fetchError } = await supabase
-                .from('history')
-                .select('id, user_id, image_url')
-                .eq('id', historyItemId)
-                .single();
-
-              console.log('Existing item check:', { 
-                existingItem, 
-                fetchError,
-                itemUserId: existingItem?.user_id,
-                currentUserId: session.user.id,
-                userIdsMatch: existingItem?.user_id === session.user.id 
-              });
-
-              if (fetchError || !existingItem) {
-                console.error('Item not found:', fetchError);
-                Alert.alert('Error', 'Item not found.');
-                return;
-              }
-
-              // Verify the item belongs to the current user
-              if (existingItem.user_id !== session.user.id) {
-                console.error('Item does not belong to current user. Item user_id:', existingItem.user_id, 'Current user_id:', session.user.id);
-                Alert.alert('Error', 'You do not have permission to delete this item.');
-                return;
-              }
-
-              console.log('Item found and verified, proceeding with delete...');
-              
-              // Delete from Supabase - only using id since we already verified ownership
-              const { error, count } = await supabase
-                .from('history')
-                .delete({ count: 'exact' })
-                .eq('id', historyItemId)
-                .eq('user_id', session.user.id);
-
-              console.log('Delete response:', { error, count, historyItemId });
-
-              if (error) {
-                console.error('Error deleting history item:', error);
-                Alert.alert('Error', `Failed to delete item: ${error.message}`);
-                return;
-              }
-
-              // Check if any rows were actually deleted
-              if (count !== null && count === 0) {
-                console.error('Delete returned 0 rows - RLS policy may be blocking deletion');
-                Alert.alert('Error', 'Failed to delete item. This may be a permissions issue.');
-                return;
-              }
-
-              console.log('Item deleted successfully. Rows deleted:', count);
-              
-              // Small delay to ensure database consistency
-              await new Promise(resolve => setTimeout(resolve, 300));
-              
-              // Navigate back immediately - the useFocusEffect will refresh the list
+    Alert.alert('Delete this match?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            // Guest items live only in local storage: no row, no session.
+            if (isGuestHistoryId(historyItemId)) {
+              await removeGuestHistoryItem(historyItemId!);
               navigation.goBack();
-            } catch (error) {
-              console.error('Error deleting history item:', error);
-              Alert.alert('Error', 'An error occurred while deleting the item.');
+              return;
             }
+
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) {
+              Alert.alert('Error', 'You must be logged in to delete items.');
+              return;
+            }
+
+            const { data: existingItem, error: fetchError } = await supabase
+              .from('history')
+              .select('id, user_id')
+              .eq('id', historyItemId)
+              .single();
+
+            if (fetchError || !existingItem) {
+              Alert.alert('Error', 'Item not found.');
+              return;
+            }
+            if (existingItem.user_id !== session.user.id) {
+              Alert.alert('Error', 'You do not have permission to delete this item.');
+              return;
+            }
+
+            const { error, count } = await supabase
+              .from('history')
+              .delete({ count: 'exact' })
+              .eq('id', historyItemId)
+              .eq('user_id', session.user.id);
+
+            if (error) {
+              console.error('Error deleting history item:', error);
+              Alert.alert('Error', `Failed to delete item: ${error.message}`);
+              return;
+            }
+            if (count !== null && count === 0) {
+              Alert.alert('Error', 'Failed to delete item. This may be a permissions issue.');
+              return;
+            }
+
+            // Small delay so the list refresh sees the deletion.
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            navigation.goBack();
+          } catch (err) {
+            console.error('Error deleting history item:', err);
+            Alert.alert('Error', 'An error occurred while deleting the item.');
           }
-        }
-      ]
-    );
+        },
+      },
+    ]);
   };
 
-  const hasBottomArea = !!fromOnboarding;
+  const enterStyle = {
+    opacity: enter,
+    transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+  };
 
   return (
     <TrackPreviewProvider>
-    <SafeAreaView style={{ flex: 1, backgroundColor: Colors.background }} edges={['left', 'right']}>
-      {/* Floating Action Buttons */}
-      {!fromOnboarding && (
-        <View style={[styles.floatingActions, { top: insets.top + 10 }]}>
-          <TouchableOpacity onPress={handleBackPress} style={styles.backButton}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color={Colors.textPrimary} />
-          </TouchableOpacity>
-          {historyItemId && (
-            <TouchableOpacity onPress={handleDeletePress} style={styles.deleteButton}>
-              <MaterialCommunityIcons name="delete" size={24} color={Colors.accent.red} />
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-      
       <View style={styles.container}>
-        {/* Background Blur Effects */}
-        <View style={styles.backgroundBlur1} />
-        <View style={styles.backgroundBlur2} />
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={[styles.scrollContent, hasBottomArea && styles.scrollContentWithBottomArea]}
+          style={styles.flex}
+          contentContainerStyle={[styles.scroll, !fromOnboarding && styles.scrollAboveTabBar]}
           showsVerticalScrollIndicator={false}
+          contentInsetAdjustmentBehavior="never"
         >
-          {/* HERO: photo up top, main match + the full "why" in a panel that
-              grows to fit the reason (the reason is the point, so never clip it). */}
-          <Animated.View
-            style={[
-              styles.hero,
-              {
-                opacity: heroEnter,
-                transform: [{ translateY: heroEnter.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
-              },
-            ]}
+          {/* The photo, edge to edge, square. Tap to see it in full. */}
+          <TouchableOpacity
+            onPress={handleImagePress}
+            activeOpacity={0.96}
+            style={styles.photoWrap}
+            accessibilityRole="imagebutton"
+            accessibilityLabel="Your photo. Opens full screen."
           >
-            {imageUrl && (
-              <TouchableOpacity onPress={handleImagePress} activeOpacity={0.96} style={StyleSheet.absoluteFill}>
-                <Image source={{ uri: imageUrl }} style={styles.heroImage} />
-              </TouchableOpacity>
-            )}
-            {/* Reserve the top for the photo; the panel below sizes to its text. */}
-            <View style={styles.heroSpacer} pointerEvents="none" />
-            {songs[0] && (
-              <LinearGradient
-                colors={['transparent', Colors.background + 'F2', Colors.background]}
-                locations={[0, 0.55, 1]}
-                style={styles.heroMain}
-                pointerEvents="box-none"
-              >
-                <Text style={styles.mainSongLabel}>MAIN MATCH</Text>
-                <Text style={styles.heroTitle} numberOfLines={2}>
-                  {songs[0]?.title || 'Unknown Title'}
-                </Text>
-                <Text style={styles.heroArtist} numberOfLines={1}>
-                  by {songs[0]?.artist || 'Unknown Artist'}
-                </Text>
-                {!!songs[0]?.reason && (
-                  <ExpandableText
-                    text={songs[0].reason}
-                    collapsedLines={3}
-                    style={styles.heroReason}
-                    toggleColor="#FF6B60"
-                  />
-                )}
-                <View style={styles.heroControls}>
-                  <TrackPreviewButton song={songs[0]} variant="pill" />
-                </View>
-              </LinearGradient>
-            )}
-          </Animated.View>
+            {imageUrl ? <Image source={{ uri: imageUrl }} style={styles.photo} /> : null}
+          </TouchableOpacity>
 
-          {/* MORE MATCHES */}
-          <Animated.View
-            style={[
-              styles.altSection,
-              {
-                opacity: listEnter,
-                transform: [{ translateY: listEnter.interpolate({ inputRange: [0, 1], outputRange: [26, 0] }) }],
-              },
-            ]}
-          >
-            <Text style={styles.alternativesLabel}>MORE MATCHES</Text>
-            <View style={styles.alternativesList}>
-              {songs.slice(1, 3).map((song, idx) => (
-                <View key={idx} style={styles.alternativeItem}>
-                  {song?.album_cover ? (
-                    <Image source={{ uri: song.album_cover }} style={styles.alternativeAlbumArt} />
-                  ) : (
-                    <View style={[styles.alternativeAlbumArt, styles.alternativeAlbumArtFallback]}>
-                      <MaterialCommunityIcons name="music-note" size={24} color={Colors.textSecondary} />
-                    </View>
-                  )}
-                  <View style={styles.alternativeInfo}>
-                    <Text style={styles.alternativeTitle} numberOfLines={2}>
-                      {song?.title || 'Unknown Title'}
-                    </Text>
-                    <Text style={styles.alternativeArtist} numberOfLines={1}>
-                      by {song?.artist || 'Unknown Artist'}
-                    </Text>
-                    {!!song?.reason && (
-                      <ExpandableText
-                        text={song.reason}
-                        collapsedLines={2}
-                        style={styles.alternativeReason}
-                        toggleColor="#FF6B60"
-                      />
-                    )}
+          <Animated.View style={[styles.content, enterStyle]}>
+            {main ? (
+              <>
+                <Text style={styles.title} accessibilityRole="header">
+                  {displayTitle(main.title || 'Unknown title')}
+                </Text>
+                <Text style={styles.artist} numberOfLines={1}>
+                  {main.artist || 'Unknown artist'}
+                </Text>
+                {!!main.reason && (
+                  <View style={styles.reason}>
+                    <ExpandableText
+                      text={main.reason}
+                      collapsedLines={2}
+                      style={styles.reasonText}
+                      toggleColor={OB.text}
+                    />
                   </View>
-                  {song && <TrackPreviewButton song={song} variant="small" />}
+                )}
+                <View style={styles.play}>
+                  <TrackPreviewButton song={main} variant="quiet" />
                 </View>
-              ))}
-            </View>
-          </Animated.View>
+              </>
+            ) : null}
 
+            {others.length > 0 ? (
+              <View style={styles.rows}>
+                {others.map((song, idx) => (
+                  <View key={`${song.title}-${idx}`} style={styles.row}>
+                    {song.album_cover ? (
+                      <Image source={{ uri: song.album_cover }} style={styles.art} />
+                    ) : (
+                      <View style={[styles.art, styles.artFallback]}>
+                        <MaterialCommunityIcons name="music-note" size={20} color={OB.textFaint} />
+                      </View>
+                    )}
+                    <View style={styles.rowText}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>
+                        {displayTitle(song.title || 'Unknown title')}
+                      </Text>
+                      <Text style={styles.rowArtist} numberOfLines={1}>
+                        {song.artist || 'Unknown artist'}
+                      </Text>
+                    </View>
+                    <TrackPreviewButton song={song} variant="row" />
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </Animated.View>
         </ScrollView>
 
-        {/* Start Exploring floats over the photo instead of sitting at the end
-            of the scroll content. Only 89 of 215 users ever reached it down
-            there - most never scrolled past the first match. It pulses because
-            it is now the only way forward on this screen: the tab bar is
-            hidden while the first result is showing. */}
-        {fromOnboarding && (
-          <Animated.View
-            style={[
-              styles.exploreFloating,
-              { top: insets.top + Spacing.sm, transform: [{ scale: explorePulseScale }] },
-            ]}
-          >
+        {/* Back and delete sit on the photo, only on history views. The first
+            result has one way forward: the footer. */}
+        {!fromOnboarding ? (
+          <View style={[styles.photoNav, { top: insets.top + 6 }]} pointerEvents="box-none">
             <TouchableOpacity
-              style={styles.exploreFloatingInner}
-              onPress={handleStartExploring}
-              activeOpacity={0.85}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              onPress={handleBackPress}
+              style={styles.navBtn}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
             >
-              <Text style={styles.exploreFloatingText}>Start Exploring</Text>
-              <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
+              <MaterialCommunityIcons name="chevron-left" size={26} color={OB.text} />
             </TouchableOpacity>
-          </Animated.View>
+            {historyItemId ? (
+              <TouchableOpacity
+                onPress={handleDeletePress}
+                style={styles.navBtn}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Delete this match"
+              >
+                <MaterialCommunityIcons name="trash-can-outline" size={22} color={OB.text} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
+        {fromOnboarding ? (
+          <OnboardingFooter ctaLabel="Continue" onPress={handleContinue} bottomInset={insets.bottom} />
+        ) : (
+          <View style={{ height: insets.bottom }} />
         )}
       </View>
 
-      {/* Full-Screen Image Modal */}
-      <Modal
-        visible={imageModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={closeImageModal}
-      >
+      <Modal visible={imageModalVisible} transparent animationType="fade" onRequestClose={closeImageModal}>
         <View style={styles.modalContainer}>
-          <TouchableOpacity
-            style={styles.modalBackground}
-            onPress={closeImageModal}
-            activeOpacity={1}
-          >
+          <TouchableOpacity style={styles.modalBackground} onPress={closeImageModal} activeOpacity={1}>
             <SafeAreaView style={styles.modalContent}>
-              {/* Close Button */}
               <TouchableOpacity
                 style={[styles.closeButton, { top: insets.top + 10 }]}
                 onPress={closeImageModal}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
               >
-                <MaterialCommunityIcons name="close" size={28} color={Colors.textPrimary} />
+                <MaterialCommunityIcons name="close" size={28} color={OB.text} />
               </TouchableOpacity>
-
-              {/* Full-Screen Image */}
               <View style={styles.fullImageContainer}>
                 {imageUrl && modalImageSize ? (
-                  <Image
-                    source={{ uri: imageUrl }}
-                    style={[styles.fullImage, modalImageSize]}
-                    resizeMode="contain"
-                  />
+                  <Image source={{ uri: imageUrl }} style={[styles.fullImage, modalImageSize]} resizeMode="contain" />
                 ) : (
-                  <ActivityIndicator size="large" color="#FF3B30" />
+                  <ActivityIndicator size="large" color={OB.primary} />
                 )}
               </View>
-
-              {/* Image Info */}
-              <View style={styles.imageInfo}>
-                <Text style={styles.imageInfoText}>
-                  Tap anywhere to close
-                </Text>
-              </View>
+              <Text style={styles.imageInfoText}>Tap anywhere to close</Text>
             </SafeAreaView>
           </TouchableOpacity>
         </View>
       </Modal>
-    </SafeAreaView>
     </TrackPreviewProvider>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#221019', // Matching DashboardScreen background
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: Spacing.xl,
-  },
-  scrollContentWithBottomArea: {
-    // Clears the floating bottom tab bar so the inline Start Exploring button
-    // is fully visible when scrolled to the end.
-    paddingBottom: 120,
-  },
-
-  // Direction A: immersive hero
-  hero: {
-    width: '100%',
-    // No fixed height: the panel below grows with the reason, and the photo
-    // (absolute-filled) covers whatever height the hero becomes.
-    backgroundColor: Colors.cardBackground,
-  },
-  heroSpacer: {
-    height: height * 0.44,
-  },
-  heroImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  heroExpand: {
+  container: { flex: 1, backgroundColor: OB.bg },
+  flex: { flex: 1 },
+  scroll: { paddingBottom: Spacing.lg },
+  // History views keep the floating tab bar; the last row must clear it.
+  scrollAboveTabBar: { paddingBottom: 120 },
+  photoWrap: { width: '100%', aspectRatio: 1, backgroundColor: OB.surface },
+  photo: { width: '100%', height: '100%', resizeMode: 'cover' },
+  photoNav: {
     position: 'absolute',
-    top: 12,
+    left: 12,
     right: 12,
-    backgroundColor: Colors.background + 'AA',
-    borderRadius: BorderRadius.round,
-    padding: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
-  heroScrim: {
-    ...StyleSheet.absoluteFillObject,
+  navBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  heroMain: {
-    paddingHorizontal: Layout.screenPadding,
-    paddingTop: 52, // room for the gradient to fade from photo into the panel
-    paddingBottom: Spacing.lg,
-  },
-  heroTitle: {
-    ...Typography.heading2,
+  content: { paddingHorizontal: OB.margin, paddingTop: 18 },
+  title: {
+    color: OB.text,
     fontSize: 26,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    letterSpacing: -0.4,
-    lineHeight: 30,
-    marginTop: 2,
-    textShadowColor: 'rgba(0,0,0,0.55)',
-    textShadowRadius: 14,
-    textShadowOffset: { width: 0, height: 1 },
+    lineHeight: 31,
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
-  heroArtist: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-    marginTop: 3,
+  artist: { color: OB.textDim, fontSize: OB.body, marginTop: 2 },
+  reason: { marginTop: 12 },
+  reasonText: { color: OB.textDim, fontSize: 14, lineHeight: 20 },
+  play: { marginTop: 14 },
+  rows: {
+    marginTop: 22,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: OB.border,
   },
-  heroReason: {
-    ...Typography.caption,
-    color: Colors.textSecondary, // the "why" is a highlight, not fine print
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 10,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 10,
-    textShadowOffset: { width: 0, height: 1 },
-  },
-  heroControls: {
-    marginTop: 16,
-  },
-  altSection: {
-    paddingHorizontal: Layout.screenPadding,
-    paddingTop: Spacing.lg,
-    paddingBottom: 110, // clear the floating bottom tab bar so the last card is fully visible
-  },
-  
-  // Animation styles
-  matchOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: Colors.background,
-    zIndex: 1000,
-    overflow: 'hidden',
-  },
-  matchTextContainer: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    maxWidth: '90%',
-  },
-  matchBackgroundGradient: {
-    position: 'absolute',
-    top: -100,
-    left: -100,
-    right: -100,
-    bottom: -100,
-  },
-  expandingRing: {
-    position: 'absolute',
-    width: 200,
-    height: 200,
-    borderRadius: 100,
-    borderWidth: 3,
-    borderColor: '#FF3B30',
-    top: '50%',
-    left: '50%',
-    marginLeft: -100,
-    marginTop: -100,
-  },
-  glowEffect: {
-    position: 'absolute',
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: '#FF3B30',
-    opacity: 0.3,
-  },
-  matchText: {
-    ...Typography.display,
-    fontSize: 42,
-    fontWeight: '900',
-    color: Colors.textPrimary,
-    textAlign: 'center',
-    marginBottom: Spacing.sm,
-    textShadowColor: '#FF3B30',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 20,
-    letterSpacing: 1,
-    includeFontPadding: false,
-    paddingHorizontal: Spacing.sm,
-  },
-  matchSubtext: {
-    ...Typography.body,
-    color: '#FFFFFF',
-    textAlign: 'center',
-    fontSize: 16,
-    marginTop: Spacing.md,
-    fontWeight: '400',
-    lineHeight: 22,
-    paddingHorizontal: Spacing.lg,
-  },
-  confettiEmoji: {
-    fontSize: 48,
-    textAlign: 'center',
-  },
-  songRecommendationCard: {
-    width: width * 0.85,
-    marginTop: Spacing.xxl,
-    borderRadius: BorderRadius.xl,
-    overflow: 'hidden',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 12,
-  },
-  songCardGradient: {
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.md,
-  },
-  songCardContent: {
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingRight: Spacing.sm,
-    gap: Spacing.md,
+    gap: 12,
+    minHeight: 64,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
   },
-  albumArt: {
-    width: 80,
-    height: 80,
-    borderRadius: BorderRadius.md,
-    backgroundColor: '#E0E0E0',
-    flexShrink: 0,
-  },
-  songInfoContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingRight: Spacing.sm,
-  },
-  songTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1F1F1F',
-    marginBottom: 4,
-  },
-  songArtist: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: 'rgba(31, 31, 31, 0.7)',
-  },
-  curvedLine1: {
-    position: 'absolute',
-    top: height * 0.15,
-    right: -width * 0.3,
-    width: width * 0.6,
-    height: width * 0.6,
-    borderWidth: 2,
-    borderColor: '#FF3B3040',
-    borderRadius: width * 0.3,
-    borderTopColor: 'transparent',
-    borderRightColor: 'transparent',
-  },
-  curvedLine2: {
-    position: 'absolute',
-    bottom: height * 0.15,
-    left: -width * 0.3,
-    width: width * 0.6,
-    height: width * 0.6,
-    borderWidth: 2,
-    borderColor: '#FF3B3040',
-    borderRadius: width * 0.3,
-    borderBottomColor: 'transparent',
-    borderLeftColor: 'transparent',
-  },
-   
-   // Tinder-style match cards
-   matchCardsContainer: {
-     position: 'absolute',
-     top: 0,
-     left: 0,
-     right: 0,
-     bottom: 0,
-     justifyContent: 'center',
-     alignItems: 'center',
-     zIndex: 999,
-   },
-   matchCard: {
-     position: 'absolute',
-     width: 180,
-     height: 240,
-     borderRadius: BorderRadius.lg,
-     backgroundColor: Colors.cardBackground,
-     shadowColor: Colors.background,
-     shadowOffset: { width: 0, height: 8 },
-     shadowOpacity: 0.4,
-     shadowRadius: 16,
-     elevation: 12,
-     overflow: 'hidden',
-   },
-   matchCardImage: {
-     width: '100%',
-     height: '85%',
-     resizeMode: 'cover',
-   },
-   matchCardOverlay: {
-     position: 'absolute',
-     bottom: 0,
-     left: 0,
-     right: 0,
-     backgroundColor: '#FF3B30E0',
-     paddingVertical: Spacing.sm,
-     alignItems: 'center',
-   },
-   matchCardLabel: {
-     ...Typography.caption,
-     color: Colors.textPrimary,
-     fontWeight: '700',
-     fontSize: 10,
-     letterSpacing: 1,
-   },
-   
-   // Continue button
-   continueButtonContainer: {
-     position: 'absolute',
-     bottom: 100,
-     left: 0,
-     right: 0,
-     alignItems: 'center',
-     zIndex: 1000,
-   },
-   continueButton: {
-     flexDirection: 'row',
-     alignItems: 'center',
-     backgroundColor: '#FF3B30',
-     paddingHorizontal: Spacing.xl,
-     paddingVertical: Spacing.lg,
-     borderRadius: BorderRadius.round,
-     shadowColor: '#FF3B30',
-     shadowOffset: { width: 0, height: 4 },
-     shadowOpacity: 0.3,
-     shadowRadius: 12,
-     elevation: 8,
-   },
-   continueButtonText: {
-     ...Typography.button,
-     color: Colors.textPrimary,
-     fontWeight: '700',
-     marginRight: Spacing.sm,
-     fontSize: 16,
-   },
-  contentContainer: {
-    flex: 1,
-    padding: Layout.screenPadding,
-  },
-  floatingActions: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    zIndex: 100,
-  },
-  exploreFloating: {
-    position: 'absolute',
-    right: Layout.screenPadding,
-    // Red glow so the pill holds its own over a bright photo.
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.65,
-    shadowRadius: 14,
-    elevation: 10,
-  },
-  exploreFloatingInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: Spacing.md + 2,
-    paddingVertical: Spacing.sm + 3,
-    borderRadius: BorderRadius.round,
-    // Still slightly translucent, but opaque enough to stay legible on a
-    // washed-out sky - 0.55 was borderline against light photos.
-    backgroundColor: 'rgba(255, 59, 48, 0.92)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.55)',
-  },
-  exploreFloatingText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 14,
-    letterSpacing: 0.2,
-  },
-  exploreButtonWrapper: {
-    marginHorizontal: Layout.screenPadding,
-    marginTop: Spacing.lg,
-  },
-  exploreButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md + 2,
-    borderRadius: BorderRadius.round,
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  exploreButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 16,
-    letterSpacing: 0.3,
-  },
-  backButton: {
-    backgroundColor: Colors.cardBackground + 'E0',
-    borderRadius: BorderRadius.round,
-    padding: Spacing.md,
-    shadowColor: Colors.background,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  deleteButton: {
-    backgroundColor: Colors.cardBackground + 'E0',
-    borderRadius: BorderRadius.round,
-    padding: Spacing.md,
-    shadowColor: Colors.background,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  
-  // Top Section: Image + Main Song
-  topSection: {
-    flexDirection: 'row',
-    marginBottom: Spacing.xl,
-    minHeight: 160, // Minimum height, but allow expansion
-    marginTop: 80, // Add top margin for floating buttons with safe area
-    alignItems: 'flex-start', // Align items to top to allow text expansion
-  },
-  imageContainer: {
-    width: 160,
-    height: 160,
-    borderRadius: BorderRadius.lg,
-    padding: 6,
-    backgroundColor: '#FF3B3030',
-    borderWidth: 2,
-    borderColor: '#FF3B3060',
-    shadowColor: '#FF3B30',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-     image: { 
-     width: '100%', 
-     height: '100%', 
-     borderRadius: BorderRadius.md,
-   },
-   imageTouchable: {
-     width: '100%',
-     height: '100%',
-     position: 'relative',
-   },
-   imageOverlay: {
-     position: 'absolute',
-     top: 8,
-     right: 8,
-     backgroundColor: Colors.background + 'CC',
-     borderRadius: BorderRadius.round,
-     padding: 6,
-     shadowColor: Colors.background,
-     shadowOffset: { width: 0, height: 2 },
-     shadowOpacity: 0.3,
-     shadowRadius: 8,
-     elevation: 2,
-   },
-   expandIcon: {
-     // No additional styling needed
-   },
-  mainSongContainer: {
-    flex: 1,
-    marginLeft: Spacing.lg,
-    justifyContent: 'flex-start',
-    paddingRight: Spacing.sm,
-  },
-  mainSongLabel: {
-    ...Typography.caption,
-    color: '#FF3B30',
-    fontWeight: '700',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: Spacing.xs,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 10,
-    textShadowOffset: { width: 0, height: 1 },
-  },
-  mainSongTitle: {
-    ...Typography.heading2,
-    fontSize: 20,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginBottom: Spacing.xs,
-    lineHeight: 24,
-  },
-  mainSongArtist: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.sm,
-  },
-  mainSongReason: {
-    ...Typography.caption,
-    color: Colors.textTertiary,
-    fontStyle: 'italic',
-    fontSize: 13,
-    lineHeight: 18,
-    marginBottom: Spacing.md,
-  },
-  // Bottom Section: Alternatives
-  bottomSection: {
-    flex: 1,
-  },
-  alternativesLabel: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-    fontWeight: '700',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: Spacing.md,
-  },
-  alternativesList: {
-    gap: Spacing.md,
-  },
-  alternativeItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: Colors.cardBackground,
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
-    borderLeftWidth: 3,
-    borderLeftColor: Colors.accent.yellow,
-    minHeight: 0, // Allow items to expand based on content
-  },
-  alternativeAlbumArt: {
-    width: 48,
-    height: 48,
-    borderRadius: BorderRadius.md,
-    marginRight: Spacing.md,
-    backgroundColor: Colors.cardBackgroundSecondary,
-    flexShrink: 0,
-  },
-  alternativeAlbumArtFallback: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  alternativeInfo: {
-    flex: 1,
-    paddingRight: Spacing.sm,
-    minWidth: 0, // Allow text to shrink and wrap properly
-  },
-  alternativeTitle: {
-    ...Typography.body,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginBottom: 2,
-  },
-  alternativeArtist: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  alternativeReason: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontStyle: 'italic',
-    lineHeight: 17,
-    flexShrink: 1,
-  },
-  // Full-Screen Image Modal Styles
-  modalContainer: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
-  },
-  modalBackground: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  art: { width: 44, height: 44, borderRadius: 8, backgroundColor: OB.surface },
+  artFallback: { alignItems: 'center', justifyContent: 'center' },
+  rowText: { flex: 1 },
+  rowTitle: { color: OB.text, fontSize: OB.body, fontWeight: '600' },
+  rowArtist: { color: OB.textFaint, fontSize: OB.caption, marginTop: 1 },
+
+  modalContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)' },
+  modalBackground: { flex: 1 },
+  modalContent: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   closeButton: {
     position: 'absolute',
-    right: 20,
-    zIndex: 1000,
-    backgroundColor: Colors.cardBackground + 'E0',
-    borderRadius: BorderRadius.round,
-    padding: Spacing.md,
-    shadowColor: Colors.background,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  fullImageContainer: {
-    flex: 1,
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    width: '100%',
+    zIndex: 2,
   },
-  fullImage: {
-    borderRadius: BorderRadius.md,
-  },
-  imageInfo: {
-    position: 'absolute',
-    bottom: 50,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  imageInfoText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-    backgroundColor: Colors.background + 'CC',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: BorderRadius.md,
-  },
-  backgroundBlur1: {
-    position: 'absolute',
-    top: -height * 0.1,
-    left: -width * 0.2,
-    width: width * 0.8,
-    height: height * 0.5,
-    backgroundColor: '#f4258c20', // Pink/primary color matching DashboardScreen
-    borderRadius: 9999,
-    opacity: 0.3,
-    zIndex: 0,
-  },
-  backgroundBlur2: {
-    position: 'absolute',
-    bottom: -height * 0.1,
-    right: -width * 0.2,
-    width: width * 0.8,
-    height: height * 0.5,
-    backgroundColor: '#8b5cf620', // Purple accent matching DashboardScreen
-    borderRadius: 9999,
-    opacity: 0.3,
-    zIndex: 0,
-  },
+  fullImageContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', width: '100%' },
+  fullImage: { borderRadius: 12 },
+  imageInfoText: { color: OB.textFaint, fontSize: OB.caption, paddingBottom: Spacing.lg },
 });
 
-export default ResultsScreen; 
+export default ResultsScreen;
