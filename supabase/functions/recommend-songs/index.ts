@@ -198,33 +198,144 @@ function normalizeForMatch(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-/** Shared words as a fraction of the shorter side. 1 = one side contains all of the other's words. */
+/** Shared words as a fraction of the LONGER side. Dividing by the shorter side
+ * made this a subset test rather than a similarity test: "billy" scored a
+ * perfect 1.0 against "billy idol", so every gate built on it passed at maximum
+ * confidence for a completely different artist. Titles are the only caller now. */
 function tokenOverlap(a: string, b: string): number {
   const left = new Set(a.split(" ").filter(Boolean));
   const right = new Set(b.split(" ").filter(Boolean));
   if (left.size === 0 || right.size === 0) return 0;
   let shared = 0;
   for (const token of left) if (right.has(token)) shared++;
-  return shared / Math.min(left.size, right.size);
+  return shared / Math.max(left.size, right.size);
+}
+
+// Bulgarian official transliteration. The Cyrillic fix that let non-Latin
+// scripts survive normalization never bridged the two alphabets, so "Krisko"
+// vs "Криско" scores zero and the pick is thrown away. Spotify lists some
+// Bulgarian artists in Latin and some in Cyrillic, and the model is told to
+// write the original script, so the two sides genuinely disagree.
+const CYRILLIC_TO_LATIN: Record<string, string> = {
+  "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z",
+  "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p",
+  "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch",
+  "ш": "sh", "щ": "sht", "ъ": "a", "ь": "y", "ю": "yu", "я": "ya",
+  "ы": "y", "э": "e", "ё": "e",
+};
+
+// Stylised glyphs the punctuation strip turns into holes: "P!nk" became "p nk"
+// and "Ke$ha" became "ke ha", neither of which matches anything. MO needs the
+// map because U+00D8 has no canonical decomposition, so the NFD pass misses it.
+const STYLISED_GLYPHS: Record<string, string> = {
+  "!": "i", "$": "s", "@": "a", "ø": "o", "æ": "ae", "ß": "ss",
+};
+
+function foldGlyphs(value: string): string {
+  let out = "";
+  for (const ch of value) out += STYLISED_GLYPHS[ch] ?? ch;
+  return out;
+}
+
+function foldScript(value: string): string {
+  let out = "";
+  for (const ch of value) out += CYRILLIC_TO_LATIN[ch] ?? ch;
+  return out;
+}
+
+/** The forms a name may legitimately be written in: as normalized, and transliterated. */
+function matchKeys(value: string): string[] {
+  const lowered = (value || "").toLowerCase();
+  const base = normalizeForMatch(foldGlyphs(lowered));
+  const latin = normalizeForMatch(foldScript(foldGlyphs(lowered)));
+  return latin === base ? [base] : [base, latin];
+}
+
+// "The" and "and" are grammar, not identity: "The Beatles" and "Beatles" are
+// one act, and Spotify is inconsistent about which form it lists.
+const NAME_JOINERS = new Set(["the", "and"]);
+
+// Words that mean the credited act is NOT the artist, however well the rest of
+// the name lines up. A karaoke or tribute upload is the classic wrong answer a
+// popularity sort reaches for.
+const NOT_THE_ARTIST = new Set([
+  "karaoke", "tribute", "cover", "covers", "instrumental", "backing",
+  "version", "versions", "remix", "style", "famous", "originally",
+  "made", "performed",
+]);
+
+function artistTokens(normalized: string): string[] {
+  const all = normalized.split(" ").filter(Boolean);
+  const kept = all.filter((t) => !NAME_JOINERS.has(t));
+  // "The The" is entirely joiners, so keep the raw tokens rather than nothing.
+  return kept.length ? kept : all;
+}
+
+function sameArtistKeys(gotKey: string, wantKey: string, mode: "strict" | "credit"): boolean {
+  const a = artistTokens(gotKey);
+  const b = artistTokens(wantKey);
+  if (!a.length || !b.length) return false;
+  if (a.join(" ") === b.join(" ")) return true;
+  const [long, short] = a.length >= b.length ? [a, b] : [b, a];
+  // A single leftover word is a first name, not an identity. This is the whole
+  // Billy / Billy Idol collision class, and exact equality above already keeps
+  // a genuine one-word act like Azis or Preslava.
+  if (short.length < 2) return false;
+  let at = -1;
+  for (let i = 0; i + short.length <= long.length; i++) {
+    let hit = true;
+    for (let j = 0; j < short.length; j++) {
+      if (long[i + j] !== short[j]) { hit = false; break; }
+    }
+    if (hit) { at = i; break; }
+  }
+  if (at < 0) return false;
+  // strict wants a leading extension only ("Bob Marley" -> "Bob Marley & The
+  // Wailers"). The fallback has no title to check against, so a name buried
+  // mid-string there would hand a stranger's catalog to a popularity sort.
+  if (mode === "strict" && at !== 0) return false;
+  const extra = long.filter((_, i) => i < at || i >= at + short.length);
+  if (extra.some((t) => NOT_THE_ARTIST.has(t))) return false;
+  return true;
+}
+
+/**
+ * Are these two names the same act?
+ *
+ * "strict" is for choosing an artist with no title to corroborate it, so it
+ * only allows a trailing extension of the requested name. "credit" is for
+ * checking a track's credit list, where the title match is already the second
+ * lock, so a featured artist credited mid-string may still match.
+ */
+function isSameArtist(got: string, want: string, mode: "strict" | "credit"): boolean {
+  for (const g of matchKeys(got)) {
+    for (const w of matchKeys(want)) {
+      if (sameArtistKeys(g, w, mode)) return true;
+    }
+  }
+  return false;
 }
 
 /**
  * The artist's most popular track on Spotify, or null when the artist itself
  * cannot be verified.
  *
- * Used when a recommended title does not resolve. The artist name is still
- * matched strictly, so this can only ever return a song by the artist the
- * model actually named - it rescues a wrong title, never a wrong artist.
+ * Used when a recommended title does not resolve. This used to run a free-text
+ * artist:"X" search over tracks and sort the page by popularity, so a one-word
+ * name returned whoever famous happened to contain that word: "Billy" shipped
+ * Billy Idol's "Eyes Without A Face". It now resolves an artist id first and
+ * only ever reads that id's own top tracks, so the identity check is the only
+ * way in and popularity can no longer bridge to a different artist.
  */
 async function topTrackForArtist(
   artist: string,
   token: string,
   state?: SpotifySearchState
 ): Promise<any | null> {
-  const wantArtist = normalizeForMatch(artist);
+  const wantArtist = (artist || "").trim();
   if (!wantArtist || !token) return null;
   try {
-    const params = new URLSearchParams({ type: "track", limit: "20", q: `artist:"${artist}"` });
+    const params = new URLSearchParams({ type: "artist", limit: "10", q: wantArtist });
     const resp = await fetchWithRetry(
       `https://api.spotify.com/v1/search?${params.toString()}`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -232,17 +343,107 @@ async function topTrackForArtist(
     if (state) state.lastHttpStatus = resp.status;
     if (!resp.ok) return null;
     const data = await resp.json();
-    const items: any[] = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
-    const byArtist = items.filter((t) =>
-      (t?.artists ?? []).some((a: any) => tokenOverlap(normalizeForMatch(a?.name ?? ""), wantArtist) >= 0.8)
-    );
-    if (byArtist.length === 0) return null;
-    byArtist.sort((a, b) => (b?.popularity ?? 0) - (a?.popularity ?? 0));
-    return byArtist[0];
+    const candidates: any[] = Array.isArray(data?.artists?.items) ? data.artists.items : [];
+    const matches = candidates.filter((a: any) => isSameArtist(a?.name ?? "", wantArtist, "strict"));
+    if (matches.length === 0) {
+      console.warn(`⚠️ No Spotify artist matches "${wantArtist}"`);
+      return null;
+    }
+    // An exact name always beats an extension, so a real act can never be
+    // outranked by a bigger band that merely starts with the same words.
+    const wantKeys = new Set(matchKeys(wantArtist));
+    matches.sort((a: any, b: any) => {
+      const aExact = matchKeys(a?.name ?? "").some((k) => wantKeys.has(k)) ? 0 : 1;
+      const bExact = matchKeys(b?.name ?? "").some((k) => wantKeys.has(k)) ? 0 : 1;
+      return aExact - bExact || (b?.followers?.total ?? 0) - (a?.followers?.total ?? 0);
+    });
+    const artistId = matches[0]?.id;
+    if (!artistId) return null;
+
+    // No market, then US. Spotify treats market as optional on this endpoint
+    // now, but an explicit market can also be what makes a thin regional
+    // catalog come back empty, so try the unscoped call first.
+    for (const suffix of ["", "?market=US"]) {
+      const topResp = await fetchWithRetry(
+        `https://api.spotify.com/v1/artists/${artistId}/top-tracks${suffix}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (state) state.lastHttpStatus = topResp.status;
+      if (!topResp.ok) continue;
+      const topData = await topResp.json();
+      const tracks: any[] = Array.isArray(topData?.tracks) ? topData.tracks : [];
+      if (tracks.length === 0) continue;
+      tracks.sort((a: any, b: any) => (b?.popularity ?? 0) - (a?.popularity ?? 0));
+      return tracks[0];
+    }
+    return null;
   } catch (err) {
     console.warn("topTrackForArtist failed:", err);
     return null;
   }
+}
+
+/**
+ * Which artist name to print on the card.
+ *
+ * bestTrackMatch deliberately accepts a match on ANY credited artist, because
+ * the model often names the feature while Spotify credits someone else first.
+ * Printing only artists[0] then puts a name on the card that the reason never
+ * mentions, which is the reported bug in a quieter form.
+ */
+function creditLine(track: any, wantArtist: string): string {
+  const names: string[] = (track?.artists ?? []).map((a: any) => a?.name).filter(Boolean);
+  if (names.length === 0) return wantArtist;
+  const primary = names[0];
+  const matched = names.find((n) => isSameArtist(n, wantArtist, "credit"));
+  if (!matched || matched === primary) return primary;
+  return `${primary}, ${matched}`;
+}
+
+/**
+ * Did the resolved track actually answer what the model asked for?
+ *
+ * Deliberately computed on the RESOLVED TRACK rather than on which code path
+ * produced it. bestTrackMatch can also return a near-title by the right artist,
+ * so keying the reason off "was this the fallback branch" would leave the same
+ * wrong pairing shipping through the success path.
+ */
+function resolutionKind(rec: any, track: any): "exact" | "artist" {
+  const wantTitle = normalizeForMatch(stripDecor(rec?.title ?? ""));
+  const gotTitle = normalizeForMatch(track?.name ?? "");
+  if (!wantTitle || !gotTitle || wantTitle !== gotTitle) return "artist";
+  const credits: string[] = (track?.artists ?? []).map((a: any) => a?.name).filter(Boolean);
+  return credits.some((n) => isSameArtist(n, rec?.artist ?? "", "credit")) ? "exact" : "artist";
+}
+
+/**
+ * The line to show when the shipped track is not the one the reason was
+ * written about. Never falls back to rec.reason: that text names a specific
+ * song, so on a substitution it is a fabrication about a song the user is not
+ * looking at. Never empty either, so the card and the rows keep a description.
+ */
+function artistLevelReason(rec: any, track: any): string {
+  const name = (track?.artists ?? [])[0]?.name || rec?.artist || "this artist";
+  const written = typeof rec?.artist_reason === "string" ? rec.artist_reason.trim() : "";
+  return written || `Picked for the way ${name} fits this photo and your taste.`;
+}
+
+/** One response row. The reason follows what resolved, never the code path. */
+function shippedSong(rec: any, track: any) {
+  const kind = resolutionKind(rec, track);
+  return {
+    title: track.name,
+    artist: creditLine(track, rec.artist),
+    reason: kind === "exact" ? rec.reason : artistLevelReason(rec, track),
+    // The tags were written for the model's own pick, so on a substitution they
+    // describe a song we are not showing. Nothing on the client reads them.
+    mood_tags: kind === "exact" ? rec.mood_tags : [],
+    match_kind: kind,
+    language: "en",
+    spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
+    album_cover: track.album?.images?.[0]?.url,
+    preview_url: track.preview_url ?? null, // 30s clip; often null on newer apps - client falls back to iTunes
+  };
 }
 
 /**
@@ -281,17 +482,30 @@ function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): a
       .map((a: any) => normalizeForMatch(a?.name || ""))
       .filter(Boolean);
 
+    // Containment only counts when the shorter title is a real phrase. A
+    // one-word wanted title used to match any longer title containing that
+    // word, so "Love" resolved to "Lovely" and "Дъга" to "Дъга и слънце" -
+    // the reported bug on the success path instead of the fallback.
+    const shorterTitleTokens = Math.min(
+      gotTitle.split(" ").filter(Boolean).length,
+      wantTitle.split(" ").filter(Boolean).length
+    );
     let titleScore = 0;
     if (gotTitle && gotTitle === wantTitle) titleScore = 40;
-    else if (gotTitle && wantTitle && (gotTitle.includes(wantTitle) || wantTitle.includes(gotTitle))) titleScore = 25;
+    else if (
+      gotTitle && wantTitle && shorterTitleTokens >= 2 &&
+      (gotTitle.includes(wantTitle) || wantTitle.includes(gotTitle))
+    ) titleScore = 25;
     else if (tokenOverlap(gotTitle, wantTitle) >= 0.6) titleScore = 20;
 
+    // Identity, not string containment. The old branches gave 35 for a raw
+    // includes() and 30 for a half-token overlap, so "Bruno Mars" passed as
+    // "Bruno Major" and "DJ Khaled" as "DJ Snake".
     let artistScore = 0;
     for (const got of gotArtists) {
       let candidate = 0;
       if (got === wantArtist) candidate = 60;
-      else if (wantArtist && (got.includes(wantArtist) || wantArtist.includes(got))) candidate = 35;
-      else if (tokenOverlap(got, wantArtist) >= 0.5) candidate = 30;
+      else if (isSameArtist(got, wantArtist, "credit")) candidate = 45;
       if (candidate > artistScore) artistScore = candidate;
     }
 
@@ -653,7 +867,8 @@ function buildSystemPrompt(
   avoidTracks: string[],
   avoidArtists: string[],
   hasTaste: boolean = false,
-  manualTaste: boolean = false
+  manualTaste: boolean = false,
+  poolSize: number = 5
 ): string {
   const avoidSection = avoidTracks.length > 0 || avoidArtists.length > 0
     ? `\n\nAVOID THESE (do not recommend):\n${avoidTracks.length > 0 ? `- Tracks: ${avoidTracks.join(", ")}\n` : ""}${avoidArtists.length > 0 ? `- Artists: ${avoidArtists.join(", ")}\n` : ""}`
@@ -665,17 +880,18 @@ function buildSystemPrompt(
 
 Hard rules:
 - Valid JSON matching the schema, nothing else.
-- Exactly 5 tracks, never fewer, never an empty list. The preferences above compete for these 5 slots; they are not filters. If they cannot all hold, relax in this order and still return 5: decade, genre, "avoid mainstream", scene.
+- Exactly ${poolSize} tracks, never fewer, never an empty list. The preferences above compete for these ${poolSize} slots; they are not filters. If they cannot all hold, relax in this order and still return ${poolSize}: decade, genre, "avoid mainstream", scene.
 - Ranked best to worst; position 1 is the most on-point pick.
 - A different artist per track, and none that appears anywhere in the user's profile. Recommending one they already listed is a failure.
 - Skip ultra-mainstream staples and viral defaults (Mr. Brightside, Bohemian Rhapsody, Heat Waves, Blinding Lights, Sweater Weather, Riptide, Go by The Chemical Brothers, Midnight City, Weightless, Nightcall, Intro by The xx, and obvious equivalents).
-- At least 2 distinct subgenres or eras across the 5.
+- At least 2 distinct subgenres or eras across the ${poolSize}.
 - Only songs you are confident exist. Write title and artist exactly as Spotify lists them, in the original script (Cyrillic, Greek, Hangul, Japanese included), or the track will not resolve.
 - Plain studio titles: no "(feat. ...)", "(Live)", "(Remastered)", "(Radio Edit)" suffixes.
+- Also write "artist_reason": one sentence on why this ARTIST fits the photo and the user's taste. It is shown when the exact track cannot be found, so it must not name a track title or describe one specific song.
 - Language: default to English-language music, unless the user's chosen artists or genres belong to another language or scene, in which case draw from that scene.
 ${avoidSection}
 
-Return JSON: {"recommendations":[{"title":"","artist":"","reason":"2-3 sentences: first name what is actually in the photo and its mood, then tie that to a specific trait of the user's taste, naming the bridge artist or production trait rather than a genre tag.","mood_tags":["","",""],"search_query":"track:\\"Title\\" artist:\\"Artist\\""}]}`;
+Return JSON: {"recommendations":[{"title":"","artist":"","reason":"2-3 sentences: first name what is actually in the photo and its mood, then tie that to a specific trait of the user's taste, naming the bridge artist or production trait rather than a genre tag.","artist_reason":"1 sentence about the artist only, naming no track.","mood_tags":["","",""],"search_query":"track:\\"Title\\" artist:\\"Artist\\""}]}`;
 }
 
 const VIBE_GUIDANCE: Record<string, string> = {
@@ -1000,7 +1216,12 @@ serve(async (req) => {
   const tasteBlock = buildTasteBlock(tasteProfile);
   const hasTaste = !!tasteBlock;
   const manualTaste = hasTaste && isManualTaste(tasteProfile);
-  const systemPrompt = buildSystemPrompt(avoidTracks, avoidArtists, hasTaste, manualTaste);
+  // A manual taste profile steers the picks into the user's own scene, where
+  // Spotify's catalog is thinner and per-pick resolution is lowest. Give those
+  // requests one spare pick so a stricter artist gate cannot push them under
+  // the three songs the app needs. English-taste requests pay nothing.
+  const poolSize = manualTaste ? 6 : 5;
+  const systemPrompt = buildSystemPrompt(avoidTracks, avoidArtists, hasTaste, manualTaste, poolSize);
   let userText = buildUserPrompt({ vibe });
   if (hasTaste) {
     const header = manualTaste
@@ -1057,17 +1278,20 @@ serve(async (req) => {
                   title: { type: "string" },
                   artist: { type: "string" },
                   reason: { type: "string" },
+                  // Shown instead of `reason` when the exact track does not
+                  // resolve, so a substituted pick still explains itself.
+                  artist_reason: { type: "string" },
                   mood_tags: {
                     type: "array",
                     items: { type: "string" }
                   },
                   search_query: { type: "string" }
                 },
-                required: ["title", "artist", "reason", "mood_tags", "search_query"],
+                required: ["title", "artist", "reason", "artist_reason", "mood_tags", "search_query"],
                 additionalProperties: false
               },
-              minItems: 5,
-              maxItems: 5
+              minItems: poolSize,
+              maxItems: poolSize
             }
           },
           required: ["recommendations"],
@@ -1207,16 +1431,7 @@ serve(async (req) => {
     );
 
     if (track) {
-      resolvedSongs.push({
-        title: track.name,
-        artist: track.artists[0]?.name || rec.artist,
-        reason: rec.reason,
-        mood_tags: rec.mood_tags,
-        language: "en",
-        spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
-        album_cover: track.album?.images?.[0]?.url,
-        preview_url: track.preview_url ?? null // 30s clip; often null on newer apps - client falls back to iTunes
-      });
+      resolvedSongs.push(shippedSong(rec, track));
     } else {
       // The title did not resolve. Outside the English-language mainstream
       // the model often names a real artist but invents a track title, and
@@ -1226,17 +1441,13 @@ serve(async (req) => {
       // hallucinated artist is dropped as before.
       const fallback = await topTrackForArtist(rec.artist, spotifyToken, spotifySearchState);
       if (fallback) {
-        console.warn(`↩️ "${rec.title}" not found; using "${fallback.name}" by ${rec.artist} instead`);
-        resolvedSongs.push({
-          title: fallback.name,
-          artist: fallback.artists[0]?.name || rec.artist,
-          reason: rec.reason,
-          mood_tags: rec.mood_tags,
-          language: "en",
-          spotify_url: fallback.external_urls?.spotify || `https://open.spotify.com/track/${fallback.id}`,
-          album_cover: fallback.album?.images?.[0]?.url,
-          preview_url: fallback.preview_url ?? null,
-        });
+        // Print the artist we are actually shipping. The old line printed
+        // rec.artist, so a swap read as "using X by Billy" and concealed that
+        // the card would say Billy Idol.
+        console.warn(
+          `↩️ "${rec.title}" by "${rec.artist}" not found; using "${fallback.name}" by "${fallback.artists?.[0]?.name}" instead`
+        );
+        resolvedSongs.push(shippedSong(rec, fallback));
       } else {
         console.warn(`⚠️ Could not find "${rec.title}" by "${rec.artist}" on Spotify`);
         failedSongs.push(rec);
@@ -1267,11 +1478,24 @@ serve(async (req) => {
     }
   }
 
-  // 10) Check for duplicate artists (safety net)
+  // 10) Rank exact resolutions ahead of artist-level substitutions before the
+  // dedupe and the slice, so the hero card carries a reason written for the
+  // song it is showing whenever any pick resolved exactly. Model rank breaks
+  // ties, so the order inside each group is the order the model asked for.
+  const rankedSongs = resolvedSongs
+    .map((song, index) => ({ song, index }))
+    .sort((a, b) => {
+      const aKind = a.song.match_kind === "exact" ? 0 : 1;
+      const bKind = b.song.match_kind === "exact" ? 0 : 1;
+      return aKind - bKind || a.index - b.index;
+    })
+    .map((entry) => entry.song);
+
+  // 11) Check for duplicate artists (safety net)
   const artistSet = new Set<string>();
   const deduplicatedSongs: any[] = [];
-  
-  for (const song of resolvedSongs) {
+
+  for (const song of rankedSongs) {
     const artistKey = song.artist?.toLowerCase().trim() || "";
     if (!artistSet.has(artistKey)) {
       artistSet.add(artistKey);
@@ -1293,7 +1517,12 @@ serve(async (req) => {
         ...(debugUsage && openaiUsage ? { usage: { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens } } : {}),
         songs: deduplicatedSongs,
         warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined,
-        has_taste: hasTaste
+        has_taste: hasTaste,
+        resolution: {
+          exact: deduplicatedSongs.filter((s: any) => s.match_kind === "exact").length,
+          artist: deduplicatedSongs.filter((s: any) => s.match_kind !== "exact").length,
+          failed: failedSongs.length,
+        },
       }, 200);
     } else {
       // No songs found at all - return error
@@ -1325,6 +1554,11 @@ serve(async (req) => {
   );
 
   const shipped = deduplicatedSongs.slice(0, 3);
+  const resolution = {
+    exact: shipped.filter((s: any) => s.match_kind === "exact").length,
+    artist: shipped.filter((s: any) => s.match_kind !== "exact").length,
+    failed: failedSongs.length,
+  };
   const usage = openaiUsage
     ? { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens }
     : null;
@@ -1354,6 +1588,9 @@ serve(async (req) => {
     songs: shipped, // Ensure exactly 3
     // Whether a Spotify taste profile shaped these picks, so the client can
     // tell personalized results from generic ones.
-    has_taste: hasTaste
+    has_taste: hasTaste,
+    // How many shipped picks are the song the model actually named. Without
+    // this the substitution rate is invisible outside the function logs.
+    resolution,
   }, 200);
 });

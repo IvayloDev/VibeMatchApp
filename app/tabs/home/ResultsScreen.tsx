@@ -51,6 +51,8 @@ type Song = {
   title: string;
   artist: string;
   reason: string;
+  /** 'artist' means the reason is artist-level, because the exact track did not resolve. */
+  match_kind?: 'exact' | 'artist';
   spotify_url?: string;
   album_cover?: string;
   preview_url?: string | null;
@@ -122,6 +124,9 @@ const ResultsScreen = () => {
       song_count: songs.length,
       title: main?.title,
       artist: main?.artist,
+      // How the hero resolved, and how many of the three are substitutions.
+      match_kind: main?.match_kind,
+      fallback_count: songs.slice(0, 3).filter((s) => s.match_kind === 'artist').length,
     });
   }, []);
 
@@ -365,22 +370,37 @@ const ResultsScreen = () => {
               <View style={styles.rows}>
                 {others.map((song, idx) => (
                   <View key={`${song.title}-${idx}`} style={styles.row}>
-                    {song.album_cover ? (
-                      <Image source={{ uri: song.album_cover }} style={styles.art} />
-                    ) : (
-                      <View style={[styles.art, styles.artFallback]}>
-                        <MaterialCommunityIcons name="music-note" size={20} color={OB.textFaint} />
+                    <View style={styles.rowMain}>
+                      {song.album_cover ? (
+                        <Image source={{ uri: song.album_cover }} style={styles.art} />
+                      ) : (
+                        <View style={[styles.art, styles.artFallback]}>
+                          <MaterialCommunityIcons name="music-note" size={20} color={OB.textFaint} />
+                        </View>
+                      )}
+                      <View style={styles.rowText}>
+                        <Text style={styles.rowTitle} numberOfLines={1}>
+                          {displayTitle(song.title || 'Unknown title')}
+                        </Text>
+                        <Text style={styles.rowArtist} numberOfLines={1}>
+                          {song.artist || 'Unknown artist'}
+                        </Text>
+                      </View>
+                      <TrackPreviewButton song={song} variant="row" />
+                    </View>
+                    {/* Songs 2 and 3 lost their description in the results
+                        redesign and people noticed. Same component and same
+                        two-line clamp as the hero, so the two behave alike. */}
+                    {!!song.reason && (
+                      <View style={styles.rowReason}>
+                        <ExpandableText
+                          text={song.reason}
+                          collapsedLines={2}
+                          style={styles.rowReasonText}
+                          toggleColor={OB.textDim}
+                        />
                       </View>
                     )}
-                    <View style={styles.rowText}>
-                      <Text style={styles.rowTitle} numberOfLines={1}>
-                        {displayTitle(song.title || 'Unknown title')}
-                      </Text>
-                      <Text style={styles.rowArtist} numberOfLines={1}>
-                        {song.artist || 'Unknown artist'}
-                      </Text>
-                    </View>
-                    <TrackPreviewButton song={song} variant="row" />
                   </View>
                 ))}
               </View>
@@ -492,13 +512,17 @@ const styles = StyleSheet.create({
     borderTopColor: OB.border,
   },
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    minHeight: 64,
+    paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.08)',
   },
+  rowMain: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 44 },
+  // 44pt art plus the 12pt gap, so the text hangs under the title rather than
+  // under the artwork and the row still reads as one block.
+  rowReason: { marginTop: 8, marginLeft: 56 },
+  // textDim, not textFaint: textFaint is 4.48:1 on this background and misses
+  // AA for body text. Size carries the hierarchy against the 15pt title.
+  rowReasonText: { color: OB.textDim, fontSize: OB.caption, lineHeight: 18 },
   art: { width: 44, height: 44, borderRadius: 8, backgroundColor: OB.surface },
   artFallback: { alignItems: 'center', justifyContent: 'center' },
   rowText: { flex: 1 },

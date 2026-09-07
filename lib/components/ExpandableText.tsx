@@ -41,7 +41,13 @@ export function ExpandableText({
       ) : null}
 
       {needsToggle ? (
-        <TouchableOpacity onPress={() => setExpanded((v) => !v)} hitSlop={8} activeOpacity={0.7}>
+        <TouchableOpacity
+          onPress={() => setExpanded((v) => !v)}
+          // The row call site renders this at 13/18, which is a 34pt target.
+          // hitSlop rather than padding, so neither call site's layout moves.
+          hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+          activeOpacity={0.7}
+        >
           <Text style={[style, styles.toggle, { color: toggleColor }]}>
             {expanded ? 'Show less' : 'Show more'}
           </Text>
