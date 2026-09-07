@@ -768,7 +768,7 @@ export function subscribeToProStatus(cb: (isPro: boolean) => void): () => void {
  */
 export type ProPlanSummary = {
   productIdentifier: string;
-  /** "Monthly" / "Annual", or the raw id if an unknown product ever appears. */
+  /** "Weekly" / "Monthly" / "Annual", or a safe fallback for an unknown id. */
   planLabel: string;
   /** True while the store still intends to renew - false once cancelled. */
   willRenew: boolean;
@@ -800,11 +800,15 @@ export async function getProPlanSummary(): Promise<ProPlanSummary | null> {
   const haystack = `${productIdentifier} ${planIdentifier}`;
   const isAnnual = /annual|yearly|p1y/i.test(haystack);
   const isMonthly = /monthly|p1m/i.test(haystack);
+  // Weekly replaced monthly in the pro_v1 offering on 2026-09-06. Monthly stays
+  // recognised here: the products still exist and nothing migrates a subscriber
+  // who is already on one.
+  const isWeekly = /weekly|p1w/i.test(haystack);
 
   return {
     productIdentifier,
     // Never surface a raw store id to a user - fall back to the plan's name.
-    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : 'TuneMatch Pro',
+    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : isWeekly ? 'Weekly' : 'TuneMatch Pro',
     willRenew: !!entitlement.willRenew,
     isTrial: entitlement.periodType === 'TRIAL',
     expirationDate: entitlement.expirationDate ?? null,
