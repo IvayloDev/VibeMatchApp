@@ -139,53 +139,53 @@ const MatchCard = ({ card }: { card: MatchCardSpec }) => (
   </LinearGradient>
 );
 
-// Every card is always mounted and moves along one cycle of poses:
-// front -> back-right -> behind (invisible) -> behind -> back-left -> front.
-// A single clock `t` advances by one per swap; card k sits at phase
-// (t + k) mod N and interpolates its position, rotation, scale and opacity
-// from that phase. Nothing crossfades and no card ever changes its photo,
-// so a swap is pure motion: the front card slides right and away, the
-// left card slides up to the front, a fresh card fades in behind on the
-// left. With photos on the cards, the old crossfade read as a double
-// exposure and the back cards snapped when state flipped.
 const N = MATCH_CARDS.length;
-// Keyframes, not just poses: the card arriving at the front gets an extra one
-// half way (4.5) where it lifts up and overshoots in scale. Without it the
-// layer order flipped instantly at the start of the move and the left card
-// simply appeared on top of the middle one. The lift makes that change of
-// depth read as the card being picked up off the pile.
-const PHASES = [0, 1, 2, 3, 4, 4.5, 5];
-const POSE_X = [0, CARD_SPREAD, CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD * 0.45, 0];
-const POSE_Y = [-6, 16, 16, 16, 16, -30, -6];
-const POSE_ROT = ['0deg', '10deg', '10deg', '-11deg', '-11deg', '-5deg', '0deg'];
-const POSE_SCALE = [1, 0.96, 0.96, 0.96, 0.96, 1.06, 1];
-const POSE_OPACITY = [1, 1, 0, 0, 1, 1, 1];
-// Front on top, then the card arriving from the left, then the right card.
-const Z_BY_END_PHASE = [5, 3, 1, 1, 4];
 
-const CarouselCard = ({ card, index, clock, zIndex }: {
-  card: MatchCardSpec;
-  index: number;
-  clock: Animated.Value;
-  zIndex: number;
-}) => {
-  const phase = Animated.modulo(Animated.add(clock, index), N);
-  const style: Animated.WithAnimatedObject<ViewStyle> = {
-    zIndex,
-    opacity: phase.interpolate({ inputRange: PHASES, outputRange: POSE_OPACITY }),
-    transform: [
-      { translateX: phase.interpolate({ inputRange: PHASES, outputRange: POSE_X }) },
-      { translateY: phase.interpolate({ inputRange: PHASES, outputRange: POSE_Y }) },
-      { rotate: phase.interpolate({ inputRange: PHASES, outputRange: POSE_ROT }) },
-      { scale: phase.interpolate({ inputRange: PHASES, outputRange: POSE_SCALE }) },
-    ],
-  };
-  return (
-    <Animated.View style={[styles.slot, style]}>
-      <MatchCard card={card} />
+// Three fixed slots. Nothing travels between them and no card ever changes
+// layer, because that is what made the arriving card snap: the instant it had
+// to end up on top, the layer order flipped over an overlap and popped.
+//
+// Instead each slot holds two cards: the one it shows now, opaque underneath,
+// and the one it is about to show, fading in on top. A swap is three
+// dissolves happening at once, each confined to its own slot with an opaque
+// card beneath it, so there is no ghosting and nothing to pop.
+const SLOTS = [
+  { key: 'left', offset: 1, style: { transform: [{ translateX: -CARD_SPREAD }, { translateY: 16 }, { rotate: '-11deg' }], zIndex: 1 } },
+  { key: 'right', offset: 2, style: { transform: [{ translateX: CARD_SPREAD }, { translateY: 16 }, { rotate: '10deg' }], zIndex: 2 } },
+  { key: 'front', offset: 0, style: { transform: [{ translateY: -6 }], zIndex: 3 } },
+] as const;
+
+const CardSlot = ({
+  current,
+  next,
+  t,
+  style,
+  lift,
+}: {
+  current: MatchCardSpec;
+  next: MatchCardSpec;
+  t: Animated.Value;
+  style: StyleProp<ViewStyle>;
+  /** The front slot grows a touch as the new card arrives. */
+  lift?: boolean;
+}) => (
+  <View style={[styles.slot, style]}>
+    <View style={StyleSheet.absoluteFill}>
+      <MatchCard card={current} />
+    </View>
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          opacity: t,
+          transform: lift ? [{ scale: t.interpolate({ inputRange: [0, 1], outputRange: [1.04, 1] }) }] : [],
+        },
+      ]}
+    >
+      <MatchCard card={next} />
     </Animated.View>
-  );
-};
+  </View>
+);
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -195,11 +195,12 @@ const WelcomeScreen = () => {
   // brand-new users get a pure Start Matching screen.
   const [hadAccount, setHadAccount] = useState(false);
 
-  // Hero rotation: `clock` advances by exactly one per swap and never
-  // resets; `step` mirrors its target so layer order can follow along.
+  // `swap` runs 0 -> 1 for each dissolve, then resets to 0 in the same commit
+  // that advances `step`, so the card that was fading in becomes the card
+  // underneath and nothing flashes.
   const [step, setStep] = useState(0);
   const stepRef = useRef(0);
-  const clock = useRef(new Animated.Value(0)).current;
+  const swap = useRef(new Animated.Value(0)).current;
 
   // Single entrance fade for the whole screen
   const enter = useRef(new Animated.Value(0)).current;
@@ -232,15 +233,17 @@ const WelcomeScreen = () => {
     let timer: ReturnType<typeof setInterval> | undefined;
 
     const tick = () => {
-      stepRef.current += 1;
-      // Layer order first, so the incoming card is on top for the whole move.
-      setStep(stepRef.current);
-      Animated.timing(clock, {
-        toValue: stepRef.current,
+      Animated.timing(swap, {
+        toValue: 1,
         duration: SWAP_DURATION_MS,
         easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
-      }).start();
+      }).start(({ finished }) => {
+        if (!finished || !active) return;
+        stepRef.current += 1;
+        swap.setValue(0);
+        setStep(stepRef.current);
+      });
     };
 
     AccessibilityInfo.isReduceMotionEnabled()
@@ -253,9 +256,9 @@ const WelcomeScreen = () => {
     return () => {
       active = false;
       if (timer) clearInterval(timer);
-      clock.stopAnimation();
+      swap.stopAnimation();
     };
-  }, [clock]);
+  }, [swap]);
 
   // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
@@ -322,8 +325,7 @@ const WelcomeScreen = () => {
     }
   };
 
-  // Where each card will be once the current move finishes, for layering.
-  const zFor = (index: number) => Z_BY_END_PHASE[(step + index) % N];
+  const cardAt = (offset: number) => MATCH_CARDS[(step + offset) % N];
 
   return (
     <View style={styles.container}>
@@ -343,8 +345,15 @@ const WelcomeScreen = () => {
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
             >
-              {MATCH_CARDS.map((card, index) => (
-                <CarouselCard key={card.tag + card.song} card={card} index={index} clock={clock} zIndex={zFor(index)} />
+              {SLOTS.map((slot) => (
+                <CardSlot
+                  key={slot.key}
+                  current={cardAt(slot.offset)}
+                  next={cardAt(slot.offset + 1)}
+                  t={swap}
+                  style={slot.style}
+                  lift={slot.key === 'front'}
+                />
               ))}
             </View>
           </View>
