@@ -209,8 +209,8 @@ export async function rescheduleEngagementReminders(): Promise<void> {
 }
 
 /**
- * Nobody wants a ping at midnight: anything due before 07:00 local is moved
- * to 08:00 the same morning.
+ * Safety net from when the reset was at midnight. The match day now rolls
+ * over at 09:00 local, so this normally does nothing.
  */
 function toWakingHours(at: Date): Date {
   if (at.getHours() < 7) {
@@ -227,11 +227,30 @@ function toWakingHours(at: Date): Date {
  * reminder. Returns whether it was scheduled. Never throws.
  */
 export async function scheduleFreeMatchReminder(at: Date): Promise<boolean> {
+  return scheduleFreeMatch(at, { ask: true });
+}
+
+/**
+ * Same reminder, but only for people who have already allowed notifications.
+ * Called whenever the balance reaches zero, so the daily ping arrives without
+ * anyone having to opt in twice - and without a permission sheet appearing
+ * out of nowhere on the Dashboard.
+ */
+export async function scheduleFreeMatchReminderIfAllowed(at: Date): Promise<boolean> {
+  return scheduleFreeMatch(at, { ask: false });
+}
+
+async function scheduleFreeMatch(at: Date, { ask }: { ask: boolean }): Promise<boolean> {
   try {
     if (!Device.isDevice) return false;
 
-    const granted = await ensureNotificationPermission('wall_sheet');
-    if (!granted) return false;
+    if (ask) {
+      const granted = await ensureNotificationPermission('wall_sheet');
+      if (!granted) return false;
+    } else {
+      const { granted } = await Notifications.getPermissionsAsync();
+      if (!granted) return false;
+    }
 
     let fireAt = toWakingHours(at);
     if (fireAt.getTime() <= Date.now()) {

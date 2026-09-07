@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { getLocalCredits, addLocalCredits, getUserCredits, updateUserCredits } from './credits';
 import { getDeviceId } from './utils/freeCredits';
-import { msUntilQuotaReset, formatQuotaReset } from './proQuota';
+import { msUntilQuotaReset, formatQuotaReset, matchDayKey, nextResetAt } from './proQuota';
 import { trackEvent } from './posthog';
 
 /**
@@ -26,11 +26,9 @@ function sanitizeKey(str: string): string {
   return str.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-/** Local calendar date as YYYY-MM-DD (local time, so the reset is local midnight). */
+/** The match day, which rolls over at 09:00 local (see proQuota). */
 function localDateKey(d: Date = new Date()): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
+  return matchDayKey(d);
 }
 
 async function storageKey(): Promise<string> {
@@ -38,9 +36,9 @@ async function storageKey(): Promise<string> {
   return `${DAILY_CREDIT_LAST_KEY_PREFIX}${sanitizeKey(deviceId)}`;
 }
 
-/** The next local midnight - when the next free match becomes claimable. */
+/** When the next free match becomes claimable: the next 09:00 local. */
 export function nextLocalMidnight(): Date {
-  return new Date(Date.now() + msUntilQuotaReset());
+  return nextResetAt();
 }
 
 /** "14h" / "3h 20m" / "under a minute" until `date`. */

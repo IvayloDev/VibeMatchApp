@@ -12,13 +12,13 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getUserCredits } from '../../../lib/credits';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
-import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
+import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset, showsSeconds } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import WallSheet from '../../../lib/components/WallSheet';
 import { claimDailyCreditIfDue, nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
-import { registerNotificationOpenedTracking } from '../../../lib/notifications';
+import { registerNotificationOpenedTracking, scheduleFreeMatchReminderIfAllowed } from '../../../lib/notifications';
 
 const { width, height } = Dimensions.get('window');
 
@@ -125,13 +125,22 @@ const DashboardScreen = () => {
   }, []);
 
   // While the countdown is on screen, re-render it every minute and claim the
-  // free match the moment midnight passes with the app still open.
+  // free match the moment 09:00 passes with the app still open.
+  // Out of matches: if notifications are already allowed, make sure the
+  // "your free match is ready" ping is armed for the next 09:00.
   useEffect(() => {
     if (loading || isPro || credits > 0) return;
+    scheduleFreeMatchReminderIfAllowed(nextFreeAt);
+  }, [loading, isPro, credits, nextFreeAt]);
+
+  useEffect(() => {
+    if (loading || isPro || credits > 0) return;
+    // A second inside the last hour, a minute before that: the label only
+    // carries seconds near the end.
     const id = setInterval(() => {
       setClockTick((t) => t + 1);
       if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
-    }, 60 * 1000);
+    }, showsSeconds(nextFreeAt.getTime() - Date.now()) ? 1000 : 60 * 1000);
     return () => clearInterval(id);
   }, [loading, isPro, credits, nextFreeAt]);
 
@@ -142,7 +151,7 @@ const DashboardScreen = () => {
   );
 
   // A free match may have unlocked since the balance was last read (the app
-  // can sit in the foreground across midnight). True if one was just granted.
+  // can sit in the foreground across the 09:00 reset). True if one was just granted.
   const claimIfUnlocked = async () => {
     const claim = await claimDailyCreditIfDue(false, !!userRef.current);
     setNextFreeAt(claim.nextAt);
@@ -190,7 +199,7 @@ const DashboardScreen = () => {
       if (isPro) {
         Alert.alert(
           `That's ${PRO_DAILY_LIMIT} for today!`,
-          `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`
+          `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at 9am.`
         );
         return;
       }
