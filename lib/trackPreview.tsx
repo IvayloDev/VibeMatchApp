@@ -6,7 +6,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Alert, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
-import { norm, artistMatches } from './utils/trackMatch';
+import { norm, artistMatches, catalogQuery } from './utils/trackMatch';
 
 type PreviewSong = {
   title: string;
@@ -33,7 +33,7 @@ const Ctx = createContext<TrackPreviewCtx | null>(null);
 /** Deezer: free, no auth, and currently the best preview coverage. */
 async function deezerPreview(song: PreviewSong): Promise<string | null> {
   try {
-    const q = encodeURIComponent(`${song.artist} ${song.title}`.trim());
+    const q = encodeURIComponent(catalogQuery(song.artist, song.title));
     const r = await fetch(`https://api.deezer.com/search?q=${q}&limit=10`);
     if (!r.ok) return null;
     const j = await r.json();
@@ -53,7 +53,7 @@ async function deezerPreview(song: PreviewSong): Promise<string | null> {
 
 async function itunesPreview(song: PreviewSong): Promise<string | null> {
   try {
-    const term = encodeURIComponent(`${song.artist} ${song.title}`.trim());
+    const term = encodeURIComponent(catalogQuery(song.artist, song.title));
     const r = await fetch(`https://itunes.apple.com/search?term=${term}&entity=song&limit=10`);
     if (!r.ok) return null;
     const j = await r.json();

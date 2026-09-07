@@ -7,9 +7,27 @@ export function norm(s: string): string {
   return (s || '')
     .toLowerCase()
     .replace(/\s*[\(\[][^\)\]]*[\)\]]/g, '')
-    .replace(/\s+-\s+(feat\.?|ft\.?|with|live|remaster(ed)?|deluxe|radio edit|single version).*$/i, '')
+    // Edition suffixes after " - ". The year prefix matters: Spotify ships
+    // "Drive Blind - 2001 Remaster" and "Jane Says - 2011 Remastered
+    // Version", which the year-less pattern left untouched.
+    .replace(
+      /\s+-\s+(\d{4}\s+)?(feat\.?|ft\.?|with|live|remaster(ed)?(\s+version)?|deluxe|radio edit|single version|mono|stereo|anniversary edition|beat edit)(\s+\d{4})?.*$/i,
+      ''
+    )
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Search term for a third-party catalog (iTunes, Deezer).
+ *
+ * Must use the cleaned title. Spotify's catalog title carries edition
+ * suffixes, and passing one through as the query does not merely fail to
+ * match, it derails the search itself: "Ride Drive Blind - 2001 Remaster"
+ * returns a live Who track, while "Ride Drive Blind" returns the song.
+ */
+export function catalogQuery(artist: string, title: string): string {
+  return `${(artist || '').trim()} ${norm(title)}`.trim();
 }
 
 export function artistMatches(candidate: string, want: string): boolean {

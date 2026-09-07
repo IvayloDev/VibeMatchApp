@@ -11,7 +11,7 @@
 // Music app when installed and the web player otherwise.
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
-import { norm, artistMatches } from './utils/trackMatch';
+import { norm, artistMatches, catalogQuery } from './utils/trackMatch';
 
 export type AppleMusicSong = {
   title: string;
@@ -30,7 +30,7 @@ function cacheKey(song: AppleMusicSong): string {
 
 async function lookup(song: AppleMusicSong): Promise<string | null> {
   try {
-    const term = encodeURIComponent(`${song.artist} ${song.title}`.trim());
+    const term = encodeURIComponent(catalogQuery(song.artist, song.title));
     const r = await fetch(`https://itunes.apple.com/search?term=${term}&entity=song&limit=10`);
     if (!r.ok) return null;
     const j = await r.json();
