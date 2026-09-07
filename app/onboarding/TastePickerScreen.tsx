@@ -69,6 +69,14 @@ const LABEL_GAP = Spacing.sm + Spacing.xs;
 // How many picks the footer names before it switches to "+n".
 const SUMMARY_NAMES = 3;
 
+// The genres most people reach for, shown before "More". Order is by how
+// often each was picked in the old onboarding, broadest first.
+const FEATURED_GENRES: readonly string[] = [
+  'pop', 'hip hop', 'rock', 'r&b', 'electronic', 'indie', 'latin', 'jazz', 'metal', 'country', 'soul',
+];
+
+const TOTAL_STEPS = 3;
+
 // "hip hop" -> "Hip Hop", "r&b" -> "R&B", "k-pop" -> "K-Pop"
 const formatGenre = (genre: string) =>
   genre.replace(/(^|[\s&-])([a-z])/g, (_match, lead: string, letter: string) => lead + letter.toUpperCase());
@@ -110,6 +118,12 @@ const TastePickerScreen: React.FC = () => {
   const [saving, setSaving] = useState(false);
   // Artists are optional, so the search stays folded away until asked for.
   const [artistsOpen, setArtistsOpen] = useState(false);
+  // One question per screen: decades first, then genres (with artists under
+  // them). The two stages share this component so picks survive Back.
+  const [stage, setStage] = useState<'decades' | 'genres'>('decades');
+  // Eleven common genres show by default; "More" unfolds the rest in place.
+  const [allGenresOpen, setAllGenresOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   // Only the latest search may touch state: a slow early response must not
   // overwrite the results of a later, more specific query.
@@ -360,7 +374,7 @@ const TastePickerScreen: React.FC = () => {
   // check them without scrolling back up.
   const summaryNames = [
     ...selectedGenres.map(formatGenre),
-    ...selectedEras,
+    ...[...selectedEras].sort(),
     ...selectedArtists.map((a) => a.name),
   ];
   const summary =
@@ -404,41 +418,188 @@ const TastePickerScreen: React.FC = () => {
     </View>
   );
 
+  // Which genres are on screen: the featured eleven plus anything already
+  // picked or suggested by a chosen artist, or everything once More is open.
+  const visibleGenres = allGenresOpen
+    ? uniqueStrings([...artistGenres, ...moreGenres])
+    : uniqueStrings([...selectedGenres, ...artistGenres.slice(0, 3), ...FEATURED_GENRES]);
+  const hiddenGenreCount = GENRE_OPTIONS.filter((g) => !visibleGenres.includes(g)).length;
+
+  const goToGenres = () => {
+    if (saving) return;
+    triggerHaptic('light');
+    setStage('genres');
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+
+  const backToDecades = () => {
+    if (saving) return;
+    Keyboard.dismiss();
+    setStage('decades');
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+
+  // Continue on the last stage with nothing picked is the same as Skip: no
+  // profile to save, straight on to the photo.
+  const finish = () => {
+    if (canSave) handleSave();
+    else handleSkip();
+  };
+
+  const eraSummary = selectedEras.length > 0 ? [...selectedEras].sort().join(' · ') : null;
+  const stageIndex = stage === 'decades' ? 1 : 2;
+  const editing = returnTo === 'back';
+
+  const artistsBlock = artistsOpen ? (
+    <View style={styles.artists}>
+      <SectionHeader label="Artists" hint="Optional" count={selectedArtists.length} max={MAX_TASTE_ARTISTS} />
+
+      {selectedArtistChips}
+
+      <View style={styles.searchBox}>
+        <MaterialCommunityIcons name="magnify" size={20} color={OB.textDim} />
+        <TextInput
+          ref={searchInputRef}
+          style={styles.searchInput}
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search any artist"
+          placeholderTextColor={OB.textFaint}
+          autoCapitalize="words"
+          autoCorrect={false}
+          returnKeyType="search"
+          onSubmitEditing={() => { if (trimmedQuery.length >= SEARCH_MIN_CHARS) runSearch(trimmedQuery); }}
+          editable={!saving}
+          accessibilityLabel="Search artists"
+        />
+        {searching ? (
+          <ActivityIndicator size="small" color={OB.primary} />
+        ) : query.length > 0 ? (
+          <TouchableOpacity
+            onPress={() => setQuery('')}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <MaterialCommunityIcons name="close-circle" size={18} color={OB.textDim} />
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
+      {limitHint === 'artists' && (
+        <Text style={styles.limitHint}>
+          That's {MAX_TASTE_ARTISTS} already. Remove one to swap it out.
+        </Text>
+      )}
+
+      {searchError && (
+        <View style={styles.statusRow}>
+          <MaterialCommunityIcons name="alert-circle-outline" size={16} color={OB.error} />
+          <Text style={styles.statusErrorText}>{searchError}</Text>
+          <TouchableOpacity
+            onPress={() => runSearch(searchedFor || trimmedQuery)}
+            hitSlop={8}
+            accessibilityRole="button"
+          >
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {showNoResults && (
+        <Text style={styles.statusText}>
+          No artists found for "{searchedFor}". Try another spelling.
+        </Text>
+      )}
+
+      {showSearchHint && !searchError && (
+        <Text style={styles.statusText}>Type a name to search Spotify's catalog.</Text>
+      )}
+
+      {showResults && (
+        <View style={styles.resultsList}>
+          {results.map((artist) => {
+            const selected = isArtistSelected(artist.id);
+            return (
+              <TouchableOpacity
+                key={artist.id}
+                style={[styles.resultRow, selected && styles.resultRowSelected]}
+                onPress={() => toggleArtist(artist)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+              >
+                <ArtistAvatar uri={artist.image} size={44} />
+                <View style={styles.resultText}>
+                  <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
+                  {artist.genres.length > 0 && (
+                    <Text style={styles.resultGenres} numberOfLines={1}>
+                      {artist.genres.slice(0, 2).map(formatGenre).join(' · ')}
+                    </Text>
+                  )}
+                </View>
+                <View style={[styles.addBtn, selected && styles.addBtnOn]}>
+                  <Text style={styles.addBtnText}>{selected ? 'Added' : 'Add'}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  ) : (
+    <View style={styles.artists}>
+      {selectedArtistChips}
+      <TouchableOpacity
+        onPress={openArtists}
+        style={styles.quietLink}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Add artists you love"
+        accessibilityHint="Optional. Opens a search of Spotify's catalog."
+      >
+        <Text style={styles.quietLinkText}>
+          Love a specific artist? <Text style={styles.quietLinkAction}>Add artists</Text>
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.flex} edges={['top']}>
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          {returnTo === 'back' ? (
-            <OnboardingHeader onBack={handleSkip} />
-          ) : (
-            <OnboardingHeader step={1} total={2} onSkip={handleSkip} skipLabel="Skip" />
-          )}
+          <OnboardingHeader
+            step={editing ? undefined : stageIndex}
+            total={editing ? undefined : TOTAL_STEPS}
+            onBack={stage === 'genres' ? backToDecades : editing ? handleSkip : undefined}
+            onSkip={editing ? undefined : handleSkip}
+          />
 
           <ScrollView
+            ref={scrollRef}
             style={styles.flex}
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <OnboardingIntro
-              eyebrow={returnTo === 'back' ? undefined : 'Step 1 of 2'}
-              title={returnTo === 'back' ? 'Your taste' : 'What do you listen to?'}
-              subtitle="Tap what sounds like you."
-            />
-
-            <View style={styles.body}>
-              {/* Decades first: one tap, and a stronger steer than a genre alone. */}
-              <View style={styles.section}>
-                <SectionHeader label="Decades" count={selectedEras.length} max={MAX_TASTE_ERAS} />
+            {stage === 'decades' ? (
+              <>
+                <OnboardingIntro
+                  eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
+                  title="Which decades?"
+                  subtitle="Up to three. We pick songs from those years."
+                />
                 {limitHint === 'eras' && (
-                  <Text style={styles.limitHint}>
+                  <Text style={[styles.limitHint, styles.limitHintInline]}>
                     That's {MAX_TASTE_ERAS} already. Remove one to swap it out.
                   </Text>
                 )}
-                <View style={styles.chipWrap}>
+                <View style={styles.grid}>
                   {ERA_OPTIONS.map((era) => (
                     <Chip
                       key={era}
+                      size="grid"
                       label={era}
                       selected={selectedEras.includes(era)}
                       dimmed={erasFull}
@@ -447,169 +608,63 @@ const TastePickerScreen: React.FC = () => {
                     />
                   ))}
                 </View>
-              </View>
-
-              {/* Genres */}
-              <View style={styles.section}>
-                <SectionHeader label="Genres" count={selectedGenres.length} max={MAX_TASTE_GENRES} />
+              </>
+            ) : (
+              <>
+                <OnboardingIntro
+                  eyebrow={editing ? undefined : `Step ${stageIndex} of ${TOTAL_STEPS}`}
+                  title="Which genres?"
+                  subtitle="Up to three."
+                />
                 {limitHint === 'genres' && (
-                  <Text style={styles.limitHint}>
+                  <Text style={[styles.limitHint, styles.limitHintInline]}>
                     That's {MAX_TASTE_GENRES} already. Remove one to swap it out.
                   </Text>
                 )}
-                {artistGenres.length > 0 ? (
-                  <>
-                    <Text style={styles.groupLabel}>From your artists</Text>
-                    <View style={styles.chipWrap}>{artistGenres.map(renderGenreChip)}</View>
-                    <Text style={styles.groupLabel}>More</Text>
-                    <View style={styles.chipWrap}>{moreGenres.map(renderGenreChip)}</View>
-                  </>
-                ) : (
-                  <View style={styles.chipWrap}>{moreGenres.map(renderGenreChip)}</View>
-                )}
-              </View>
-
-              {/* Artists, optional and folded away until asked for. */}
-              <View style={styles.section}>
-                {artistsOpen ? (
-                  <>
-                    <SectionHeader
-                      label="Artists"
-                      hint="Optional"
-                      count={selectedArtists.length}
-                      max={MAX_TASTE_ARTISTS}
+                <View style={styles.grid}>
+                  {visibleGenres.map((genre) => (
+                    <Chip
+                      key={genre}
+                      size="grid"
+                      label={formatGenre(genre)}
+                      selected={selectedGenres.includes(genre)}
+                      dimmed={genresFull}
+                      onPress={() => toggleGenre(genre)}
+                      accessibilityLabel={`${formatGenre(genre)}, genre`}
                     />
-
-                    {selectedArtistChips}
-
-                    <View style={styles.searchBox}>
-                      <MaterialCommunityIcons name="magnify" size={20} color={OB.textDim} />
-                      <TextInput
-                        ref={searchInputRef}
-                        style={styles.searchInput}
-                        value={query}
-                        onChangeText={setQuery}
-                        placeholder="Search any artist"
-                        placeholderTextColor={OB.textFaint}
-                        autoCapitalize="words"
-                        autoCorrect={false}
-                        returnKeyType="search"
-                        onSubmitEditing={() => { if (trimmedQuery.length >= SEARCH_MIN_CHARS) runSearch(trimmedQuery); }}
-                        editable={!saving}
-                        accessibilityLabel="Search artists"
-                      />
-                      {searching ? (
-                        <ActivityIndicator size="small" color={OB.primary} />
-                      ) : query.length > 0 ? (
-                        <TouchableOpacity
-                          onPress={() => setQuery('')}
-                          hitSlop={10}
-                          accessibilityRole="button"
-                          accessibilityLabel="Clear search"
-                        >
-                          <MaterialCommunityIcons name="close-circle" size={18} color={OB.textDim} />
-                        </TouchableOpacity>
-                      ) : null}
-                    </View>
-
-                    {limitHint === 'artists' && (
-                      <Text style={styles.limitHint}>
-                        That's {MAX_TASTE_ARTISTS} already. Remove one to swap it out.
-                      </Text>
-                    )}
-
-                    {searchError && (
-                      <View style={styles.statusRow}>
-                        <MaterialCommunityIcons name="alert-circle-outline" size={16} color={OB.error} />
-                        <Text style={styles.statusErrorText}>{searchError}</Text>
-                        <TouchableOpacity
-                          onPress={() => runSearch(searchedFor || trimmedQuery)}
-                          hitSlop={8}
-                          accessibilityRole="button"
-                        >
-                          <Text style={styles.retryText}>Retry</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-
-                    {showNoResults && (
-                      <Text style={styles.statusText}>
-                        No artists found for "{searchedFor}". Try another spelling.
-                      </Text>
-                    )}
-
-                    {showSearchHint && !searchError && (
-                      <Text style={styles.statusText}>
-                        Type a name to search Spotify's catalog.
-                      </Text>
-                    )}
-
-                    {showResults && (
-                      <View style={styles.resultsList}>
-                        {results.map((artist) => {
-                          const selected = isArtistSelected(artist.id);
-                          return (
-                            <TouchableOpacity
-                              key={artist.id}
-                              style={[styles.resultRow, selected && styles.resultRowSelected]}
-                              onPress={() => toggleArtist(artist)}
-                              activeOpacity={0.7}
-                              accessibilityRole="button"
-                              accessibilityState={{ selected }}
-                            >
-                              <ArtistAvatar uri={artist.image} size={44} />
-                              <View style={styles.resultText}>
-                                <Text style={styles.resultName} numberOfLines={1}>{artist.name}</Text>
-                                {artist.genres.length > 0 && (
-                                  <Text style={styles.resultGenres} numberOfLines={1}>
-                                    {artist.genres.slice(0, 2).map(formatGenre).join(' · ')}
-                                  </Text>
-                                )}
-                              </View>
-                              <View style={[styles.addBtn, selected && styles.addBtnOn]}>
-                                <Text style={styles.addBtnText}>{selected ? 'Added' : 'Add'}</Text>
-                              </View>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <SectionHeader label="Artists" hint="Optional" />
-                    {selectedArtistChips}
-                    <TouchableOpacity
-                      style={styles.addArtistsRow}
-                      onPress={openArtists}
-                      activeOpacity={0.7}
-                      accessibilityRole="button"
-                      accessibilityLabel="Add artists you love"
-                      accessibilityHint="Optional. Search Spotify's catalog."
-                    >
-                      <View style={styles.addArtistsIcon}>
-                        <MaterialCommunityIcons name="plus" size={20} color={OB.purpleText} />
-                      </View>
-                      <View style={styles.addArtistsText}>
-                        <Text style={styles.addArtistsTitle}>Add artists you love</Text>
-                        <Text style={styles.addArtistsCaption}>Search Spotify's catalog</Text>
-                      </View>
-                      <MaterialCommunityIcons name="chevron-right" size={22} color={OB.textFaint} />
-                    </TouchableOpacity>
-                  </>
-                )}
-              </View>
-            </View>
+                  ))}
+                  {!allGenresOpen && hiddenGenreCount > 0 ? (
+                    <Chip
+                      size="grid"
+                      ghost
+                      label="More"
+                      selected={false}
+                      onPress={() => { triggerHaptic('light'); setAllGenresOpen(true); }}
+                      accessibilityLabel={`More genres, ${hiddenGenreCount} hidden`}
+                    />
+                  ) : null}
+                </View>
+                {artistsBlock}
+              </>
+            )}
           </ScrollView>
 
-          <OnboardingFooter
-            summary={summary ?? 'Pick at least one to continue'}
-            ctaLabel="Continue"
-            onPress={handleSave}
-            disabled={!canSave}
-            loading={saving}
-            bottomInset={insets.bottom}
-          />
+          {stage === 'decades' ? (
+            <OnboardingFooter
+              summary={eraSummary ?? 'Pick up to three, or continue'}
+              ctaLabel="Continue"
+              onPress={goToGenres}
+              bottomInset={insets.bottom}
+            />
+          ) : (
+            <OnboardingFooter
+              summary={summary ?? 'Pick up to three, or continue'}
+              ctaLabel={editing ? 'Save' : 'Continue'}
+              onPress={finish}
+              loading={saving}
+              bottomInset={insets.bottom}
+            />
+          )}
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
@@ -626,6 +681,18 @@ const styles = StyleSheet.create({
     gap: Spacing.lg,
   },
   section: { gap: LABEL_GAP },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingHorizontal: OB.margin,
+    marginTop: 18,
+  },
+  artists: { paddingHorizontal: OB.margin, marginTop: 22, gap: LABEL_GAP },
+  quietLink: { minHeight: OB.hit, justifyContent: 'center' },
+  quietLinkText: { color: OB.textDim, fontSize: OB.body },
+  quietLinkAction: { color: OB.purpleText, fontWeight: '700' },
+  limitHintInline: { paddingHorizontal: OB.margin, marginTop: 10 },
 
   groupLabel: { color: OB.textFaint, fontSize: OB.caption, fontWeight: '600' },
 

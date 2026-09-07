@@ -191,10 +191,16 @@ export const Chip: React.FC<{
   leading?: React.ReactNode;
   /** Slot after the label, for a remove icon. */
   trailing?: React.ReactNode;
-}> = ({ label, selected, onPress, dimmed, accessibilityLabel, accessibilityHint, leading, trailing }) => (
+  /** 'grid': 48pt, 16pt label, stretches to its grid cell. Default: 40pt inline. */
+  size?: 'inline' | 'grid';
+  /** Dashed, quiet chip for "More" style affordances. */
+  ghost?: boolean;
+}> = ({ label, selected, onPress, dimmed, accessibilityLabel, accessibilityHint, leading, trailing, size = 'inline', ghost }) => (
   <Pressable
     style={({ pressed }) => [
       styles.chip,
+      size === 'grid' && styles.chipGrid,
+      ghost && styles.chipGhost,
       selected && styles.chipSelected,
       dimmed && !selected && styles.chipDimmed,
       pressed && styles.chipPressed,
@@ -207,7 +213,7 @@ export const Chip: React.FC<{
     accessibilityHint={accessibilityHint}
   >
     {leading}
-    <Text style={styles.chipLabel} numberOfLines={1}>
+    <Text style={[styles.chipLabel, size === 'grid' && styles.chipLabelGrid, ghost && styles.chipLabelGhost]} numberOfLines={1}>
       {label}
     </Text>
     {trailing}
@@ -365,6 +371,22 @@ const styles = StyleSheet.create({
   },
   chipDimmed: { opacity: 0.45 },
   chipPressed: { transform: [{ scale: 0.96 }] },
+  chipGrid: {
+    minHeight: 48,
+    borderRadius: 24,
+    paddingHorizontal: Spacing.sm,
+    // Three equal columns with a 10pt gutter, whatever the label length.
+    flexBasis: '31%',
+    flexGrow: 1,
+    maxWidth: '32%',
+  },
+  chipGhost: {
+    backgroundColor: 'transparent',
+    borderStyle: 'dashed',
+    borderColor: 'rgba(255,255,255,0.28)',
+  },
+  chipLabelGrid: { fontSize: 16 },
+  chipLabelGhost: { color: OB.textDim },
   chipBadge: {
     position: 'absolute',
     top: -5,
