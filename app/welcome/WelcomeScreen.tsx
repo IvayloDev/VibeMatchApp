@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   Animated,
   AccessibilityInfo,
+  Easing,
   StyleProp,
   ViewStyle,
   Image,
@@ -52,7 +53,7 @@ const CARD_SPREAD = 70;
 const STACK_WIDTH = CARD_SIZE + CARD_SPREAD * 2;
 const STACK_HEIGHT = CARD_SIZE + 32;
 const SWAP_EVERY_MS = 3000;
-const SWAP_DURATION_MS = 400;
+const SWAP_DURATION_MS = 650;
 
 type Gradient = readonly [string, string, string];
 
@@ -138,31 +139,46 @@ const MatchCard = ({ card }: { card: MatchCardSpec }) => (
   </LinearGradient>
 );
 
-// One position in the stack. Two cards are layered: the one underneath is
-// always fully opaque and the one on top fades, so a swap is a single fade
-// with no background bleeding through mid-crossfade. Which card sits on top
-// alternates each step so the shared Animated.Value never has to be reset
-// (resetting it in the same tick as a state change can flash a frame).
-type CardSlotProps = {
-  current: MatchCardSpec;
-  next: MatchCardSpec;
-  topIsCurrent: boolean;
-  topOpacity: Animated.AnimatedInterpolation<number>;
-  style: StyleProp<ViewStyle>;
-  lift?: Animated.AnimatedInterpolation<number>;
-};
+// Every card is always mounted and moves along one cycle of poses:
+// front -> back-right -> behind (invisible) -> behind -> back-left -> front.
+// A single clock `t` advances by one per swap; card k sits at phase
+// (t + k) mod N and interpolates its position, rotation, scale and opacity
+// from that phase. Nothing crossfades and no card ever changes its photo,
+// so a swap is pure motion: the front card slides right and away, the
+// left card slides up to the front, a fresh card fades in behind on the
+// left. With photos on the cards, the old crossfade read as a double
+// exposure and the back cards snapped when state flipped.
+const N = MATCH_CARDS.length;
+const PHASES = [0, 1, 2, 3, 4, 5];
+const POSE_X = [0, CARD_SPREAD, 0, 0, -CARD_SPREAD, 0];
+const POSE_Y = [-6, 16, 44, 44, 16, -6];
+const POSE_ROT = ['0deg', '10deg', '0deg', '0deg', '-11deg', '0deg'];
+const POSE_SCALE = [1, 0.96, 0.8, 0.8, 0.96, 1];
+const POSE_OPACITY = [1, 0.92, 0, 0, 0.92, 1];
+// Layer order for the duration of a step, keyed by the phase a card is
+// heading to: the card arriving at the front slides over the old front.
+const Z_BY_END_PHASE = [5, 4, 1, 2, 3];
 
-const CardSlot = ({ current, next, topIsCurrent, topOpacity, style, lift }: CardSlotProps) => {
-  const top = topIsCurrent ? current : next;
-  const under = topIsCurrent ? next : current;
+const CarouselCard = ({ card, index, clock, zIndex }: {
+  card: MatchCardSpec;
+  index: number;
+  clock: Animated.Value;
+  zIndex: number;
+}) => {
+  const phase = Animated.modulo(Animated.add(clock, index), N);
+  const style: Animated.WithAnimatedObject<ViewStyle> = {
+    zIndex,
+    opacity: phase.interpolate({ inputRange: PHASES, outputRange: POSE_OPACITY }),
+    transform: [
+      { translateX: phase.interpolate({ inputRange: PHASES, outputRange: POSE_X }) },
+      { translateY: phase.interpolate({ inputRange: PHASES, outputRange: POSE_Y }) },
+      { rotate: phase.interpolate({ inputRange: PHASES, outputRange: POSE_ROT }) },
+      { scale: phase.interpolate({ inputRange: PHASES, outputRange: POSE_SCALE }) },
+    ],
+  };
   return (
-    <Animated.View style={[styles.slot, style, lift ? { transform: [{ translateY: lift }] } : null]}>
-      <View style={StyleSheet.absoluteFill}>
-        <MatchCard card={under} />
-      </View>
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: topOpacity }]}>
-        <MatchCard card={top} />
-      </Animated.View>
+    <Animated.View style={[styles.slot, style]}>
+      <MatchCard card={card} />
     </Animated.View>
   );
 };
@@ -175,11 +191,11 @@ const WelcomeScreen = () => {
   // brand-new users get a pure Start Matching screen.
   const [hadAccount, setHadAccount] = useState(false);
 
-  // Hero rotation: step counts completed swaps. step % MATCH_CARDS.length picks the front
-  // card, step % 2 picks which layer of each slot is on top.
+  // Hero rotation: `clock` advances by exactly one per swap and never
+  // resets; `step` mirrors its target so layer order can follow along.
   const [step, setStep] = useState(0);
   const stepRef = useRef(0);
-  const swap = useRef(new Animated.Value(0)).current;
+  const clock = useRef(new Animated.Value(0)).current;
 
   // Single entrance fade for the whole screen
   const enter = useRef(new Animated.Value(0)).current;
@@ -205,23 +221,22 @@ const WelcomeScreen = () => {
     }).start();
   }, [enter]);
 
-  // Swap the front card every few seconds. Skipped entirely when the user
+  // Advance the carousel every few seconds. Skipped entirely when the user
   // has asked for reduced motion, leaving a static stack.
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setInterval> | undefined;
 
     const tick = () => {
-      const toValue = stepRef.current % 2 === 0 ? 1 : 0;
-      Animated.timing(swap, {
-        toValue,
+      stepRef.current += 1;
+      // Layer order first, so the incoming card is on top for the whole move.
+      setStep(stepRef.current);
+      Animated.timing(clock, {
+        toValue: stepRef.current,
         duration: SWAP_DURATION_MS,
+        easing: Easing.inOut(Easing.cubic),
         useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (!finished || !active) return;
-        stepRef.current += 1;
-        setStep(stepRef.current);
-      });
+      }).start();
     };
 
     AccessibilityInfo.isReduceMotionEnabled()
@@ -234,9 +249,9 @@ const WelcomeScreen = () => {
     return () => {
       active = false;
       if (timer) clearInterval(timer);
-      swap.stopAnimation();
+      clock.stopAnimation();
     };
-  }, [swap]);
+  }, [clock]);
 
   // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
@@ -303,11 +318,8 @@ const WelcomeScreen = () => {
     }
   };
 
-  const front = step % MATCH_CARDS.length;
-  const topIsCurrent = step % 2 === 0;
-  const topOpacity = swap.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
-  const lift = swap.interpolate({ inputRange: [0, 0.5, 1], outputRange: [-6, -10, -6] });
-  const cardAt = (offset: number) => MATCH_CARDS[(front + offset) % MATCH_CARDS.length];
+  // Where each card will be once the current move finishes, for layering.
+  const zFor = (index: number) => Z_BY_END_PHASE[(step + index) % N];
 
   return (
     <View style={styles.container}>
@@ -327,28 +339,9 @@ const WelcomeScreen = () => {
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
             >
-              <CardSlot
-                current={cardAt(1)}
-                next={cardAt(2)}
-                topIsCurrent={topIsCurrent}
-                topOpacity={topOpacity}
-                style={styles.slotBackLeft}
-              />
-              <CardSlot
-                current={cardAt(2)}
-                next={cardAt(0)}
-                topIsCurrent={topIsCurrent}
-                topOpacity={topOpacity}
-                style={styles.slotBackRight}
-              />
-              <CardSlot
-                current={cardAt(0)}
-                next={cardAt(1)}
-                topIsCurrent={topIsCurrent}
-                topOpacity={topOpacity}
-                style={styles.slotFront}
-                lift={lift}
-              />
+              {MATCH_CARDS.map((card, index) => (
+                <CarouselCard key={card.tag + card.song} card={card} index={index} clock={clock} zIndex={zFor(index)} />
+              ))}
             </View>
           </View>
 
@@ -459,24 +452,13 @@ const styles = StyleSheet.create({
     top: 8,
     width: CARD_SIZE,
     height: CARD_SIZE,
-  },
-  slotBackLeft: {
-    opacity: 0.9,
-    transform: [{ translateX: -CARD_SPREAD }, { translateY: 16 }, { rotate: '-11deg' }],
-  },
-  slotBackRight: {
-    opacity: 0.9,
-    transform: [{ translateX: CARD_SPREAD }, { translateY: 16 }, { rotate: '10deg' }],
-  },
-  slotFront: {
-    zIndex: 2,
     borderRadius: 20,
     backgroundColor: OB.bg,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 24 },
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    elevation: 12,
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.45,
+    shadowRadius: 20,
+    elevation: 10,
   },
   card: {
     width: CARD_SIZE,
