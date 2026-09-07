@@ -124,9 +124,11 @@ export function TrackPreviewButton({
       );
     }
     if (variant === 'row') {
+      // No preview for this track: the links take the play button's place so
+      // the row keeps its shape.
       return (
-        <View style={styles.rowLinks}>
-          <StreamingLinks song={song} size={24} variant={variant} gap={Spacing.sm} />
+        <View style={styles.rowRow}>
+          <StreamingLinks song={song} size={22} variant={variant} gap={Spacing.sm} />
         </View>
       );
     }
@@ -179,25 +181,31 @@ export function TrackPreviewButton({
   }
 
   if (variant === 'row') {
+    // Play, then the same streaming marks the first song gets. Leaving them
+    // off made the rows look like a different kind of item: the only way to
+    // open one in Spotify was to make it the first song.
     return (
-      <View style={styles.rowWrap}>
-        {showRing ? (
-          <ProgressRing size={36} stroke={2.5} progress={progress} color="#FFFFFF" trackColor="rgba(255,255,255,0.25)" />
-        ) : null}
-        <TouchableOpacity
-          style={styles.rowBtn}
-          onPress={onPress}
-          activeOpacity={0.85}
-          hitSlop={6}
-          accessibilityRole="button"
-          accessibilityLabel={isPlaying ? `Pause ${song.title}` : `Play ${song.title}`}
-        >
-          {isLoading ? (
-            <ActivityIndicator size="small" color={Colors.textPrimary} />
-          ) : (
-            <MaterialCommunityIcons name={icon} size={18} color={Colors.textPrimary} />
-          )}
-        </TouchableOpacity>
+      <View style={styles.rowRow}>
+        <View style={styles.rowWrap}>
+          {showRing ? (
+            <ProgressRing size={36} stroke={2.5} progress={progress} color="#FFFFFF" trackColor="rgba(255,255,255,0.25)" />
+          ) : null}
+          <TouchableOpacity
+            style={styles.rowBtn}
+            onPress={onPress}
+            activeOpacity={0.85}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={isPlaying ? `Pause ${song.title}` : `Play ${song.title}`}
+          >
+            {isLoading ? (
+              <ActivityIndicator size="small" color={Colors.textPrimary} />
+            ) : (
+              <MaterialCommunityIcons name={icon} size={18} color={Colors.textPrimary} />
+            )}
+          </TouchableOpacity>
+        </View>
+        <StreamingLinks song={song} size={22} variant={variant} gap={Spacing.sm} />
       </View>
     );
   }
@@ -370,6 +378,11 @@ const styles = StyleSheet.create({
   },
 
   // row (result screen, other songs)
+  rowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm + 2,
+  },
   rowWrap: {
     width: 36,
     height: 36,
