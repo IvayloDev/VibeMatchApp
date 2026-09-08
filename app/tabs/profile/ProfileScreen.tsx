@@ -86,7 +86,7 @@ const ProfileScreen = () => {
   // Bug reports arrive useless without build context, so the diagnostics the
   // user can't be expected to know are prefilled into the body.
   const handleReportBug = async () => {
-    trackEvent('report_bug_tapped', { signed_in: !!user, credits_balance: credits });
+    trackEvent('report_bug_tapped', { signed_in: isRegistered, credits_balance: credits });
 
     const diagnostics = [
       `App version: ${Application.nativeApplicationVersion ?? 'unknown'} (${Application.nativeBuildVersion ?? '?'})`,
@@ -161,7 +161,7 @@ const ProfileScreen = () => {
     if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
       await refreshProStatus(result.customerInfo);
       setIsPro(true);
-      trackEvent('subscription_restored', { is_authenticated: !!user });
+      trackEvent('subscription_restored', { is_authenticated: isRegistered });
       Alert.alert('Restored', 'Your TuneMatch Pro subscription is active again.');
     } else {
       Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
@@ -177,12 +177,12 @@ const ProfileScreen = () => {
   const handleConnectSpotify = async () => {
     if (connectingSpotify) return;
     setConnectingSpotify(true);
-    trackEvent('spotify_connect_tapped', { source: 'profile', is_authenticated: !!user });
+    trackEvent('spotify_connect_tapped', { source: 'profile', is_authenticated: isRegistered });
     try {
       const result = await connectSpotify();
       await refreshSpotifyStatus({ silent: true });
       if (result.success) {
-        trackEvent('spotify_connected', { source: 'profile', is_authenticated: !!user });
+        trackEvent('spotify_connected', { source: 'profile', is_authenticated: isRegistered });
         Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
       } else if (result.reason === 'not_allowlisted') {
         // Spotify's Development mode: login worked, data will never load.
@@ -570,7 +570,7 @@ const ProfileScreen = () => {
         <TouchableOpacity
           style={[styles.spotifyConnectCard, styles.tasteCard]}
           onPress={() => {
-            trackEvent('taste_picker_opened', { source: 'profile', is_authenticated: !!user });
+            trackEvent('taste_picker_opened', { source: 'profile', is_authenticated: isRegistered });
             (navigation as any).navigate('TastePicker', { returnTo: 'back' });
           }}
           activeOpacity={0.85}

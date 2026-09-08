@@ -504,6 +504,9 @@ export async function initRevenueCat(userId?: string): Promise<void> {
         }
 
         isConfigured = true;
+        // Anything that subscribed before now gets attached here, so a
+        // listener registered at app start is not silently discarded.
+        flushPendingCustomerInfoListeners();
         configured = true;
         break;
         
@@ -979,18 +982,52 @@ export function getManagementURL(customerInfo: CustomerInfo): string | null {
 /**
  * Listen for customer info updates
  */
+/**
+ * Listeners that asked to subscribe before RevenueCat finished configuring.
+ *
+ * This used to return a silent no-op in that case, which made subscribing at
+ * app start - the only place you would want to - permanently useless: App.js
+ * registers on mount and configuration completes later, so the callback never
+ * fired for a restore, a renewal, an expiry, or a purchase made on another
+ * device. Registration is now order-independent and these are attached the
+ * moment configuration finishes.
+ */
+const pendingCustomerInfoListeners = new Set<(customerInfo: CustomerInfo) => void>();
+
+/** Called once configuration completes. Safe to call more than once. */
+function flushPendingCustomerInfoListeners(): void {
+  if (!isRevenueCatAvailable() || !isConfigured) return;
+  for (const listener of pendingCustomerInfoListeners) {
+    try {
+      Purchases.addCustomerInfoUpdateListener(listener);
+    } catch (error) {
+      console.warn('[RevenueCat] could not attach a deferred listener:', error);
+    }
+  }
+  pendingCustomerInfoListeners.clear();
+}
+
 export function addCustomerInfoUpdateListener(
   listener: (customerInfo: CustomerInfo) => void
 ): () => void {
-  if (!isRevenueCatAvailable() || !isConfigured) {
-    // Return no-op unsubscribe function
+  if (!isRevenueCatAvailable()) {
     return () => {};
   }
 
+  if (!isConfigured) {
+    // Hold it rather than dropping it. Configuration is asynchronous and the
+    // caller has no way to know when it lands.
+    pendingCustomerInfoListeners.add(listener);
+    return () => {
+      pendingCustomerInfoListeners.delete(listener);
+      try { Purchases.removeCustomerInfoUpdateListener(listener); } catch { /* never attached */ }
+    };
+  }
+
   Purchases.addCustomerInfoUpdateListener(listener);
-  
-  // Return unsubscribe function
+
   return () => {
+    pendingCustomerInfoListeners.delete(listener);
     if (isRevenueCatAvailable()) {
       Purchases.removeCustomerInfoUpdateListener(listener);
     }

@@ -86,10 +86,13 @@ const DashboardScreen = () => {
       setCreditSource(state.source);
       if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
 
-      registerSuperProperties({ is_pro: pro, credits_balance: state.balance, signed_in: !!userRef.current });
+      // signed_in must keep meaning "has an account". Deriving it from the
+      // identity would make every install report as signed in, and every
+      // guest-versus-registered breakdown would quietly read 100%.
+      registerSuperProperties({ is_pro: pro, credits_balance: state.balance, signed_in: isRegistered });
       if (!dashboardTracked.current) {
         dashboardTracked.current = true;
-        trackEvent('dashboard_viewed', { credits_balance: state.balance, is_pro: pro, signed_in: !!userRef.current });
+        trackEvent('dashboard_viewed', { credits_balance: state.balance, is_pro: pro, signed_in: isRegistered });
       }
       // Refreshed alongside credits so the badge is right after every scan.
       if (pro) setProScansToday(await getProScansToday());
@@ -384,7 +387,9 @@ const DashboardScreen = () => {
           {/* Guest monetization: the loud banner sells credits (the paywall is
               where revenue happens); account creation is a quiet secondary line
               underneath rather than the thing we shout about. */}
-          {!user && !isPro && (
+          {/* !isRegistered, not !user: a guest has an anonymous user now,
+              so this whole upsell block rendered for nobody. */}
+          {!isRegistered && !isPro && (
             <Animated.View style={{ opacity: fadeAnim }}>
               <TouchableOpacity
                 style={styles.guestRegisterBanner}

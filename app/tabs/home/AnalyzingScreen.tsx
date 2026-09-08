@@ -13,6 +13,7 @@ import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '../../../lib/AuthContext';
 import { requireIdentity } from '../../../lib/identity';
 import { getCreditState, applyScanCredits } from '../../../lib/creditState';
 import { supabase } from '../../../lib/supabase';
@@ -273,7 +274,10 @@ const AnalyzingScreen = () => {
   // Out-of-matches wall + what it needs to know.
   const [showWall, setShowWall] = useState(false);
   const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
-  const [isAuthed, setIsAuthed] = useState(!!userId);
+  // The wall's register upsell asks "has an account", which the route param
+  // never answered correctly in either direction: it was seeded from a
+  // possibly-stale userId, and every guest now has one. Ask AuthContext.
+  const { isRegistered } = useAuth();
   // Bumped to re-run the blocked scan (after a pack bought from the wall, or
   // when the user comes back from the paywall).
   const [scanAttempt, setScanAttempt] = useState(0);
@@ -526,12 +530,20 @@ const AnalyzingScreen = () => {
         uploadedFilePath = filePath;
         setProgress(25);
 
-        // Guest users don't have a Supabase session, so the edge function
-        // cannot look up their taste profile server-side. Pass it inline.
+        // A guest's taste picks live in AsyncStorage, not in
+        // spotify_taste_profiles, so the edge function cannot look them up and
+        // they have to travel inline.
+        //
+        // `!s?.user` stopped meaning "guest" when every install got an
+        // anonymous uid, which silently stopped sending the picks of every
+        // guest who had chosen a taste on the previous build: the server found
+        // no row for their brand new uid and matched them generically from
+        // then on. The server prefers an inline profile over the row, so
+        // sending it is safe even once a row exists.
         let guestTasteProfile: any = null;
         try {
           const { data: { session: s } } = await supabase.auth.getSession();
-          if (!s?.user) {
+          if (!s?.user || s.user.is_anonymous) {
             const { loadGuestTasteProfile } = await import('../../../lib/spotify');
             guestTasteProfile = await loadGuestTasteProfile();
           }
@@ -1124,7 +1136,7 @@ const AnalyzingScreen = () => {
         source="analyzing_gate"
         credits={0}
         nextFreeAt={nextFreeAt}
-        isAuthenticated={isAuthed}
+        isAuthenticated={isRegistered}
         isPro={false}
         onClose={() => {
           setShowWall(false);

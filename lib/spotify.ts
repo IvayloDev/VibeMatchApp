@@ -218,7 +218,13 @@ export async function loadGuestTasteProfile(): Promise<SpotifyTasteProfile | nul
 export async function getSpotifyConnectionStatus(): Promise<SpotifyConnectionStatus> {
   const { data: { session } } = await supabase.auth.getSession();
 
-  if (session?.user) {
+  // A registered account keeps its connection in spotify_connections; a guest
+  // keeps a refresh token in SecureStore. An anonymous identity is a guest, and
+  // asking `session?.user` sent every one of them down the registered path,
+  // where they have no row - so a guest who had connected Spotify on the
+  // previous build was told they were not connected, and their matches quietly
+  // stopped being tuned to their listening.
+  if (session?.user && !session.user.is_anonymous) {
     try {
       const { data, error } = await supabase
         .from('spotify_connections')
@@ -348,7 +354,9 @@ export async function syncTasteProfile(): Promise<{ success: boolean; error?: st
     const { data: { session } } = await supabase.auth.getSession();
     const body: Record<string, unknown> = {};
 
-    if (!session?.user) {
+    // Anonymous identity included: a guest's Spotify tokens are in SecureStore
+    // whether or not they hold a Supabase uid.
+    if (!session?.user || session.user.is_anonymous) {
       // Guest: include tokens
       const tokens = await loadGuestTokens();
       if (!tokens.refresh_token) {
@@ -410,7 +418,9 @@ export async function maybeAutoRefreshTaste(): Promise<void> {
     const { data: { session } } = await supabase.auth.getSession();
     let refreshedAt: string | null = null;
 
-    if (session?.user) {
+    // Only a registered account has a spotify_taste_profiles row to read; a
+    // guest's cached profile lives on the device.
+    if (session?.user && !session.user.is_anonymous) {
       const { data } = await supabase
         .from('spotify_taste_profiles')
         .select('refreshed_at')
