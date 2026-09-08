@@ -48,7 +48,7 @@ type RootStackParamList = {
 };
 
 const ProfileScreen = () => {
-  const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus } = useAuth();
+  const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus, isRegistered } = useAuth();
   const [connectingSpotify, setConnectingSpotify] = useState(false);
   const [proScansToday, setProScansToday] = useState(0);
   const [proPlan, setProPlan] = useState<ProPlanSummary | null>(null);
@@ -562,34 +562,6 @@ const ProfileScreen = () => {
           </LinearGradient>
         </Animatable.View>
 
-        {user ? (
-          <>
-            {/* Sign Out Button */}
-            <TouchableOpacity
-              style={styles.signOutButton}
-              onPress={handleSignOut}
-              activeOpacity={0.8}
-            >
-              <MaterialCommunityIcons name="logout" size={20} color="#FF3B30" />
-              <Text style={styles.signOutButtonText}>Sign Out</Text>
-            </TouchableOpacity>
-
-            {/* Delete Profile Button */}
-            <TouchableOpacity
-              style={styles.deleteProfileButton}
-              onPress={handleDeleteProfile}
-              activeOpacity={0.8}
-            >
-              <MaterialCommunityIcons name="delete" size={20} color="#FF453A" />
-              <Text style={styles.deleteProfileButtonText}>Delete Profile</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          /* Guest: the account prompt lives under the taste card now, since
-             taste changes every match and an account only adds one credit. */
-          null
-        )}
-
         {/* Spotify link, shown only to people who skipped it in onboarding.
             Hidden while the status is still resolving so it cannot flash in
             front of someone who is already connected. */}
@@ -615,14 +587,19 @@ const ProfileScreen = () => {
           <MaterialCommunityIcons name="chevron-right" size={22} color="#f4258c" />
         </TouchableOpacity>
 
-        {!user && (
+        {/* !isRegistered, not !user: a guest now HAS a user, so this prompt
+            had stopped rendering for exactly the people it is meant for.
+            The copy no longer promises a credit either. Free credits are
+            rationed per device now, so signing up grants nothing extra - what
+            an account actually buys you is your matches surviving the phone. */}
+        {!isRegistered && (
           <TouchableOpacity
             style={styles.registerQuietButton}
             onPress={handleRegister}
             activeOpacity={0.7}
           >
             <MaterialCommunityIcons name="account-plus-outline" size={18} color="rgba(255,255,255,0.75)" />
-            <Text style={styles.registerQuietText}>Create an account, get 1 free credit</Text>
+            <Text style={styles.registerQuietText}>Create an account to keep your matches</Text>
           </TouchableOpacity>
         )}
 
@@ -673,6 +650,36 @@ const ProfileScreen = () => {
             <Text style={styles.utilityButtonText}>Restore</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Sign Out and Delete live at the bottom, side by side.
+            They were two full-width rows in the middle of the page: the two
+            rarest and most destructive actions taking the most prominent
+            space, which pushed Report a Bug under the tab bar and the legal
+            links off the screen entirely. */}
+        {/* isRegistered, not `user`. Every guest has an anonymous Supabase
+            user now, so `user` was showing Sign Out and Delete Profile to
+            people with no account to sign out of or delete. */}
+        {isRegistered ? (
+          <View style={styles.dangerRow}>
+            <TouchableOpacity
+              style={[styles.signOutButton, styles.dangerButton]}
+              onPress={handleSignOut}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="logout" size={17} color="#FF3B30" />
+              <Text style={styles.signOutButtonText}>Sign Out</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.deleteProfileButton, styles.dangerButton]}
+              onPress={handleDeleteProfile}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="delete" size={17} color="#FF453A" />
+              <Text style={styles.deleteProfileButtonText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={styles.legalRow}>
           <TouchableOpacity
@@ -789,11 +796,11 @@ const styles = StyleSheet.create({
   },
   creditCardContainer: {
     paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.md,
   },
   creditCard: {
     borderRadius: 24,
-    padding: Spacing.lg,
+    padding: Spacing.md,
     position: 'relative',
     overflow: 'hidden',
     ...Shadows.prominent,
@@ -838,10 +845,10 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap', // Allow wrapping if needed
   },
   creditNumber: {
-    fontSize: 48,
+    fontSize: 38,
     fontWeight: '700',
     color: '#FFFFFF',
-    lineHeight: 56, // Ensure proper line height
+    lineHeight: 44, // Ensure proper line height
     minWidth: 60, // Minimum width for number display
   },
   creditCountdown: {
@@ -934,10 +941,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  signOutButton: {
+  dangerRow: {
+    flexDirection: 'row',
+    gap: 12,
     marginHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
-    paddingVertical: Spacing.md,
+    marginTop: Spacing.md,
+  },
+  dangerButton: {
+    flex: 1,
+  },
+  signOutButton: {
+    paddingVertical: Spacing.sm + 2,
     backgroundColor: 'rgba(255, 59, 48, 0.1)',
     borderRadius: 24,
     borderWidth: 1,
@@ -948,14 +962,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   signOutButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#FF3B30',
   },
   deleteProfileButton: {
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.xl,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
     backgroundColor: 'rgba(255, 69, 58, 0.1)',
     borderRadius: 24,
     borderWidth: 1,
@@ -966,7 +978,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   deleteProfileButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#FF453A',
   },
