@@ -1281,12 +1281,29 @@ serve(async (req) => {
       }, 409);
     }
     if (charge?.outcome === "replay" && charge?.response) {
-      // Already paid for. Hand back the same answer rather than running the
-      // model again and charging for it.
+      // Delivered before. Hand back the same answer rather than running the
+      // model again and charging for it. After 20260909040000, charge_scan
+      // only says 'replay' for a settled row with a real payload, so the
+      // response check is belt and braces: against an older database a held or
+      // refunded row could still replay with nothing in it, and answering 200
+      // with no songs is the exact bug that migration fixes. Without a payload
+      // this falls through to the 503 below, which is a failure the client
+      // already handles and a retry can clear.
       console.log("♻️ replaying a settled scan", scanId);
       return jsonResponse({ ...charge.response, credits: { balance: creditsBalance, meter: chargeMeter } }, 200);
     }
-    if (charge?.outcome !== "charged" && charge?.outcome !== "pro" && charge?.outcome !== "replay") {
+    if (charge?.outcome === "in_flight") {
+      // The same scan is already running. Starting a second model run would be
+      // a second paid call against one credit, and whichever finished last
+      // would decide what the user sees.
+      console.warn("⏳ scan already in flight", scanId);
+      return jsonResponse({
+        error: "That match is already running",
+        code: "scan_in_flight",
+        credits: { balance: creditsBalance },
+      }, 409);
+    }
+    if (charge?.outcome !== "charged" && charge?.outcome !== "pro") {
       console.error("❌ unexpected charge outcome:", charge?.outcome);
       return jsonResponse({ error: "Could not start the match", code: "charge_failed" }, 503);
     }
