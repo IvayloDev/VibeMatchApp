@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { isSpotifyConnectEnabled } from '../../lib/featureFlags';
 import {
   View,
   Text,
@@ -7,20 +8,27 @@ import {
   Linking,
   TouchableOpacity,
   Animated,
+  AccessibilityInfo,
   Easing,
+  StyleProp,
+  ViewStyle,
+  Image,
+  type ImageSourcePropType,
+  type ImageStyle,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as SecureStore from 'expo-secure-store';
+import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
-import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { requireIdentity } from '../../lib/identity';
 import { useAuth } from '../../lib/AuthContext';
 import { HAD_ACCOUNT_KEY } from '../../lib/AuthContext';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
 import { trackEvent } from '../../lib/posthog';
-import { Colors, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
+import { Spacing } from '../../lib/designSystem';
+import { OB, OnboardingFooter } from '../../lib/components/OnboardingChrome';
 
 // Define the navigation stack param list
 type RootStackParamList = {
@@ -28,6 +36,7 @@ type RootStackParamList = {
   SignUp: undefined;
   SignIn: undefined;
   ConnectSpotify: undefined;
+  TastePicker: { returnTo?: 'back' } | undefined;
   Onboarding: undefined;
   MainTabs: undefined;
 };
@@ -36,105 +45,169 @@ const PRIVACY_POLICY_URL = 'https://ivaylodev.github.io/vibematch-privacy-policy
 
 const { width, height } = Dimensions.get('window');
 
-// Brand colors used across the app (see DashboardScreen / AnalyzingScreen)
-const DesignColors = {
-  primary: '#f4258c',
-  accentPurple: '#8b5cf6',
-  accentBlue: Colors.accent.blue,
-  backgroundDark: '#221019',
-};
+// Hero: three stylized "match cards" fanned in a stack. Each is a gradient
+// cover with a vibe tag and a song pill, so the screen shows the result of
+// a match before asking for a tap. The front card rotates every few seconds.
+const CARD_SIZE = 196;
+const CARD_SPREAD = 70;
+const STACK_WIDTH = CARD_SIZE + CARD_SPREAD * 2;
+const STACK_HEIGHT = CARD_SIZE + 32;
+const SWAP_EVERY_MS = 3000;
+const SWAP_DURATION_MS = 900;
 
-// Album-cover carousel config. The cards are stylized (no real artist photos) -
-// each is a rich gradient "cover" with an abstract artist/music motif, so the
-// screen reads as a wall of album art scrolling by.
-const CARD_SIZE = 118;
-const CARD_GAP = Spacing.sm + 4;
-const CARD_STEP = CARD_SIZE + CARD_GAP;
+type Gradient = readonly [string, string, string];
 
-type MotifIcon = keyof typeof MaterialCommunityIcons.glyphMap;
-
-interface CardSpec {
-  icon: MotifIcon;
-  gradient: string[];
+interface MatchCardSpec {
+  tag: string;
+  gradient: Gradient;
+  /** The photo behind the song. Files live in assets/welcome/. */
+  photo: ImageSourcePropType;
+  song: string;
+  artist: string;
 }
 
-// Duotone gradients spanning the brand palette for cover variety
-const GRADIENTS: string[][] = [
-  [DesignColors.primary, DesignColors.accentPurple],
-  [DesignColors.accentPurple, DesignColors.accentBlue],
-  ['#FF6B6B', DesignColors.primary],
-  [DesignColors.accentBlue, DesignColors.accentPurple],
-  ['#7C4DFF', '#18A0FB'],
-  [DesignColors.primary, '#FF9F45'],
-  ['#0FB8AD', DesignColors.accentBlue],
-  [DesignColors.accentPurple, DesignColors.primary],
+// Index 0 starts in front; the next index sits back-left, the one after
+// back-right. Rotation advances the front by one each swap and cycles
+// through all five. Photos are the user's own, cropped square at 800px in
+// assets/welcome/.
+const MATCH_CARDS: MatchCardSpec[] = [
+  {
+    tag: 'Romantic',
+    gradient: ['#ffb36b', '#f4258c', '#4a1d6e'],
+    photo: require('../../assets/welcome/oleander.jpg'),
+    song: 'Golden Hour',
+    artist: 'JVKE',
+  },
+  {
+    tag: 'Chill',
+    gradient: ['#1de9b6', '#1c7ed6', '#0b1a3a'],
+    photo: require('../../assets/welcome/plane.jpg'),
+    song: 'Weightless',
+    artist: 'Marconi Union',
+  },
+  {
+    tag: 'Moody',
+    gradient: ['#8b5cf6', '#2a1444', '#0f0a1c'],
+    photo: require('../../assets/welcome/tram.jpg'),
+    song: 'Nightcall',
+    artist: 'Kavinsky',
+  },
+  {
+    tag: 'Hype',
+    gradient: ['#ff6b35', '#f4258c', '#4a1d6e'],
+    photo: require('../../assets/welcome/harbour.jpg'),
+    song: 'Digital Love',
+    artist: 'Daft Punk',
+  },
+  {
+    tag: 'Chill',
+    gradient: ['#c4b5fd', '#1c7ed6', '#0b1a3a'],
+    photo: require('../../assets/welcome/prague.jpg'),
+    song: 'Holocene',
+    artist: 'Bon Iver',
+  },
 ];
 
-// Motifs alternate artist silhouettes and instruments so the covers feel varied
-const CARD_MOTIFS: MotifIcon[] = [
-  'account-music',
-  'microphone-variant',
-  'guitar-electric',
-  'headphones',
-  'album',
-  'piano',
-  'account-tie',
-  'saxophone',
-  'guitar-acoustic',
-  'music-clef-treble',
-];
-
-const buildCards = (icons: MotifIcon[]): CardSpec[] =>
-  icons.map((icon, index) => ({
-    icon,
-    gradient: GRADIENTS[index % GRADIENTS.length],
-  }));
-
-const ROW_ONE_CARDS = buildCards(CARD_MOTIFS);
-// Shifted order + different gradient offset so the two rows don't mirror
-const ROW_TWO_CARDS = buildCards([...CARD_MOTIFS.slice(5), ...CARD_MOTIFS.slice(0, 5)]);
-
-// Width of a single card set - each row renders the set twice and animates
-// by exactly one set width for a seamless loop
-const ROW_SET_WIDTH = CARD_MOTIFS.length * CARD_STEP;
-const MARQUEE_DURATION = 28000;
-
-const AlbumCard = ({ card }: { card: CardSpec }) => (
-  <View style={styles.cardWrapper}>
+// The gradient sits under the photo as its fallback while the image loads,
+// and a dark scrim over the lower half keeps the song pill readable on any
+// photo.
+const MatchCard = ({ card }: { card: MatchCardSpec }) => (
+  <LinearGradient colors={card.gradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.card}>
+    <Image source={card.photo} style={styles.cardPhoto as ImageStyle} resizeMode="cover" accessible={false} />
     <LinearGradient
-      colors={card.gradient}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.card}
-    >
-      {/* Vinyl-disc accent for an album-art feel */}
-      <View style={styles.cardDisc} />
-      <View style={styles.cardDiscHole} />
-      <MaterialCommunityIcons name={card.icon} size={44} color="rgba(255,255,255,0.95)" />
-      {/* Bottom sheen bar, like a cover title strip */}
-      <View style={styles.cardStrip} />
-    </LinearGradient>
-  </View>
+      colors={['rgba(0,0,0,0.05)', 'rgba(0,0,0,0.0)', 'rgba(0,0,0,0.55)']}
+      locations={[0, 0.45, 1]}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+    />
+    <View style={styles.tag}>
+      <Text style={styles.tagText}>{card.tag}</Text>
+    </View>
+    <View style={styles.pill}>
+      <View style={styles.playDot}>
+        <MaterialCommunityIcons name="play" size={16} color={OB.text} />
+      </View>
+      <View style={styles.pillCopy}>
+        <Text style={styles.song} numberOfLines={1}>
+          {card.song}
+        </Text>
+        <Text style={styles.artist} numberOfLines={1}>
+          {card.artist}
+        </Text>
+      </View>
+    </View>
+  </LinearGradient>
 );
+
+// Every card is always mounted and moves along one cycle of poses:
+// front -> back-right -> behind (invisible) -> behind -> back-left -> front.
+// A single clock `t` advances by one per swap; card k sits at phase
+// (t + k) mod N and interpolates its position, rotation, scale and opacity
+// from that phase. Nothing crossfades and no card ever changes its photo,
+// so a swap is pure motion: the front card slides right and away, the
+// left card slides up to the front, a fresh card fades in behind on the
+// left. With photos on the cards, the old crossfade read as a double
+// exposure and the back cards snapped when state flipped.
+const N = MATCH_CARDS.length;
+// Keyframes, not just poses: the card arriving at the front gets an extra one
+// half way (4.5) where it lifts up and overshoots in scale. Without it the
+// layer order flipped instantly at the start of the move and the left card
+// simply appeared on top of the middle one. The lift makes that change of
+// depth read as the card being picked up off the pile.
+const PHASES = [0, 1, 2, 3, 4, 4.5, 5];
+const POSE_X = [0, CARD_SPREAD, CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD, -CARD_SPREAD * 0.45, 0];
+const POSE_Y = [-6, 16, 16, 16, 16, -30, -6];
+const POSE_ROT = ['0deg', '10deg', '10deg', '-11deg', '-11deg', '-5deg', '0deg'];
+const POSE_SCALE = [1, 0.96, 0.96, 0.96, 0.96, 1.06, 1];
+const POSE_OPACITY = [1, 1, 0, 0, 1, 1, 1];
+// Front on top, then the card arriving from the left, then the right card.
+const Z_BY_END_PHASE = [5, 3, 1, 1, 4];
+
+const CarouselCard = ({ card, index, clock, zIndex }: {
+  card: MatchCardSpec;
+  index: number;
+  clock: Animated.Value;
+  zIndex: number;
+}) => {
+  const phase = Animated.modulo(Animated.add(clock, index), N);
+  const style: Animated.WithAnimatedObject<ViewStyle> = {
+    zIndex,
+    opacity: phase.interpolate({ inputRange: PHASES, outputRange: POSE_OPACITY }),
+    transform: [
+      { translateX: phase.interpolate({ inputRange: PHASES, outputRange: POSE_X }) },
+      { translateY: phase.interpolate({ inputRange: PHASES, outputRange: POSE_Y }) },
+      { rotate: phase.interpolate({ inputRange: PHASES, outputRange: POSE_ROT }) },
+      { scale: phase.interpolate({ inputRange: PHASES, outputRange: POSE_SCALE }) },
+    ],
+  };
+  return (
+    <Animated.View style={[styles.slot, style]}>
+      <MatchCard card={card} />
+    </Animated.View>
+  );
+};
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user, loading, spotifyConnected } = useAuth();
+  const { user, loading, spotifyConnected, isRegistered } = useAuth();
   const [starting, setStarting] = useState(false);
   // Only returning (previously signed-in) users see a sign-in affordance;
   // brand-new users get a pure Start Matching screen.
   const [hadAccount, setHadAccount] = useState(false);
 
-  // Marquee progress values (0 -> 1 mapped to one card-set width)
-  const rowOneAnim = useRef(new Animated.Value(0)).current;
-  const rowTwoAnim = useRef(new Animated.Value(0)).current;
+  // Hero rotation: `clock` advances by exactly one per swap and never
+  // resets; `step` mirrors its target so layer order can follow along.
+  const [step, setStep] = useState(0);
+  const stepRef = useRef(0);
+  const clock = useRef(new Animated.Value(0)).current;
 
-  // Title / tagline / button entrance
-  const titleOpacity = useRef(new Animated.Value(0)).current;
-  const titleTranslate = useRef(new Animated.Value(24)).current;
-  const taglineOpacity = useRef(new Animated.Value(0)).current;
-  const taglineTranslate = useRef(new Animated.Value(16)).current;
-  const buttonsOpacity = useRef(new Animated.Value(0)).current;
+  // Single entrance fade for the whole screen
+  const enter = useRef(new Animated.Value(0)).current;
+
+  // The first screen of a fresh install: the top of the activation funnel.
+  useEffect(() => {
+    trackEvent('welcome_viewed');
+  }, []);
 
   // Detect a returning-but-logged-out user to conditionally reveal Sign in
   useEffect(() => {
@@ -149,77 +222,55 @@ const WelcomeScreen = () => {
     };
   }, []);
 
-  // Looped marquee animations - both rows scroll continuously in
-  // opposite directions, resetting after exactly one card-set width
   useEffect(() => {
-    const rowOneLoop = Animated.loop(
-      Animated.timing(rowOneAnim, {
-        toValue: 1,
-        duration: MARQUEE_DURATION,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
-    const rowTwoLoop = Animated.loop(
-      Animated.timing(rowTwoAnim, {
-        toValue: 1,
-        duration: MARQUEE_DURATION,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      })
-    );
+    Animated.timing(enter, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+  }, [enter]);
 
-    rowOneLoop.start();
-    rowTwoLoop.start();
+  // Advance the carousel every few seconds. Skipped entirely when the user
+  // has asked for reduced motion, leaving a static stack.
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const tick = () => {
+      stepRef.current += 1;
+      // Layer order first, so the incoming card is on top for the whole move.
+      setStep(stepRef.current);
+      Animated.timing(clock, {
+        toValue: stepRef.current,
+        duration: SWAP_DURATION_MS,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    };
+
+    AccessibilityInfo.isReduceMotionEnabled()
+      .catch(() => false)
+      .then((reduceMotion) => {
+        if (!active || reduceMotion) return;
+        timer = setInterval(tick, SWAP_EVERY_MS);
+      });
 
     return () => {
-      rowOneLoop.stop();
-      rowTwoLoop.stop();
+      active = false;
+      if (timer) clearInterval(timer);
+      clock.stopAnimation();
     };
-  }, [rowOneAnim, rowTwoAnim]);
-
-  // Staggered entrance for title, tagline, and button
-  useEffect(() => {
-    Animated.stagger(200, [
-      Animated.parallel([
-        Animated.timing(titleOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(titleTranslate, {
-          toValue: 0,
-          duration: 600,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.parallel([
-        Animated.timing(taglineOpacity, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(taglineTranslate, {
-          toValue: 0,
-          duration: 600,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]),
-      Animated.timing(buttonsOpacity, {
-        toValue: 1,
-        duration: 600,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [titleOpacity, titleTranslate, taglineOpacity, taglineTranslate, buttonsOpacity]);
+  }, [clock]);
 
   // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
     console.log('[Welcome] auth effect - loading:', loading, 'user:', !!user, 'spotifyConnected:', spotifyConnected);
-    if (!loading && user) {
-      const dest = spotifyConnected ? 'MainTabs' : 'ConnectSpotify';
+    // isRegistered, not `user`: an anonymous identity can be minted while
+    // somebody is part-way through onboarding, and reacting to `user` becoming
+    // truthy would reset them into the tabs mid-funnel.
+    if (!loading && isRegistered) {
+      // The Spotify prompt only shows when the remote flag is on for this user.
+      const dest = (spotifyConnected || !isSpotifyConnectEnabled()) ? 'MainTabs' : 'ConnectSpotify';
       console.log('[Welcome] logged-in user detected, resetting to', dest);
       navigation.reset({
         index: 0,
@@ -249,7 +300,10 @@ const WelcomeScreen = () => {
 
     try {
       // Grant the one-time guest free credit silently
-      const granted = await grantGuestFreeCredits();
+      // Starter credits are granted by the server, once per device, inside
+      // session-bootstrap. All the client does is make sure an identity
+      // exists for the server to grant them to.
+      const granted = !!(await requireIdentity('welcome'));
       console.log('[Guest] credits granted:', granted);
 
       // Guests must connect Spotify too. Do NOT call refreshSpotifyStatus() here:
@@ -260,7 +314,14 @@ const WelcomeScreen = () => {
 
       // Guests never skip onboarding - onboardingComplete belongs to registered
       // sessions and must not short-circuit the guest path.
-      const target: keyof RootStackParamList = status.connected ? 'Onboarding' : 'ConnectSpotify';
+      // Already connected -> straight to onboarding. Flag on -> the Spotify
+      // prompt (skippable, falls through to the picker). Flag off (the public)
+      // -> the in-app taste picker, which is where taste comes from now.
+      const target: keyof RootStackParamList = status.connected
+        ? 'Onboarding'
+        : isSpotifyConnectEnabled()
+          ? 'ConnectSpotify'
+          : 'TastePicker';
       console.log('[Guest] Navigating to:', target);
       navigation.reset({
         index: 0,
@@ -272,14 +333,8 @@ const WelcomeScreen = () => {
     }
   };
 
-  const rowOneTranslate = rowOneAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -ROW_SET_WIDTH],
-  });
-  const rowTwoTranslate = rowTwoAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-ROW_SET_WIDTH, 0],
-  });
+  // Where each card will be once the current move finishes, for layering.
+  const zFor = (index: number) => Z_BY_END_PHASE[(step + index) % N];
 
   return (
     <View style={styles.container}>
@@ -288,66 +343,39 @@ const WelcomeScreen = () => {
       <View style={styles.backgroundBlur2} />
 
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
-          {/* Album-cover carousel */}
-          <View style={styles.marqueeSection}>
-            <View style={styles.marqueeRow}>
-              <Animated.View
-                style={[styles.marqueeTrack, { transform: [{ translateX: rowOneTranslate }] }]}
-              >
-                {[...ROW_ONE_CARDS, ...ROW_ONE_CARDS].map((card, index) => (
-                  <AlbumCard key={`row1-${index}`} card={card} />
-                ))}
-              </Animated.View>
-            </View>
-            <View style={styles.marqueeRow}>
-              <Animated.View
-                style={[styles.marqueeTrack, { transform: [{ translateX: rowTwoTranslate }] }]}
-              >
-                {[...ROW_TWO_CARDS, ...ROW_TWO_CARDS].map((card, index) => (
-                  <AlbumCard key={`row2-${index}`} card={card} />
-                ))}
-              </Animated.View>
+        <Animated.View style={[styles.content, { opacity: enter }]}>
+          <Text style={styles.wordmark}>TUNEMATCH</Text>
+
+          {/* Decorative hero: hidden from assistive tech */}
+          <View style={styles.hero}>
+            <View
+              style={styles.stack}
+              accessible={false}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              {MATCH_CARDS.map((card, index) => (
+                <CarouselCard key={card.tag + card.song} card={card} index={index} clock={clock} zIndex={zFor(index)} />
+              ))}
             </View>
           </View>
 
-          {/* Title + Tagline */}
-          <View style={styles.titleSection}>
-            <Animated.Text
-              style={[
-                styles.mainTitle,
-                { opacity: titleOpacity, transform: [{ translateY: titleTranslate }] },
-              ]}
-            >
-              TuneMatch
-            </Animated.Text>
-            <Animated.Text
-              style={[
-                styles.tagline,
-                { opacity: taglineOpacity, transform: [{ translateY: taglineTranslate }] },
-              ]}
-            >
-              Match music to your mood.
-            </Animated.Text>
+          <View style={styles.copy}>
+            <Text style={styles.headline} maxFontSizeMultiplier={1.3}>
+              Match music to{'\n'}your mood.
+            </Text>
+            <Text style={styles.subtitle}>Your photo, your taste. Three songs that fit.</Text>
           </View>
 
-          {/* Primary action - Start Matching only */}
-          <Animated.View style={[styles.bottomSection, { opacity: buttonsOpacity }]}>
-            <TouchableOpacity
+          <View style={styles.bottom}>
+            <OnboardingFooter
+              ctaLabel="Start matching"
               onPress={handleStartMatching}
-              activeOpacity={0.9}
-              disabled={starting}
-              style={styles.primaryButtonWrapper}
-            >
-              <LinearGradient
-                colors={[DesignColors.primary, DesignColors.accentPurple]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.primaryButton}
-              >
-                <Text style={styles.primaryButtonText}>Start Matching</Text>
-              </LinearGradient>
-            </TouchableOpacity>
+              loading={starting}
+              bottomInset={0}
+              hairline={false}
+              pulse
+            />
 
             {/* Returning users only: subtle way back in */}
             {hadAccount && (
@@ -355,6 +383,7 @@ const WelcomeScreen = () => {
                 onPress={() => navigation.navigate('SignIn')}
                 activeOpacity={0.7}
                 style={styles.signInLink}
+                accessibilityRole="button"
               >
                 <Text style={styles.signInText}>
                   Already have an account? <Text style={styles.signInTextBold}>Sign in</Text>
@@ -375,8 +404,8 @@ const WelcomeScreen = () => {
                 </TouchableOpacity>
               </View>
             </View>
-          </Animated.View>
-        </View>
+          </View>
+        </Animated.View>
       </SafeAreaView>
     </View>
   );
@@ -385,7 +414,7 @@ const WelcomeScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: DesignColors.backgroundDark,
+    backgroundColor: OB.bg,
   },
   safeArea: {
     flex: 1,
@@ -412,133 +441,157 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.lg,
   },
-  marqueeSection: {
+  wordmark: {
+    paddingTop: Spacing.sm,
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 2,
+    color: OB.textFaint,
+  },
+
+  // Hero stack
+  hero: {
     flex: 1,
+    minHeight: 260,
     justifyContent: 'center',
-    gap: CARD_GAP,
+    alignItems: 'center',
   },
-  marqueeRow: {
-    width: '100%',
+  stack: {
+    width: STACK_WIDTH,
+    height: STACK_HEIGHT,
+  },
+  slot: {
+    position: 'absolute',
+    left: CARD_SPREAD,
+    top: 8,
+    width: CARD_SIZE,
     height: CARD_SIZE,
-    overflow: 'hidden',
-  },
-  marqueeTrack: {
-    flexDirection: 'row',
-    width: ROW_SET_WIDTH * 2,
-  },
-  cardWrapper: {
-    marginRight: CARD_GAP,
+    borderRadius: 20,
+    backgroundColor: OB.bg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.45,
+    shadowRadius: 20,
+    elevation: 10,
   },
   card: {
     width: CARD_SIZE,
     height: CARD_SIZE,
-    borderRadius: BorderRadius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 20,
     overflow: 'hidden',
-    shadowColor: DesignColors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 8,
   },
-  cardDisc: {
+  cardPhoto: {
     position: 'absolute',
-    width: CARD_SIZE * 0.62,
-    height: CARD_SIZE * 0.62,
-    borderRadius: CARD_SIZE,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.18)',
-  },
-  cardDiscHole: {
-    position: 'absolute',
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: 'rgba(255,255,255,0.35)',
-  },
-  cardStrip: {
-    position: 'absolute',
-    bottom: 0,
+    top: 0,
     left: 0,
-    right: 0,
-    height: CARD_SIZE * 0.22,
-    backgroundColor: 'rgba(0,0,0,0.18)',
+    width: CARD_SIZE,
+    height: CARD_SIZE,
   },
-  titleSection: {
-    alignItems: 'center',
-    paddingHorizontal: Layout.screenPadding,
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.xxl,
+  tag: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    borderRadius: 8,
+    paddingVertical: 3,
+    paddingHorizontal: 7,
   },
-  mainTitle: {
-    fontSize: 46,
+  tagText: {
+    color: OB.text,
+    fontSize: 10,
     fontWeight: '800',
-    color: Colors.textPrimary,
-    letterSpacing: -1,
-    textAlign: 'center',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
-  tagline: {
-    fontSize: 17,
-    fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.75)',
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-  },
-  bottomSection: {
+  pill: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Layout.screenPadding,
-    paddingBottom: Spacing.lg,
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
   },
-  primaryButtonWrapper: {
-    width: '100%',
-    borderRadius: BorderRadius.xl,
-    shadowColor: DesignColors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    elevation: 8,
-  },
-  primaryButton: {
-    width: '100%',
-    borderRadius: BorderRadius.xl,
-    paddingVertical: Spacing.md + 6,
+  playDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#1DB954',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryButtonText: {
-    fontSize: 18,
+  pillCopy: {
+    flex: 1,
+  },
+  song: {
+    color: OB.text,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#FFFFFF',
+  },
+  artist: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 11,
+  },
+
+  // Copy
+  copy: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.lg,
+    gap: 10,
+  },
+  headline: {
+    color: OB.text,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '800',
+    letterSpacing: -0.8,
+    textAlign: 'center',
+  },
+  subtitle: {
+    color: OB.textDim,
+    fontSize: OB.body,
+    lineHeight: 21,
+    textAlign: 'center',
+  },
+
+  // Bottom block
+  bottom: {
+    paddingBottom: Spacing.sm,
   },
   signInLink: {
-    marginTop: Spacing.lg,
-    paddingVertical: Spacing.xs,
+    minHeight: OB.hit,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
   },
   signInText: {
-    fontSize: 14,
-    fontWeight: '400',
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: OB.textDim,
+    fontSize: OB.body,
     textAlign: 'center',
   },
   signInTextBold: {
+    color: OB.text,
     fontWeight: '700',
-    color: Colors.textPrimary,
   },
   legalSection: {
     alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    marginTop: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
   },
   legalText: {
+    color: OB.textFaint,
     fontSize: 11,
-    fontWeight: '400',
-    color: 'rgba(255, 255, 255, 0.7)',
-    textAlign: 'center',
     lineHeight: 16,
+    textAlign: 'center',
   },
   legalLinks: {
     flexDirection: 'row',
@@ -547,9 +600,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   legalLink: {
+    color: 'rgba(255,255,255,0.6)',
     fontSize: 11,
+    lineHeight: 16,
     fontWeight: '500',
-    color: DesignColors.primary,
     textDecorationLine: 'underline',
   },
 });

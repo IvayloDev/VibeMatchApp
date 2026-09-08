@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
+import { trackEvent } from '../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -50,25 +51,64 @@ const SignUpScreen = () => {
       return;
     }
     setLoading(true);
-    const { data, error } = await supabase.auth.signUp({ email: cleanEmail, password });
+    trackEvent('registration_started', { method: 'email' });
+    // If this device already has an anonymous identity, UPGRADE it rather than
+    // creating a second account.
+    //
+    // signUp() mints a brand new auth.users row and replaces the session. The
+    // anonymous user - holding the balance, the purchases and the Vault - is
+    // simply abandoned, and nothing carries over: the old local merge was
+    // deleted when credits moved server-side, and claim_device_starter will
+    // not re-grant a starter because the DEVICE already claimed one. So
+    // registering used to cost a guest everything they had, including a pack
+    // they paid for.
+    //
+    // updateUser on an anonymous session attaches the email and password to
+    // the SAME uid, so the balance, purchases and history stay exactly where
+    // they are and there is nothing to merge.
+    const { data: { session: existing } } = await supabase.auth.getSession();
+    const upgradingAnonymous = !!existing?.user?.is_anonymous;
+
+    const { data, error } = upgradingAnonymous
+      ? await supabase.auth.updateUser({ email: cleanEmail, password })
+          .then((r) => ({ data: r.data?.user ? { user: r.data.user, session: existing } : null, error: r.error }))
+      : await supabase.auth.signUp({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
+      trackEvent('registration_failed', { method: 'email', error: error.message });
       Alert.alert('Sign Up Error', error.message);
     } else if (data?.user) {
+      // With email confirmation on, the user row exists but there's no session
+      // yet - that's a different outcome from a fully completed signup.
+      trackEvent('registration_completed', {
+        method: 'email',
+        needs_confirmation: !data.session,
+        // Whether this kept the guest's existing identity or made a new one.
+        // If this is ever false for someone who had been using the app, they
+        // lost a balance and a Vault, and that is worth being able to count.
+        upgraded_anonymous: upgradingAnonymous,
+      });
       await routeAfterAuth();
     }
   };
 
   const handleGoogleSignUp = async () => {
     setSocialLoading('google');
+    trackEvent('registration_started', { method: 'google' });
     try {
       const result = await signInWithGoogle();
       if (result.success) {
+        trackEvent('registration_completed', { method: 'google' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('registration_failed', { method: 'google', error: result.error });
         Alert.alert('Google Sign-Up Error', result.error);
+      } else {
+        // No success, no error - the user backed out of the provider sheet.
+        trackEvent('registration_cancelled', { method: 'google' });
       }
     } catch (error) {
+      trackEvent('registration_failed', { method: 'google', error: (error as Error)?.message ?? 'exception' });
       console.error('Google sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
@@ -77,22 +117,51 @@ const SignUpScreen = () => {
 
   const handleAppleSignUp = async () => {
     setSocialLoading('apple');
+    trackEvent('registration_started', { method: 'apple' });
     try {
       const result = await signInWithApple();
       if (result.success) {
+        trackEvent('registration_completed', { method: 'apple' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('registration_failed', { method: 'apple', error: result.error });
         Alert.alert('Apple Sign-Up Error', result.error);
+      } else {
+        trackEvent('registration_cancelled', { method: 'apple' });
       }
     } catch (error) {
+      trackEvent('registration_failed', { method: 'apple', error: (error as Error)?.message ?? 'exception' });
       console.error('Apple sign-up error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
     setSocialLoading(null);
   };
 
+  // Reached from Welcome (back = Welcome) and from inside the app (back = where
+  // they came from). If neither is possible, land on the app rather than trap.
+  const handleDismiss = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.reset({ index: 0, routes: [{ name: 'MainTabs' as never }] });
+    }
+  };
+
   return (
     <View style={styles.container}>
+      {/* Escape hatch. These screens are reached from inside the app (Profile,
+          the paywall) as well as from Welcome, and with the stack header hidden
+          there was no way back at all - a dead end. goBack when there is
+          somewhere to go, otherwise drop into the app. */}
+      <SafeAreaView style={styles.authBackWrap} edges={['top']} pointerEvents="box-none">
+        <TouchableOpacity
+          onPress={handleDismiss}
+          style={styles.authBackButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </SafeAreaView>
       {/* Background Blur Effects */}
       <View style={styles.backgroundBlur1} />
       <View style={styles.backgroundBlur2} />
@@ -252,6 +321,22 @@ const SignUpScreen = () => {
 };
 
 const styles = StyleSheet.create({
+  authBackWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    zIndex: 50,
+  },
+  authBackButton: {
+    marginTop: Spacing.sm,
+    marginLeft: Spacing.md,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { 
     flex: 1,
     backgroundColor: '#221019', // Matching app background

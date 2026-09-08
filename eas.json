@@ -6,12 +6,28 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_DEBUG_TOOLS": "1"
+      }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "app-bundle"
+      }
+    },
+    "device-test": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Release"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_DEBUG_TOOLS": "1"
       }
     },
     "production": {
@@ -28,10 +44,21 @@
       },
       "distribution": "store",
       "channel": "preview"
+    },
+    "preview-apk": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     }
   },
   "submit": {
     "production": {
+      "ios": {
+        "ascAppId": "6749324670"
+      }
+    },
+    "preview-testflight": {
       "ios": {
         "ascAppId": "6749324670"
       }

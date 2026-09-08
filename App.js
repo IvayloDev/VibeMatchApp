@@ -1,5 +1,8 @@
 import * as React from 'react';
 import { AppState } from 'react-native';
+import { bindAuthRefreshToAppState } from './lib/supabase';
+import { setProFromClient } from './lib/creditState';
+import { bootstrapSession } from './lib/identity';
 import { NavigationContainer, DefaultTheme, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Provider as PaperProvider, MD3DarkTheme } from 'react-native-paper';
@@ -16,9 +19,12 @@ import PaymentScreen from './app/payment/PaymentScreen';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import LoadingScreen from './lib/LoadingScreen';
 import { Colors } from './lib/designSystem';
-import { initRevenueCat, identifyUser, logOutUser } from './lib/revenuecat';
+import { initRevenueCat, identifyUser, logOutUser, reconcileProAfterLogin, subscribeToProStatus } from './lib/revenuecat';
 import { identifyUser as posthogIdentify, resetUser as posthogReset, trackScreen } from './lib/posthog';
 import { rescheduleEngagementReminders } from './lib/notifications';
+import { primeFeatureFlags, isSpotifyConnectEnabled } from './lib/featureFlags';
+import TastePickerScreen from './app/onboarding/TastePickerScreen';
+import DebugResetButton from './lib/components/DebugResetButton';
 
 const Stack = createNativeStackNavigator();
 
@@ -50,7 +56,7 @@ const PaperTheme = {
 };
 
 function AppContent() {
-  const { user, loading, spotifyConnected, spotifyChecking, onboardingComplete, onboardingChecking } = useAuth();
+  const { user, loading, spotifyConnected, spotifyChecking, onboardingComplete, guestOnboardingComplete, onboardingChecking } = useAuth();
   const navigationRef = React.useRef(null);
   const routeNameRef = React.useRef(null);
 
@@ -58,12 +64,36 @@ function AppContent() {
   const onboardingCompleteRef = React.useRef(onboardingComplete);
   React.useEffect(() => { onboardingCompleteRef.current = onboardingComplete; }, [onboardingComplete]);
 
+  const guestOnboardingCompleteRef = React.useRef(guestOnboardingComplete);
+  React.useEffect(() => { guestOnboardingCompleteRef.current = guestOnboardingComplete; }, [guestOnboardingComplete]);
+
   const getTarget = React.useCallback(() => {
-    if (!user) return 'Welcome';
-    if (!spotifyConnected) return 'ConnectSpotify';
+    // A guest who already finished onboarding on this device goes straight to
+    // the app. Returning them to Welcome sent them through the whole flow again
+    // on every cold start - and since onboarding only exits by completing a
+    // scan, a guest out of credits could never get past it.
+    // An anonymous identity is a GUEST, not a signed-in user. Asking `!user`
+    // stopped meaning "guest" the moment every install got a Supabase uid, and
+    // routing an anonymous user down the registered path sends someone
+    // part-way through onboarding to ConnectSpotify or MainTabs underneath
+    // whatever screen they were on.
+    if (!user || user.is_anonymous) {
+      return guestOnboardingCompleteRef.current ? 'MainTabs' : 'Welcome';
+    }
+    // The Spotify prompt is behind a remote flag (off for the public: the
+    // Spotify app is in Development mode, so listening data never loads for
+    // anyone but allowlisted testers). Registered users are only routed to it
+    // when the flag is on for them.
+    if (!spotifyConnected && isSpotifyConnectEnabled()) return 'ConnectSpotify';
     if (!onboardingCompleteRef.current) return 'Onboarding';
     return 'MainTabs';
   }, [user, spotifyConnected]);
+
+  // Fetch remote kill switches once per cold start. Unknown flags count as
+  // off, so nothing waits on this.
+  React.useEffect(() => {
+    primeFeatureFlags();
+  }, []);
 
   // Track previous user ID to detect logout
   const prevUserIdRef = React.useRef(null);
@@ -73,16 +103,30 @@ function AppContent() {
     // Delay initialization slightly to ensure native module is ready
     const setupRevenueCat = async () => {
       try {
-        // Longer delay to ensure native modules are fully loaded
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Initialize with user ID if available
-        await initRevenueCat(user?.id);
-        
-        if (user?.id) {
+        // Configure with NO app user id, so RevenueCat starts on its own
+        // anonymous id and is told who this is later, by identifyUser inside
+        // the identity broker. That transition is what moves a guest's
+        // existing purchases onto the Supabase uid; configuring straight into
+        // a uid skips the transition and orphans anything bought before.
+        //
+        // The one-second sleep that used to be here was a guess at when the
+        // native module is ready. initRevenueCat waits for it properly, and
+        // the sleep only delayed the paywall for everyone.
+        await initRevenueCat();
+
+        // Registered users only. An anonymous identity is handled by the
+        // identity broker's afterMint, which already tells RevenueCat who this
+        // is; doing it twice would race two logIn calls for the same uid, and
+        // reconcileProAfterLogin is about carrying a subscription onto a REAL
+        // account, which an anonymous id is not.
+        if (user?.id && !user.is_anonymous) {
+          // Carry a guest's subscription across to the new account. Without this
+          // a user who subscribes as a guest and then signs up loses Pro while
+          // still being charged.
+          await reconcileProAfterLogin(user.id);
           prevUserIdRef.current = user.id;
           posthogIdentify(user.id, { email: user.email });
-        } else if (prevUserIdRef.current) {
+        } else if (!user?.id && prevUserIdRef.current) {
           // User logged out - reset RevenueCat and PostHog
           await logOutUser();
           posthogReset();
@@ -109,12 +153,34 @@ function AppContent() {
     return () => sub.remove();
   }, []);
 
+  // Keep the auth token alive across foreground/background. Without this a
+  // resumed app carries an expired token and 401s until something forces a
+  // refresh, which now means a guest whose own account looks unreachable.
+  React.useEffect(() => bindAuthRefreshToAppState(), []);
+
+  // Pro status, the instant RevenueCat knows it, from anywhere in the app.
+  //
+  // The purchase screens ask the server to re-read RevenueCat when a purchase
+  // finishes, but that is one path and it is asynchronous. This listener fires
+  // on every customer-info change - a purchase, a restore, a renewal, a
+  // subscription bought on another device - so the UI flips immediately and
+  // the server is asked to catch up in the same breath. Without it there is a
+  // window where somebody who has just paid is still being sold Pro.
+  React.useEffect(() => subscribeToProStatus((isPro) => {
+    setProFromClient(isPro);
+    if (isPro) void bootstrapSession();
+  }), []);
+
   // Navigate based on auth + Spotify connection state.
   // onboardingComplete intentionally excluded from deps — changes to it are handled
   // by OnboardingScreen itself to avoid resetting nav mid-flow.
   React.useEffect(() => {
     if (loading || spotifyChecking || onboardingChecking || !navigationRef.current) return;
-    if (!user) return; // guest flow is driven from WelcomeScreen
+    // Guests, anonymous identity or not, are driven from WelcomeScreen. This
+    // effect exists to route a REGISTERED user after sign-in; letting it fire
+    // for an anonymous mint resets navigation mid-onboarding, which is exactly
+    // what happens when a lazy mint lands while somebody is picking a photo.
+    if (!user || user.is_anonymous) return;
     const target = getTarget();
     navigationRef.current.reset({
       index: 0,
@@ -169,10 +235,18 @@ function AppContent() {
         <Stack.Screen name="SignUp" component={SignUpScreen} />
         <Stack.Screen name="SignIn" component={SignInScreen} />
 
-        {/* Required Spotify connect gate */}
+        {/* Optional Spotify connect prompt - skippable, matching works without it */}
         <Stack.Screen
           name="ConnectSpotify"
           component={ConnectSpotifyScreen}
+          options={{ gestureEnabled: false }}
+        />
+
+        {/* Taste picker: artists and genres chosen in-app. Replaces the Spotify
+            prompt for the public; also reachable from Profile to edit taste. */}
+        <Stack.Screen
+          name="TastePicker"
+          component={TastePickerScreen}
           options={{ gestureEnabled: false }}
         />
 
@@ -224,6 +298,9 @@ export default function App() {
       <PaperProvider theme={PaperTheme}>
         <AuthProvider>
           <AppContent />
+          {/* Debug-only, renders nothing in a production build. Outside the
+              navigator so it floats over every screen. */}
+          <DebugResetButton />
         </AuthProvider>
       </PaperProvider>
     </SafeAreaProvider>

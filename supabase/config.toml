@@ -18,3 +18,52 @@ entrypoint = "./functions/spotify-auth/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/sync-spotify-profile/index.ts"
+
+# Guests have no Supabase session, so this cannot require a JWT. Access control
+# lives in the function: it only signs unguessable anonymous/<uuid>/<uuid>.jpg
+# guest paths.
+[functions.sign-image]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/sign-image/index.ts"
+
+# Artist search through the app's own Spotify credentials (Client Credentials
+# flow), which Development mode allows. Guests use it during onboarding, so it
+# cannot require a JWT; the function caps query length and result count.
+[functions.spotify-search]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/spotify-search/index.ts"
+
+# Writes the in-app picked taste profile for registered users with the service
+# role. Same convention as the other functions here: the gateway does not check
+# the JWT, the function resolves the user itself and answers 401 without one.
+[functions.save-taste-profile]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/save-taste-profile/index.ts"
+
+# RevenueCat cannot present a Supabase JWT, so the platform gate is off and the
+# function enforces its own shared secret (REVENUECAT_WEBHOOK_AUTH) instead.
+[functions.revenuecat-webhook]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/revenuecat-webhook/index.ts"
+
+# Takes the caller's JWT (anonymous users included), so the platform gate stays on.
+[functions.session-bootstrap]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/session-bootstrap/index.ts"
+
+# Takes the caller's JWT (anonymous users included), so the platform gate stays on.
+[functions.recover-legacy-purchases]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/recover-legacy-purchases/index.ts"
+
+# Takes the new session's JWT, and proves the old identity with its own token.
+[functions.claim-anonymous-identity]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/claim-anonymous-identity/index.ts"

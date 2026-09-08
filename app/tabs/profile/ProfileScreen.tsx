@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image } from 'react-native';
+import { isSpotifyConnectEnabled } from '../../../lib/featureFlags';
+import { View, StyleSheet, Alert, ScrollView, Animated, TouchableOpacity, Dimensions, Image, Linking, Platform, RefreshControl } from 'react-native';
+import * as Application from 'expo-application';
 import { Text } from 'react-native-paper';
 import { useNavigation, useFocusEffect, CommonActions } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -8,7 +10,22 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getUserCredits } from '../../../lib/credits';
+import { getCreditState } from '../../../lib/creditState';
+import { refreshCreditState } from '../../../lib/identity';
+import {
+  hasProEntitlement,
+  subscribeToProStatus,
+  refreshProStatus,
+  restorePurchases,
+  getCustomerInfo,
+  getManagementURL,
+  getProPlanSummary,
+  PRO_ENTITLEMENT_ID,
+} from '../../../lib/revenuecat';
+import type { ProPlanSummary } from '../../../lib/revenuecat';
+import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
+import { connectSpotify } from '../../../lib/spotify';
+import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
 import { useAuth } from '../../../lib/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,8 +33,12 @@ import * as SecureStore from 'expo-secure-store';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { AnimatedCounter } from '../../../lib/components/AnimatedCounter';
 import { trackEvent } from '../../../lib/posthog';
+import { sendTestNotification } from '../../../lib/notifications';
 
 const { width, height } = Dimensions.get('window');
+
+// Where bug reports land.
+const SUPPORT_EMAIL = 'contact@paltechstudio.com';
 
 type RootStackParamList = {
   Payment: undefined;
@@ -27,16 +48,98 @@ type RootStackParamList = {
 };
 
 const ProfileScreen = () => {
-  const { user, signOut } = useAuth();
-  const [credits, setCredits] = useState(0);
+  const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus, isRegistered } = useAuth();
+  const [connectingSpotify, setConnectingSpotify] = useState(false);
+  const [proScansToday, setProScansToday] = useState(0);
+  const [proPlan, setProPlan] = useState<ProPlanSummary | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // Gates the Spotify card until this screen has confirmed the status itself,
+  // so a connected user never sees "Connect Spotify" flash first.
+  const [spotifyResolved, setSpotifyResolved] = useState(false);
+  const [resetIn, setResetIn] = useState(formatQuotaReset());
+  // null means the server has not answered yet, which is not the same as zero
+  // and must never be rendered as one.
+  const [credits, setCredits] = useState<number | null>(null);
+  const [creditSource, setCreditSource] = useState<'unknown' | 'server' | 'stale'>('unknown');
+  const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
+  // Hidden QA hook: long-press the build stamp to fire a local test
+  // notification in 10 s (background the app to see the banner).
+  const handleVersionLongPress = () => {
+    Alert.alert('TuneMatch', undefined, [
+      {
+        text: 'Send test notification (10 s)',
+        onPress: async () => {
+          const ok = await sendTestNotification();
+          if (!ok) {
+            Alert.alert(
+              'Notifications are off',
+              'Enable notifications for TuneMatch in Settings and try again.'
+            );
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  // Bug reports arrive useless without build context, so the diagnostics the
+  // user can't be expected to know are prefilled into the body.
+  const handleReportBug = async () => {
+    trackEvent('report_bug_tapped', { signed_in: isRegistered, credits_balance: credits });
+
+    const diagnostics = [
+      `App version: ${Application.nativeApplicationVersion ?? 'unknown'} (${Application.nativeBuildVersion ?? '?'})`,
+      `Platform: ${Platform.OS} ${Platform.Version}`,
+      `User ID: ${user?.id ?? 'guest'}`,
+      `Credits: ${credits ?? 'unknown'}`,
+    ].join('\n');
+
+    const subject = 'TuneMatch bug report';
+    const body = `Describe what happened:\n\n\n\nWhat did you expect instead?\n\n\n\n---\nDiagnostics (please keep)\n${diagnostics}\n`;
+    const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) throw new Error('No mail client');
+      await Linking.openURL(url);
+    } catch {
+      // No mail app configured - give them the address rather than a dead tap.
+      Alert.alert(
+        'No mail app found',
+        `Email us at ${SUPPORT_EMAIL} and include:\n\n${diagnostics}`
+      );
+    }
+  };
+
   const loadUserCredits = async () => {
     try {
-      const userCredits = await getUserCredits();
+      await refreshCreditState();
+      // Keep null as null. Collapsing it to 0 puts a confident "0" and a
+      // free-match countdown in front of somebody whose balance we simply
+      // have not read yet, which for a paying user is a lie.
+      const st = getCreditState();
+      const userCredits = st.balance;
+      setCreditSource(st.source);
       setCredits(userCredits);
+      // Onboarding deliberately skips the non-silent refresh for guests (it
+      // would bounce them to the splash), so AuthContext can still say
+      // "not connected" for someone who just linked Spotify. Re-read silently.
+      refreshSpotifyStatus({ silent: true })
+        .catch(() => {})
+        .finally(() => setSpotifyResolved(true));
+
+      const pro = await hasProEntitlement();
+      setIsPro(pro);
+      if (pro) {
+        setProScansToday(getCreditState().proUsedToday ?? 0);
+        setProPlan(await getProPlanSummary());
+      } else {
+        setProPlan(null);
+      }
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -44,16 +147,128 @@ const ProfileScreen = () => {
     }
   };
 
+  // Customer Center is RevenueCat's native manage-subscription sheet; the
+  // store deep link is the fallback when it cannot present.
+  const handleManageSubscription = async () => {
+    try {
+      await RevenueCatUI.presentCustomerCenter();
+      refreshProStatus().catch(() => {});
+    } catch {
+      const info = await getCustomerInfo();
+      const url = info ? getManagementURL(info) : null;
+      if (url) {
+        Linking.openURL(url).catch(() => {});
+      } else {
+        Alert.alert('Manage Subscription', 'Open your device Settings > Subscriptions to manage your plan.');
+      }
+    }
+  };
+
+  const handleRestorePurchases = async () => {
+    const result = await restorePurchases();
+    // Tell an outage apart from an answer. If the SDK never configured, or the
+    // call itself failed, "No active subscription was found" reads as "we have
+    // no record of your payment", which is the worst thing to say to somebody
+    // who is being charged monthly.
+    if (!result.success) {
+      trackEvent('subscription_restore_failed', { error: result.error ?? 'unknown' });
+      Alert.alert(
+        "Couldn't Check",
+        "We couldn't reach the App Store to check your subscription. Your purchase is safe - please try again in a moment.",
+      );
+      return;
+    }
+    if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
+      await refreshProStatus(result.customerInfo);
+      setIsPro(true);
+      trackEvent('subscription_restored', { is_authenticated: isRegistered });
+      Alert.alert('Restored', 'Your TuneMatch Pro subscription is active again.');
+    } else {
+      Alert.alert('Nothing to Restore', 'No active subscription was found for this account.');
+    }
+  };
+
+  /**
+   * Second chance at the Spotify link for anyone who skipped it in onboarding.
+   * The taste profile is what makes matches personal, so this is the one piece
+   * of setup worth surfacing again rather than leaving buried in a flow the
+   * user already dismissed.
+   */
+  const handleConnectSpotify = async () => {
+    if (connectingSpotify) return;
+    setConnectingSpotify(true);
+    trackEvent('spotify_connect_tapped', { source: 'profile', is_authenticated: isRegistered });
+    try {
+      const result = await connectSpotify();
+      await refreshSpotifyStatus({ silent: true });
+      if (result.success) {
+        trackEvent('spotify_connected', { source: 'profile', is_authenticated: isRegistered });
+        Alert.alert('Spotify Connected', 'Your matches will now be tuned to your listening taste.');
+      } else if (result.reason === 'not_allowlisted') {
+        // Spotify's Development mode: login worked, data will never load.
+        // Say so and send them to the picker instead of a dead end.
+        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error ?? 'not_allowlisted', reason: 'not_allowlisted' });
+        Alert.alert(
+          'Spotify kept its data',
+          'Spotify only shares listening history with approved apps. Pick your taste by hand instead and every match is still tuned to you.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Pick my taste', onPress: () => (navigation as any).navigate('TastePicker', { returnTo: 'back' }) },
+          ]
+        );
+      } else if (result.error) {
+        // A user-cancelled OAuth is not an error worth alerting about.
+        trackEvent('spotify_connect_failed', { source: 'profile', error: result.error, reason: result.reason ?? 'unknown' });
+        Alert.alert("Couldn't Connect", result.error);
+      }
+    } catch (error: any) {
+      trackEvent('spotify_connect_failed', { source: 'profile', error: error?.message ?? String(error), reason: 'screen_exception' });
+      Alert.alert("Couldn't Connect", 'Something went wrong reaching Spotify. Please try again.');
+    } finally {
+      setConnectingSpotify(false);
+    }
+  };
+
+  // Pull to refresh: the screen previously only reloaded on focus, so a user
+  // sitting on it after a purchase or a scan had no way to update it.
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshProStatus().catch(() => {});
+      await loadUserCredits();
+      // Silent: a plain refresh flips spotifyChecking, and App.js swaps the
+      // NavigationContainer for LoadingScreen when that is true - which threw
+      // the user from Profile onto Discover mid-pull.
+      await refreshSpotifyStatus({ silent: true }).catch(() => {});
+      setResetIn(formatQuotaReset());
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshSpotifyStatus]);
+
+  // Keep the "next batch in ..." line honest without a heavy timer.
+  useEffect(() => {
+    if (!isPro) return;
+    // The label carries seconds, so it ticks once a second.
+    const id = setInterval(() => setResetIn(formatQuotaReset()), 1000);
+    return () => clearInterval(id);
+  }, [isPro]);
+
   // Load credits on mount
   useEffect(() => {
     loadUserCredits();
-    
+
+    // Keep the Pro card live across purchases/renewals/expirations.
+    const unsubscribe = subscribeToProStatus(setIsPro);
+
     // Animate on mount
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
     }).start();
+
+    return unsubscribe;
   }, []);
 
   // Refresh credits when screen comes into focus
@@ -103,6 +318,7 @@ const ProfileScreen = () => {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            trackEvent('account_delete_started');
             try {
               console.log('Starting delete profile process...');
               
@@ -133,6 +349,7 @@ const ProfileScreen = () => {
               console.log('Response result:', result);
 
               if (response.ok && result.success) {
+                trackEvent('account_delete_completed');
                 console.log('Delete successful, clearing local data...');
 
                 // Clear all local storage (credits, taste profile, onboarding flag, Spotify tokens)
@@ -143,13 +360,20 @@ const ProfileScreen = () => {
                   'tunematch_spotify_expires_at',
                   'tunematch_free_credits_granted',
                   'tunematch_guest_credits_granted',
+                  // Without this a deleted account leaves the device looking
+                  // like a returning guest, so the next cold start skips
+                  // Welcome and lands in the tabs with nothing behind it.
+                  'tunematch_guest_onboarding_complete',
                 ];
                 await Promise.allSettled(secureKeys.map(k => SecureStore.deleteItemAsync(k)));
 
                 const asyncKeys = [
-                  '@tunematch_local_credits',
                   '@tunematch/guest_spotify_taste_profile',
-                  '@tunematch_local_purchases',
+                  // '@tunematch_local_credits' and '@tunematch_local_purchases'
+                  // are NOT cleared. The balance is the server's now, and the
+                  // purchase log is a few hundred bytes that may be the only
+                  // evidence left that a guest pack sale happened. Deleting an
+                  // account must not destroy the receipt for a payment.
                 ];
                 await Promise.allSettled(asyncKeys.map(k => AsyncStorage.removeItem(k)));
 
@@ -165,10 +389,12 @@ const ProfileScreen = () => {
                 );
               } else {
                 console.log('Delete failed:', result.error || 'Unknown error');
+                trackEvent('account_delete_failed', { http_status: response.status, error: result.error || 'unknown' });
                 Alert.alert('Error', 'Failed to delete profile. Please try again.');
               }
             } catch (error) {
               console.log('Exception during delete:', error);
+              trackEvent('account_delete_failed', { error: String(error) });
               Alert.alert('Error', 'Failed to delete profile. Please try again.');
             }
           },
@@ -210,6 +436,14 @@ const ProfileScreen = () => {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#FFFFFF"
+            colors={['#FFFFFF']}
+          />
+        }
       >
         {/* Header */}
         <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
@@ -274,71 +508,226 @@ const ProfileScreen = () => {
             <View style={styles.creditCardContent}>
               <View style={styles.creditCardHeader}>
                 <View style={styles.creditCardText}>
-                  <Text style={styles.creditBalanceLabel}>Credit Balance</Text>
-                  <View style={styles.creditBalanceValue}>
-                    {loading ? (
-                      <View style={styles.skeletonCredits} />
-                    ) : (
-                      <AnimatedCounter 
-                        value={credits} 
-                        duration={800}
-                        style={styles.creditNumber}
-                      />
-                    )}
-                  </View>
+                  {isPro ? (
+                    <>
+                      <Text style={styles.creditBalanceLabel}>TuneMatch Pro</Text>
+                      {/* The plan line alone left subscribers with no idea how
+                          much of today's allowance was still available. */}
+                      <Text style={styles.proCardText}>
+                        {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+                      </Text>
+                      {/* Both plans grant the same entitlement, so naming the
+                          plan is the only way a switch is visible at all. */}
+                      {proPlan && (
+                        <Text style={styles.proCardCredits}>
+                          {proPlan.planLabel} plan
+                          {proPlan.isTrial ? ' - free trial' : ''}
+                          {!proPlan.willRenew ? ' - ends, will not renew' : ''}
+                        </Text>
+                      )}
+                      <Text style={styles.proCardCredits}>
+                        Next {PRO_DAILY_LIMIT} in {resetIn}
+                      </Text>
+                      {(credits ?? 0) > 0 && (
+                        <Text style={styles.proCardCredits}>
+                          + {credits} bonus credit{credits === 1 ? '' : 's'}
+                        </Text>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.creditBalanceLabel}>Credit Balance</Text>
+                      <View style={styles.creditBalanceValue}>
+                        {loading ? (
+                          <View style={styles.skeletonCredits} />
+                        ) : (
+                          <AnimatedCounter
+                            value={credits ?? 0}
+                            duration={800}
+                            style={styles.creditNumber}
+                          />
+                        )}
+                      </View>
+                      {/* At zero the number alone is a dead end. Say when the
+                          next free match lands instead. */}
+                      {!loading && creditSource === 'server' && credits === 0 && (
+                        <Text style={styles.creditCountdown}>
+                          Next free match in {resetIn}
+                        </Text>
+                      )}
+                    </>
+                  )}
                 </View>
                 <View style={styles.creditCardIcon}>
-                  <MaterialCommunityIcons name="auto-fix" size={28} color="#FFFFFF" />
+                  <MaterialCommunityIcons name={isPro ? 'crown' : 'auto-fix'} size={28} color="#FFFFFF" />
                 </View>
               </View>
 
               <TouchableOpacity
                 style={styles.topUpButton}
                 onPress={() => {
-                  navigation.navigate('Payment');
+                  if (isPro) {
+                    handleManageSubscription();
+                  } else {
+                    trackEvent('paywall_cta_tapped', { source: 'profile_go_pro', credits_balance: credits });
+                    navigation.navigate('Payment');
+                  }
                 }}
                 activeOpacity={0.9}
               >
-                <MaterialCommunityIcons name="plus-circle" size={16} color="#FF3B30" />
-                <Text style={styles.topUpButtonText}>Top Up Balance</Text>
+                <MaterialCommunityIcons name={isPro ? 'cog' : 'plus-circle'} size={16} color="#FF3B30" />
+                <Text style={styles.topUpButtonText}>{isPro ? 'Manage Subscription' : 'Go Pro'}</Text>
               </TouchableOpacity>
             </View>
           </LinearGradient>
         </Animatable.View>
 
-        {user ? (
-          <>
-            {/* Sign Out Button */}
+        {/* Spotify link, shown only to people who skipped it in onboarding.
+            Hidden while the status is still resolving so it cannot flash in
+            front of someone who is already connected. */}
+        {/* Taste picker entry: artists and genres chosen in-app. This is where
+            taste comes from for the public now (see lib/featureFlags.ts). */}
+        <TouchableOpacity
+          style={[styles.spotifyConnectCard, styles.tasteCard]}
+          onPress={() => {
+            trackEvent('taste_picker_opened', { source: 'profile', is_authenticated: isRegistered });
+            (navigation as any).navigate('TastePicker', { returnTo: 'back' });
+          }}
+          activeOpacity={0.85}
+        >
+          <View style={[styles.spotifyIconWrap, styles.tasteIconWrap]}>
+            <MaterialCommunityIcons name="music-note-plus" size={22} color="#f4258c" />
+          </View>
+          <View style={styles.spotifyTextWrap}>
+            <Text style={[styles.spotifyConnectTitle, styles.tasteTitle]}>Your music taste</Text>
+            <Text style={styles.spotifyConnectSubtitle}>
+              Pick the artists and genres you love so every match is tuned to you.
+            </Text>
+          </View>
+          <MaterialCommunityIcons name="chevron-right" size={22} color="#f4258c" />
+        </TouchableOpacity>
+
+        {/* !isRegistered, not !user: a guest now HAS a user, so this prompt
+            had stopped rendering for exactly the people it is meant for.
+            The copy no longer promises a credit either. Free credits are
+            rationed per device now, so signing up grants nothing extra - what
+            an account actually buys you is your matches surviving the phone. */}
+        {!isRegistered && (
+          <TouchableOpacity
+            style={styles.registerQuietButton}
+            onPress={handleRegister}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="account-plus-outline" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.registerQuietText}>Create an account to keep your matches</Text>
+          </TouchableOpacity>
+        )}
+
+        {spotifyResolved && !spotifyChecking && !spotifyConnected && isSpotifyConnectEnabled() && (
+          <TouchableOpacity
+            style={styles.spotifyConnectCard}
+            onPress={handleConnectSpotify}
+            activeOpacity={0.85}
+            disabled={connectingSpotify}
+          >
+            <View style={styles.spotifyIconWrap}>
+              <MaterialCommunityIcons name="spotify" size={22} color="#1DB954" />
+            </View>
+            <View style={styles.spotifyTextWrap}>
+              <Text style={styles.spotifyConnectTitle}>
+                {connectingSpotify ? 'Connecting...' : 'Connect Spotify'}
+              </Text>
+              <Text style={styles.spotifyConnectSubtitle}>
+                Use the full power of TuneMatch AI and get matches tuned to your music taste.
+              </Text>
+            </View>
+            {!connectingSpotify && (
+              <MaterialCommunityIcons
+                name="chevron-right"
+                size={22}
+                color="rgba(255,255,255,0.5)"
+              />
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* Housekeeping, side by side: neither is worth a full row. */}
+        <View style={styles.utilityRow}>
+          <TouchableOpacity
+            style={[styles.reportBugButton, styles.utilityButton]}
+            onPress={handleReportBug}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="bug-outline" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.utilityButtonText}>Report a Bug</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reportBugButton, styles.utilityButton]}
+            onPress={handleRestorePurchases}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="restore" size={18} color="rgba(255,255,255,0.75)" />
+            <Text style={styles.utilityButtonText}>Restore</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Sign Out and Delete live at the bottom, side by side.
+            They were two full-width rows in the middle of the page: the two
+            rarest and most destructive actions taking the most prominent
+            space, which pushed Report a Bug under the tab bar and the legal
+            links off the screen entirely. */}
+        {/* isRegistered, not `user`. Every guest has an anonymous Supabase
+            user now, so `user` was showing Sign Out and Delete Profile to
+            people with no account to sign out of or delete. */}
+        {isRegistered ? (
+          <View style={styles.dangerRow}>
             <TouchableOpacity
-              style={styles.signOutButton}
+              style={[styles.signOutButton, styles.dangerButton]}
               onPress={handleSignOut}
               activeOpacity={0.8}
             >
-              <MaterialCommunityIcons name="logout" size={20} color="#FF3B30" />
+              <MaterialCommunityIcons name="logout" size={17} color="#FF3B30" />
               <Text style={styles.signOutButtonText}>Sign Out</Text>
             </TouchableOpacity>
 
-            {/* Delete Profile Button */}
             <TouchableOpacity
-              style={styles.deleteProfileButton}
+              style={[styles.deleteProfileButton, styles.dangerButton]}
               onPress={handleDeleteProfile}
               activeOpacity={0.8}
             >
-              <MaterialCommunityIcons name="delete" size={20} color="#FF453A" />
-              <Text style={styles.deleteProfileButtonText}>Delete Profile</Text>
+              <MaterialCommunityIcons name="delete" size={17} color="#FF453A" />
+              <Text style={styles.deleteProfileButtonText}>Delete</Text>
             </TouchableOpacity>
-          </>
-        ) : (
-          /* Guest: prompt to create an account for a free credit */
+          </View>
+        ) : null}
+
+        <View style={styles.legalRow}>
           <TouchableOpacity
-            style={styles.registerCtaButton}
-            onPress={handleRegister}
-            activeOpacity={0.85}
+            onPress={() => Linking.openURL('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <MaterialCommunityIcons name="account-plus" size={20} color="#FFFFFF" />
-            <Text style={styles.registerCtaButtonText}>Create account - get 1 free credit</Text>
+            <Text style={styles.legalLinkText}>Terms of Use</Text>
           </TouchableOpacity>
-        )}
+          <Text style={styles.legalDivider}>·</Text>
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://ivaylodev.github.io/vibematch-privacy-policy/')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.legalLinkText}>Privacy Policy</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Build stamp. Long-press is a hidden test-notification action. */}
+        <TouchableOpacity
+          onLongPress={handleVersionLongPress}
+          delayLongPress={600}
+          activeOpacity={0.6}
+          style={styles.versionRow}
+        >
+          <Text style={styles.versionText}>
+            TuneMatch {Application.nativeApplicationVersion ?? '?'} ({Application.nativeBuildVersion ?? '?'})
+          </Text>
+        </TouchableOpacity>
 
         {/* Bottom Spacing */}
         <View style={styles.bottomSpacing} />
@@ -427,11 +816,11 @@ const styles = StyleSheet.create({
   },
   creditCardContainer: {
     paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.md,
   },
   creditCard: {
     borderRadius: 24,
-    padding: Spacing.lg,
+    padding: Spacing.md,
     position: 'relative',
     overflow: 'hidden',
     ...Shadows.prominent,
@@ -476,11 +865,30 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap', // Allow wrapping if needed
   },
   creditNumber: {
-    fontSize: 48,
+    fontSize: 38,
     fontWeight: '700',
     color: '#FFFFFF',
-    lineHeight: 56, // Ensure proper line height
+    lineHeight: 44, // Ensure proper line height
     minWidth: 60, // Minimum width for number display
+  },
+  creditCountdown: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  utilityRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  utilityButton: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  utilityButtonText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    fontWeight: '600',
   },
   creditCardIcon: {
     width: 48,
@@ -506,6 +914,32 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FF3B30',
   },
+  // The taste card outranks everything else here: it changes every match.
+  tasteCard: {
+    backgroundColor: 'rgba(244,37,140,0.12)',
+    borderColor: 'rgba(244,37,140,0.45)',
+    paddingVertical: Spacing.md + 2,
+  },
+  tasteIconWrap: { backgroundColor: 'rgba(244,37,140,0.20)' },
+  tasteTitle: { fontSize: 17 },
+  // The account prompt buys one credit. It should read as an aside.
+  registerQuietButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.sm + 4,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  registerQuietText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   registerCtaButton: {
     marginHorizontal: Spacing.md,
     marginBottom: Spacing.xl,
@@ -527,10 +961,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  signOutButton: {
+  dangerRow: {
+    flexDirection: 'row',
+    gap: 12,
     marginHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
-    paddingVertical: Spacing.md,
+    marginTop: Spacing.md,
+  },
+  dangerButton: {
+    flex: 1,
+  },
+  signOutButton: {
+    paddingVertical: Spacing.sm + 2,
     backgroundColor: 'rgba(255, 59, 48, 0.1)',
     borderRadius: 24,
     borderWidth: 1,
@@ -541,14 +982,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   signOutButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#FF3B30',
   },
   deleteProfileButton: {
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.xl,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
     backgroundColor: 'rgba(255, 69, 58, 0.1)',
     borderRadius: 24,
     borderWidth: 1,
@@ -559,12 +998,102 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   deleteProfileButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
     color: '#FF453A',
   },
+  spotifyConnectCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(29,185,84,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(29,185,84,0.35)',
+  },
+  spotifyIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  spotifyTextWrap: {
+    flex: 1,
+  },
+  spotifyConnectTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  spotifyConnectSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: 'rgba(255,255,255,0.65)',
+  },
+  reportBugButton: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    paddingVertical: Spacing.md,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  reportBugButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.75)',
+  },
+  proCardText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginTop: 2,
+  },
+  proCardCredits: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: 'rgba(255,255,255,0.75)',
+    marginTop: 2,
+  },
+  legalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: Spacing.md,
+  },
+  legalLinkText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.5)',
+    textDecorationLine: 'underline',
+  },
+  legalDivider: {
+    color: 'rgba(255,255,255,0.35)',
+    fontSize: 12,
+  },
   bottomSpacing: {
     height: 20,
+  },
+  versionRow: {
+    alignSelf: 'center',
+    marginTop: Spacing.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  versionText: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.3)',
   },
   skeletonCredits: {
     height: 36,

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, TouchableOpacity, Text } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Pressable, Text } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradientFallback as LinearGradient } from './LinearGradientFallback';
 import { Spacing, BorderRadius, Shadows } from '../designSystem';
@@ -8,9 +8,70 @@ import { VIBES } from '../vibes';
 type Props = {
   selected: string | null;
   onSelect: (vibeId: string) => void;
+  /**
+   * 'poster' (default): the home screen's 1.3:1 gradient tiles.
+   * 'compact': 66pt rows with a gradient dot, for the first-run step where
+   * the photo is the hero and the four vibes must fit under it without a
+   * scroll.
+   */
+  variant?: 'poster' | 'compact';
 };
 
-export const VibeGrid: React.FC<Props> = ({ selected, onSelect }) => {
+// "Party · Workout · Going out" -> "Party · Workout"
+const shortSubtitle = (subtitle: string) => subtitle.split(' · ').slice(0, 2).join(' · ');
+
+export const VibeGrid: React.FC<Props> = ({ selected, onSelect, variant = 'poster' }) => {
+  if (variant === 'compact') {
+    return (
+      <View style={styles.gridCompact}>
+        {[VIBES.slice(0, 2), VIBES.slice(2, 4)].map((row, rowIdx) => (
+          <View key={rowIdx} style={styles.rowCompact}>
+            {row.map((vibe) => {
+              const isSelected = selected === vibe.id;
+              return (
+                <Pressable
+                  key={vibe.id}
+                  onPress={() => onSelect(vibe.id)}
+                  style={({ pressed }) => [
+                    styles.compact,
+                    isSelected && styles.compactSelected,
+                    pressed && styles.compactPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isSelected }}
+                  accessibilityLabel={`${vibe.name}. ${vibe.subtitle}`}
+                >
+                  <View style={styles.dotWrap}>
+                    <LinearGradient
+                      colors={vibe.gradient}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.dot}
+                    />
+                    {/* The colour alone said nothing. The icon names the mood
+                        and keeps the row readable without reading the label. */}
+                    <View style={styles.dotIcon} pointerEvents="none">
+                      <MaterialCommunityIcons name={vibe.icon as any} size={15} color="#FFFFFF" />
+                    </View>
+                    {isSelected && (
+                      <View style={styles.dotCheck}>
+                        <MaterialCommunityIcons name="check" size={12} color="#FFFFFF" />
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.compactText}>
+                    <Text style={styles.compactTitle} numberOfLines={1}>{vibe.name}</Text>
+                    <Text style={styles.compactSubtitle} numberOfLines={1}>{shortSubtitle(vibe.subtitle)}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        ))}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.grid}>
       {[VIBES.slice(0, 2), VIBES.slice(2, 4)].map((row, rowIdx) => (
@@ -120,4 +181,46 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+
+  // Compact variant
+  gridCompact: { gap: 10 },
+  rowCompact: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  compact: {
+    flex: 1,
+    minHeight: 66,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+  },
+  compactSelected: {
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  compactPressed: { transform: [{ scale: 0.97 }] },
+  dotWrap: { width: 30, height: 30 },
+  dot: { width: 30, height: 30, borderRadius: 15 },
+  dotIcon: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  dotCheck: {
+    position: 'absolute',
+    right: -4,
+    bottom: -4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#221019',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactText: { flex: 1, gap: 1 },
+  compactTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  compactSubtitle: { color: 'rgba(255,255,255,0.5)', fontSize: 11, lineHeight: 13 },
 });

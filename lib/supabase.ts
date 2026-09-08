@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { AppState, AppStateStatus, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
@@ -18,6 +18,28 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+/**
+ * Tie the refresh timer to the app being in the foreground.
+ *
+ * supabase-js runs its refresh on a JS interval, and React Native freezes
+ * timers in the background. Left alone, a backgrounded app wakes up with an
+ * access token that expired hours ago and a refresh loop that never ran, so
+ * the next request 401s. That used to be survivable because a guest had
+ * nothing to lose; now the identity IS the guest's account, and a 401 storm on
+ * resume is a user staring at a balance the app cannot read.
+ *
+ * Called once from App.js. Safe to call again: the SDK tolerates it.
+ */
+export function bindAuthRefreshToAppState(): () => void {
+  const apply = (state: AppStateStatus) => {
+    if (state === 'active') supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  };
+  apply(AppState.currentState);
+  const sub = AppState.addEventListener('change', apply);
+  return () => sub.remove();
+}
+
 // Utility function to check if an error is a refresh token error or invalid user error
 export function isRefreshTokenError(error: any): boolean {
   if (!error) return false;
@@ -27,8 +49,12 @@ export function isRefreshTokenError(error: any): boolean {
     message.includes('Invalid Refresh Token') ||
     message.includes('Refresh Token Not Found') ||
     message.includes('User from sub claim in JWT does not exist') ||
-    message.includes('JWT does not exist') ||
-    error.status === 401
+    message.includes('JWT does not exist')
+    // NOT `error.status === 401`. Every expired access token, every "Invalid
+    // API key", every transient auth hiccup arrives as a 401, and treating
+    // those as a dead refresh token signs the user out of an account that was
+    // never broken. Once a guest's identity IS their session, that same line
+    // would throw away their balance and their history.
   );
 }
 
@@ -40,8 +66,9 @@ export async function handleAuthError(error: any): Promise<void> {
       await supabase.auth.signOut();
     } catch (signOutError) {
       console.error('Error during forced signout:', signOutError);
-      // Clear storage manually if signOut fails
-      AsyncStorage.removeItem('supabase.auth.token');
+      // Deliberately no manual storage wipe here. 'supabase.auth.token' is not
+      // the key supabase-js v2 writes (it uses sb-<ref>-auth-token), so this
+      // only ever looked like cleanup while doing nothing.
     }
   }
 }
@@ -49,14 +76,23 @@ export async function handleAuthError(error: any): Promise<void> {
 // Global error handler for authentication errors
 supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'SIGNED_OUT' && !session) {
-    // Clear any stored session data when signed out
-    AsyncStorage.removeItem('supabase.auth.token');
+    // Nothing to do: supabase-js clears its own key on sign-out, and the key
+    // this used to remove has never been the one it writes.
   }
 });
 
 // Apple Sign-In
 export async function signInWithApple(): Promise<{ success: boolean; error?: string }> {
   try {
+    // Capture the anonymous identity BEFORE the session is replaced. This
+    // sign-in mints a new user, and once it lands the old access token is
+    // unreachable - along with the balance, purchases and Vault attached to it.
+    //
+    // Imported lazily: lib/identity.ts imports this module, and a top-level
+    // import here would close the cycle. Metro tolerates that until the order
+    // of first evaluation changes, and then something is undefined at module
+    // init for reasons nobody can see.
+    await (await import('./identity')).captureAnonymousForMerge();
     // Only available on iOS
     if (Platform.OS !== 'ios') {
       return { success: false, error: 'Apple Sign-In is only available on iOS' };
@@ -199,6 +235,15 @@ const discovery = {
 // iOS clients don't support implicit flow (id_token), so we use code exchange
 export async function signInWithGoogle(): Promise<{ success: boolean; error?: string }> {
   try {
+    // Capture the anonymous identity BEFORE the session is replaced. This
+    // sign-in mints a new user, and once it lands the old access token is
+    // unreachable - along with the balance, purchases and Vault attached to it.
+    //
+    // Imported lazily: lib/identity.ts imports this module, and a top-level
+    // import here would close the cycle. Metro tolerates that until the order
+    // of first evaluation changes, and then something is undefined at module
+    // init for reasons nobody can see.
+    await (await import('./identity')).captureAnonymousForMerge();
     // Use the app scheme as redirect URI (iOS clients allow custom schemes)
     const redirectUri = AuthSession.makeRedirectUri({
       scheme: 'com.paltech.tunematch',
@@ -350,17 +395,35 @@ export async function signOutFromGoogle(): Promise<void> {
 // Function to get a fresh signed URL for an image
 export async function getImageSignedUrl(filePath: string): Promise<string | null> {
   try {
-    // Check if user is authenticated
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      console.warn('⚠️ No session when creating signed URL');
-      return null;
-    }
-
     // Validate file path
     if (!filePath || filePath.trim().length === 0) {
       console.warn('⚠️ Invalid file path for signed URL');
       return null;
+    }
+
+    // Guests legitimately have no session. The `anon` role is INSERT-only on the
+    // images bucket now (it used to be able to read and sign ANY user's photo),
+    // so a guest cannot sign even its own thumbnail client-side. Ask the server,
+    // which will only sign an unguessable anonymous/<uuid>/<uuid>.jpg path.
+    //
+    // Guest items created before that path scheme existed cannot be signed at
+    // all - accepting the old anonymous/<ms>.jpg form would make the endpoint
+    // brute-forceable. Those legacy thumbnails stay blank.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      try {
+        const { data, error } = await supabase.functions.invoke('sign-image', {
+          body: { path: filePath },
+        });
+        if (error || !data?.signedUrl) {
+          console.warn('⚠️ Guest signing failed for path:', filePath);
+          return null;
+        }
+        return data.signedUrl as string;
+      } catch (err) {
+        console.warn('⚠️ Guest signing request failed:', err);
+        return null;
+      }
     }
 
     const { data, error } = await supabase.storage

@@ -5,6 +5,7 @@ import type {
   PurchasesOffering,
 } from 'react-native-purchases';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Check if running in Expo Go by looking for expo-dev-client
 // This MUST be checked before any module imports
@@ -251,15 +252,10 @@ const REVENUECAT_API_KEY = Platform.OS === 'ios'
 // Set to false to test real purchases in development
 const SKIP_REVENUECAT_IN_DEV = false; // Enabled for real environment testing
 
-// Product identifiers - must match RevenueCat dashboard
-export const PRODUCT_IDS = {
-  CREDITS_5: 'tunematch_credits_5',
-  CREDITS_18: 'tunematch_credits_18',
-  CREDITS_60: 'tunematch_credits_60',
-  CREDITS_150: 'tunematch_credits_150',
-} as const;
-
-// Credits granted per product (including bonuses)
+// LEGACY credit packs. Not sold by this build (the paywall sells the pro
+// subscription from the pro_v1 offering), but old builds still buy these from
+// the untouched `default` offering, and validate-purchase keeps a copy of this
+// table. Kept as documentation of what those products granted.
 export const CREDITS_PER_PRODUCT: Record<string, number> = {
   'tunematch_credits_5': 5,
   'tunematch_credits_18': 18,    // 15 + 3 bonus
@@ -267,33 +263,39 @@ export const CREDITS_PER_PRODUCT: Record<string, number> = {
   'tunematch_credits_150': 150,  // 120 + 30 bonus
 };
 
-/**
- * Get the number of credits for a product ID
- */
-export function getCreditsForProduct(productId: string): number {
-  return CREDITS_PER_PRODUCT[productId] || 0;
-}
-
 let isConfigured = false;
 let isInitializing = false;
 let currentAppUserId: string | null = null; // Track the currently identified user
 
+// ---------------------------------------------------------------------------
+// TuneMatch Pro subscription
+// ---------------------------------------------------------------------------
+
+/** Entitlement id configured in the RevenueCat dashboard. */
+export const PRO_ENTITLEMENT_ID = 'pro';
+
 /**
- * Cache for offerings to avoid repeated calls when empty.
- * 
- * The RevenueCat native SDK logs errors when offerings are empty/not configured.
- * By caching empty results, we avoid repeatedly calling getOfferings() and triggering
- * these errors. The cache expires after 60 seconds to allow for configuration changes.
- * 
- * Note: Native SDK errors will still appear on the first call, but subsequent calls
- * within the cache duration will return early without triggering SDK errors.
+ * The new build fetches this offering EXPLICITLY by id, never
+ * `offerings.current`. `current` still points at the legacy credit-pack
+ * offering so builds <= 1.0.15 keep rendering the packs they understand; a
+ * subscription product surfacing there would show as a broken "0 Credits" card
+ * whose purchase charges the user and grants nothing.
  */
-let offeringsCache: {
-  packages: PurchasesPackage[] | null;
-  timestamp: number;
-  isEmpty: boolean; // Track if we've determined offerings are empty
-} | null = null;
-const OFFERINGS_CACHE_DURATION = 60000; // Cache for 60 seconds
+export const PRO_OFFERING_ID = 'pro_v1';
+
+/**
+ * Two-tier cache for the pro entitlement so scan gates stay fast and work
+ * before the SDK finishes its (retried, ~1s-delayed) configuration:
+ *   tier 1: module variable, process lifetime
+ *   tier 2: AsyncStorage, survives cold start
+ * When the SDK is reachable it is always asked (it maintains its own on-disk
+ * cache offline); the tiers only answer while it is not configured yet.
+ * Stale-allow is the deliberate failure mode: a free scan for a just-lapsed
+ * subscriber costs less than blocking a paying one.
+ */
+const PRO_STATUS_STORAGE_KEY = '@tunematch_has_pro';
+let lastKnownProStatus: boolean | null = null;
+let proStatusListenerRegistered = false;
 
 /**
  * Check if RevenueCat is available and ready
@@ -502,6 +504,9 @@ export async function initRevenueCat(userId?: string): Promise<void> {
         }
 
         isConfigured = true;
+        // Anything that subscribed before now gets attached here, so a
+        // listener registered at app start is not silently discarded.
+        flushPendingCustomerInfoListeners();
         configured = true;
         break;
         
@@ -538,6 +543,24 @@ export async function initRevenueCat(userId?: string): Promise<void> {
     if (userId) {
       await identifyUser(userId);
     }
+
+    // Warm the pro-status cache and keep it fresh for the lifetime of the
+    // process. Renewals, purchases, restores and identity changes all emit
+    // through this listener, so the scan gates never read stale state for
+    // longer than the SDK itself does.
+    if (!proStatusListenerRegistered) {
+      proStatusListenerRegistered = true;
+      refreshProStatus().catch(() => {});
+      try {
+        Purchases.addCustomerInfoUpdateListener((info: CustomerInfo) => {
+          const isPro = !!info?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+          lastKnownProStatus = isPro;
+          AsyncStorage.setItem(PRO_STATUS_STORAGE_KEY, isPro ? 'true' : 'false').catch(() => {});
+        });
+      } catch (listenerError) {
+        console.warn('[RevenueCat] Could not register pro status listener:', listenerError);
+      }
+    }
     } catch (error: any) {
       const errorMsg = error?.message || String(error);
       console.error('[RevenueCat] ❌ Configuration error:', errorMsg);
@@ -563,6 +586,66 @@ export async function initRevenueCat(userId?: string): Promise<void> {
 /**
  * Identify user when they log in (links purchases to user account)
  */
+/**
+ * Make sure a subscription bought as a guest survives creating an account.
+ *
+ * A guest's purchase is attached to RevenueCat's ANONYMOUS app user id. Signing
+ * up calls logIn() with the Supabase user id, and the entitlement has to move
+ * across. When it does not, the app correctly reports "not pro" while the App
+ * Store still says subscribed - the user has paid and lost access, which is the
+ * worst failure this screen has.
+ *
+ * identifyUser() alone was not enough: it logs in and returns customerInfo, but
+ * nothing re-read the entitlement afterwards, and nothing recovered the receipt
+ * if the transfer did not happen. syncPurchases() re-sends the StoreKit receipt
+ * under the now-identified id, which (with the project set to "Transfer to new
+ * App User ID") reattaches the subscription.
+ *
+ * Safe to call on every sign-in: when the entitlement is already present it
+ * costs one getCustomerInfo and returns immediately.
+ */
+export async function reconcileProAfterLogin(userId: string): Promise<boolean> {
+  if (!isRevenueCatAvailable() || !isConfigured) return false;
+
+  await identifyUser(userId);
+
+  let isPro = await refreshProStatus();
+  if (isPro) return true;
+
+  // Not pro after logging in. If StoreKit still holds a receipt, resending it
+  // attaches the purchase to this user id instead of the orphaned anonymous one.
+  try {
+    console.log('[RevenueCat] not pro after logIn - syncing purchases to recover a guest subscription');
+    const info = await syncPurchases();
+    isPro = await refreshProStatus(info);
+    if (isPro) console.log('[RevenueCat] ✅ recovered entitlement via syncPurchases');
+  } catch (error) {
+    console.warn('[RevenueCat] syncPurchases during login reconcile failed:', error);
+  }
+
+  return isPro;
+}
+
+/**
+ * Who RevenueCat currently thinks this app user is.
+ *
+ * Needed because a purchase is only recoverable if RevenueCat's app user id
+ * and our Supabase uid are the same string: validate-purchase looks the
+ * transaction up under /v1/subscribers/{uid}. Charging a card whose receipt
+ * will then fail to verify is the one outcome worth refusing a sale over, so
+ * the purchase paths assert this before starting.
+ */
+export async function getCurrentAppUserId(): Promise<string | null> {
+  try {
+    if (Purchases && typeof Purchases.getAppUserID === 'function') {
+      return await Purchases.getAppUserID();
+    }
+  } catch (error) {
+    console.warn('[RevenueCat] could not read the app user id:', error);
+  }
+  return currentAppUserId;
+}
+
 export async function identifyUser(userId: string): Promise<CustomerInfo | null> {
   if (!isRevenueCatAvailable() || !isConfigured) {
     console.warn('[RevenueCat] Not configured, skipping user identification');
@@ -644,301 +727,215 @@ export async function getCustomerInfo(): Promise<CustomerInfo | null> {
 
 
 /**
- * Clear the offerings cache (useful after configuring offerings in RevenueCat dashboard)
+ * Persist + broadcast the latest pro status. Accepts the customerInfo a
+ * paywall callback already holds so no extra fetch is needed post-purchase.
  */
-export function clearOfferingsCache(): void {
-  offeringsCache = null;
+export async function refreshProStatus(customerInfo?: CustomerInfo | null): Promise<boolean> {
+  let info = customerInfo ?? null;
+  if (!info && isRevenueCatAvailable() && isConfigured) {
+    info = await getCustomerInfo();
+  }
+  if (!info) {
+    // Nothing fresh to learn - fall back to what we knew.
+    return hasProEntitlement();
+  }
+  const isPro = !!info.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+  lastKnownProStatus = isPro;
+  AsyncStorage.setItem(PRO_STATUS_STORAGE_KEY, isPro ? 'true' : 'false').catch(() => {});
+  return isPro;
 }
 
 /**
- * Get the current offering (products available for purchase)
+ * Does this user (signed-in or anonymous) have an active pro subscription?
+ * Safe to call before the SDK is configured - see the cache note above.
  */
-export async function getCurrentOffering(): Promise<PurchasesOffering | null> {
-  // Skip RevenueCat entirely in development if configured
-  if (SKIP_REVENUECAT_IN_DEV) {
-    return null;
-  }
-
-  if (!isRevenueCatAvailable() || !isConfigured) {
-    return null;
-  }
-
-  // Check cache first - if we know offerings are empty, avoid calling the SDK
-  const now = Date.now();
-  if (offeringsCache && (now - offeringsCache.timestamp) < OFFERINGS_CACHE_DURATION) {
-    if (offeringsCache.isEmpty) {
-      return null;
+export async function hasProEntitlement(): Promise<boolean> {
+  if (isRevenueCatAvailable() && isConfigured) {
+    try {
+      const info = await Purchases.getCustomerInfo();
+      const isPro = !!info?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+      lastKnownProStatus = isPro;
+      AsyncStorage.setItem(PRO_STATUS_STORAGE_KEY, isPro ? 'true' : 'false').catch(() => {});
+      return isPro;
+    } catch (error) {
+      console.warn('[RevenueCat] pro check failed, using cached status:', error);
     }
   }
-
+  if (lastKnownProStatus !== null) return lastKnownProStatus;
   try {
-    const offerings = await Purchases.getOfferings();
-    
-    // Update cache based on result
-    if (!offerings.current || offerings.current.availablePackages.length === 0) {
-      offeringsCache = {
-        packages: [],
-        timestamp: now,
-        isEmpty: true,
-      };
-    } else {
-      offeringsCache = {
-        packages: offerings.current.availablePackages,
-        timestamp: now,
-        isEmpty: false,
-      };
-    }
-    
-    return offerings.current;
-  } catch (error: any) {
-    const errorMessage = error?.message || String(error);
-    
-    // Check if this is the "no products registered" error - this is expected during development
-    if (errorMessage.includes('no products registered') || 
-        errorMessage.includes('no products') ||
-        errorMessage.includes('offerings empty') ||
-        errorMessage.includes('has no packages configured')) {
-      // Cache empty result to avoid repeated calls
-      offeringsCache = {
-        packages: [],
-        timestamp: now,
-        isEmpty: true,
-      };
-      
-      // This is expected if offerings aren't configured - log as info in dev, silent in production
-      if (__DEV__) {
-        console.log('[RevenueCat] ℹ️ Offerings not configured yet. This is normal during development.');
-      }
-      return null;
-    }
-    
-    // For other errors, log as warning
-    console.warn('[RevenueCat] ⚠️ Error fetching current offering:', errorMessage);
-    
-    // Cache empty result for a shorter duration on errors
-    offeringsCache = {
-      packages: [],
-      timestamp: now,
-      isEmpty: true,
-    };
-    
-    return null;
+    const stored = await AsyncStorage.getItem(PRO_STATUS_STORAGE_KEY);
+    lastKnownProStatus = stored === 'true';
+    return lastKnownProStatus;
+  } catch {
+    return false;
   }
 }
 
 /**
- * Get available packages from the current offering
+ * Subscribe to pro-status changes (purchases, renewals, expirations, identity
+ * changes all flow through the SDK's customerInfo listener). Returns an
+ * unsubscribe function. Also keeps both cache tiers fresh.
  */
-export async function getAvailablePackages(): Promise<PurchasesPackage[]> {
-  // Skip RevenueCat entirely in development if configured
-  if (SKIP_REVENUECAT_IN_DEV) {
-    // Return empty - PaymentScreen will use mock packages
-    return [];
-  }
+export function subscribeToProStatus(cb: (isPro: boolean) => void): () => void {
+  return addCustomerInfoUpdateListener((info) => {
+    const isPro = !!info.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+    lastKnownProStatus = isPro;
+    AsyncStorage.setItem(PRO_STATUS_STORAGE_KEY, isPro ? 'true' : 'false').catch(() => {});
+    cb(isPro);
+  });
+}
 
-  // Try to initialize if not configured yet
+/**
+ * Fetch the subscription offering for the paywall. Returns null when it cannot
+ * be loaded - the caller shows an honest error/retry state, never mock data.
+ */
+export type ProPlanSummary = {
+  productIdentifier: string;
+  /** "Weekly" / "Monthly" / "Annual", or a safe fallback for an unknown id. */
+  planLabel: string;
+  /** True while the store still intends to renew - false once cancelled. */
+  willRenew: boolean;
+  /** True during a free trial. */
+  isTrial: boolean;
+  expirationDate: string | null;
+};
+
+/**
+ * Which plan the subscriber is actually on.
+ *
+ * The app gates purely on the `pro` entitlement, which both products grant, so
+ * monthly and annual are deliberately identical in capability. That is correct,
+ * but it also meant switching plans produced no visible change anywhere and
+ * looked like the switch had failed. This is what lets the UI name the plan.
+ */
+export async function getProPlanSummary(): Promise<ProPlanSummary | null> {
+  const info = await getCustomerInfo();
+  const entitlement = info?.entitlements?.active?.[PRO_ENTITLEMENT_ID];
+  if (!entitlement) return null;
+
+  const productIdentifier = entitlement.productIdentifier ?? '';
+  // On Google Play the entitlement's productIdentifier is the SUBSCRIPTION id
+  // ("tunematch_pro") and the term lives in productPlanIdentifier
+  // ("pro-monthly" / "pro-annual"). Matching only on productIdentifier meant
+  // Android fell through to the raw id and the card read "tunematch_pro plan".
+  const planIdentifier = (entitlement as { productPlanIdentifier?: string | null })
+    .productPlanIdentifier ?? '';
+  const haystack = `${productIdentifier} ${planIdentifier}`;
+  const isAnnual = /annual|yearly|p1y/i.test(haystack);
+  const isMonthly = /monthly|p1m/i.test(haystack);
+  // Weekly replaced monthly in the pro_v1 offering on 2026-09-06. Monthly stays
+  // recognised here: the products still exist and nothing migrates a subscriber
+  // who is already on one.
+  const isWeekly = /weekly|p1w/i.test(haystack);
+
+  return {
+    productIdentifier,
+    // Never surface a raw store id to a user - fall back to the plan's name.
+    planLabel: isAnnual ? 'Annual' : isMonthly ? 'Monthly' : isWeekly ? 'Weekly' : 'TuneMatch Pro',
+    willRenew: !!entitlement.willRenew,
+    isTrial: entitlement.periodType === 'TRIAL',
+    expirationDate: entitlement.expirationDate ?? null,
+  };
+}
+
+export async function getProOffering(): Promise<PurchasesOffering | null> {
   if (!isConfigured) {
     try {
       await initRevenueCat();
-      // Wait a bit for configuration to complete
       await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
       console.warn('[RevenueCat] Initialization attempt failed:', error);
     }
   }
-
-  if (!isConfigured) {
-    console.warn('[RevenueCat] Not configured, returning empty packages');
-    return [];
+  if (!isRevenueCatAvailable() || !isConfigured) {
+    return null;
   }
-
-  // Check cache first to avoid repeated calls when offerings are empty
-  const now = Date.now();
-  if (offeringsCache && (now - offeringsCache.timestamp) < OFFERINGS_CACHE_DURATION) {
-    // If we've cached that offerings are empty, return early to avoid triggering SDK errors
-    if (offeringsCache.isEmpty) {
-      return [];
-    }
-    // If we have cached packages, return them
-    if (offeringsCache.packages && offeringsCache.packages.length > 0) {
-      return offeringsCache.packages;
-    }
-  }
-
-  // Double-check that Purchases is available (can be object or function)
-  if (!Purchases || (typeof Purchases !== 'object' && typeof Purchases !== 'function')) {
-    // Try to reload the module
-    try {
-      const PurchasesModule = require('react-native-purchases');
-      
-      // Find the Purchases object
-      if (typeof PurchasesModule.configure === 'function') {
-        Purchases = PurchasesModule;
-      } else if (PurchasesModule.default && typeof PurchasesModule.default.configure === 'function') {
-        Purchases = PurchasesModule.default;
-      } else if (PurchasesModule.Purchases && typeof PurchasesModule.Purchases.configure === 'function') {
-        Purchases = PurchasesModule.Purchases;
-      } else {
-        Purchases = PurchasesModule.default || PurchasesModule;
-      }
-    } catch (reloadError) {
-      console.error('[RevenueCat] Failed to reload module:', reloadError);
-      return [];
-    }
-    
-    // Check again after reload
-    if (!Purchases || (typeof Purchases !== 'object' && typeof Purchases !== 'function')) {
-      console.error('[RevenueCat] Module not available');
-      return [];
-    }
-  }
-
   try {
     const offerings = await Purchases.getOfferings();
-    
-    if (offerings.current && offerings.current.availablePackages.length > 0) {
-      // Cache successful result
-      offeringsCache = {
-        packages: offerings.current.availablePackages,
-        timestamp: now,
-        isEmpty: false,
-      };
-      return offerings.current.availablePackages;
+    const offering = offerings?.all?.[PRO_OFFERING_ID] ?? null;
+    if (!offering || offering.availablePackages.length === 0) {
+      console.warn(`[RevenueCat] Offering "${PRO_OFFERING_ID}" missing or empty`);
+      return null;
     }
-    
-    if (offerings.current) {
-      console.warn('[RevenueCat] ⚠️ Current offering exists but has no packages:', {
-        offeringId: offerings.current.identifier,
-        packageCount: offerings.current.availablePackages.length,
-      });
-      console.warn('[RevenueCat] 💡 Check RevenueCat Dashboard: Products must be added to an Offering');
-      // Cache empty result
-      offeringsCache = {
-        packages: [],
-        timestamp: now,
-        isEmpty: true,
-      };
-    } else {
-      // This is expected if offerings aren't configured yet - not an error
-      if (__DEV__) {
-        console.log('[RevenueCat] ℹ️ No current offering found (this is normal if offerings aren\'t configured in RevenueCat dashboard)');
-      }
-      // Cache empty result to avoid repeated calls
-      offeringsCache = {
-        packages: [],
-        timestamp: now,
-        isEmpty: true,
-      };
-    }
-    
-    return [];
+    return offering;
   } catch (error: any) {
-    const errorMessage = error?.message || String(error);
-    
-    // Check if this is the "no products registered" error - this is expected during development
-    if (errorMessage.includes('no products registered') || 
-        errorMessage.includes('no products') ||
-        errorMessage.includes('offerings empty') ||
-        errorMessage.includes('has no packages configured')) {
-      // Cache empty result to avoid repeated calls that trigger these errors
-      offeringsCache = {
-        packages: [],
-        timestamp: now,
-        isEmpty: true,
-      };
-      
-      // This is expected if offerings aren't configured - log as info in dev, silent in production
-      if (__DEV__) {
-        console.log('[RevenueCat] ℹ️ Offerings not configured yet. This is normal during development.');
-        console.log('[RevenueCat] 💡 To configure: Add products to an Offering in RevenueCat Dashboard and mark it as "Current"');
-      }
-      return [];
+    console.warn('[RevenueCat] Error fetching pro offering:', error?.message || error);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Starter pack (consumable) sold beside the subscription
+// ---------------------------------------------------------------------------
+
+/**
+ * The one credit pack the new paywall still sells. It is the cheapest SKU on
+ * both stores and already lives in the legacy `default` offering, so nothing
+ * has to be created store-side. Sold at the out-of-credits moment for users
+ * who want one more match, not a yearly plan - the Android funnel showed
+ * that is most of them.
+ */
+export const STARTER_PACK_PRODUCT_ID = 'tunematch_credits_5';
+
+export async function getStarterPackPackage(): Promise<PurchasesPackage | null> {
+  if (!isRevenueCatAvailable() || !isConfigured) {
+    return null;
+  }
+  try {
+    const offerings = await Purchases.getOfferings();
+    const all: PurchasesOffering[] = Object.values(offerings?.all ?? {});
+    for (const offering of all) {
+      const pkg = offering.availablePackages.find(
+        (p: PurchasesPackage) => p.product?.identifier?.startsWith(STARTER_PACK_PRODUCT_ID)
+      );
+      if (pkg) return pkg;
     }
-    
-    // For other errors, log as warning (not error) since we gracefully fall back
-    console.warn('[RevenueCat] ⚠️ Error fetching packages (falling back to mock data):', errorMessage);
-    
-    // Cache empty result for a shorter duration on errors (in case it's temporary)
-    offeringsCache = {
-      packages: [],
-      timestamp: now,
-      isEmpty: true,
-    };
-    
-    return [];
+    console.warn(`[RevenueCat] Product "${STARTER_PACK_PRODUCT_ID}" not found in any offering`);
+    return null;
+  } catch (error: any) {
+    console.warn('[RevenueCat] Error fetching starter pack:', error?.message || error);
+    return null;
   }
 }
 
 /**
- * Purchase a package (consumable credits)
- * Returns transaction info for server-side validation
+ * Buys a consumable package directly (the RC Paywall UI only handles the
+ * subscription). Returns a transaction id for validate-purchase; falls back to
+ * a synthetic one when the store does not report it, same as the old flow.
  */
-export async function purchasePackage(pkg: PurchasesPackage): Promise<{
+export async function purchaseCreditPackage(pkg: PurchasesPackage): Promise<{
   success: boolean;
-  customerInfo?: CustomerInfo;
   transactionId?: string;
   productId?: string;
-  error?: string;
   userCancelled?: boolean;
+  error?: string;
+  errorCode?: string;
+  underlying?: string;
 }> {
   if (!isRevenueCatAvailable() || !isConfigured) {
-    return {
-      success: false,
-      error: 'RevenueCat not initialized',
-    };
+    return { success: false, error: 'RevenueCat not initialized' };
   }
-
+  const productId = pkg.product.identifier;
   try {
     const { customerInfo } = await Purchases.purchasePackage(pkg);
-    
-    const productId = pkg.product.identifier;
-    
-    // Extract transaction ID from RevenueCat customerInfo
-    // For consumables, check nonSubscriptions array
-    let transactionId: string | undefined;
-    
-    if (customerInfo?.nonSubscriptions && customerInfo.nonSubscriptions.length > 0) {
-      // Find the purchase for this specific product
-      const productPurchase = customerInfo.nonSubscriptions.find(
-        (purchase: any) => purchase.productIdentifier === productId
-      );
-      if (productPurchase?.transactionIdentifier) {
-        transactionId = productPurchase.transactionIdentifier;
-      }
-    }
-    
-    // Fallback: Use original purchase date + product ID as unique identifier
-    if (!transactionId) {
-      const timestamp = customerInfo?.originalPurchaseDate 
-        ? new Date(customerInfo.originalPurchaseDate).getTime()
-        : Date.now();
-      transactionId = `rc_${timestamp}_${productId}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-    
-    console.log('[RevenueCat] Purchase successful, transaction ID:', transactionId);
-    console.log('[RevenueCat] CustomerInfo:', JSON.stringify(customerInfo, null, 2));
-    
-    return {
-      success: true,
-      customerInfo,
-      transactionId,
-      productId,
-    };
+    const purchase = customerInfo?.nonSubscriptions?.find(
+      (p: any) => p.productIdentifier === productId
+    );
+    const transactionId =
+      purchase?.transactionIdentifier
+      ?? `rc_${Date.now()}_${productId}_${Math.random().toString(36).slice(2, 11)}`;
+    return { success: true, transactionId, productId };
   } catch (error: any) {
-    // Check if user cancelled
-    if (error.userCancelled) {
-      console.log('[RevenueCat] Purchase cancelled by user');
-      return {
-        success: false,
-        userCancelled: true,
-        error: 'Purchase cancelled',
-      };
+    if (error?.userCancelled) {
+      return { success: false, userCancelled: true, productId, error: 'Purchase cancelled' };
     }
-    
-    console.error('[RevenueCat] Purchase error:', error);
+    console.warn('[RevenueCat] Credit pack purchase error:', error?.message || error);
     return {
       success: false,
-      error: error.message || 'Purchase failed',
+      productId,
+      error: error?.message || 'Purchase failed',
+      errorCode: error?.code != null ? String(error.code) : undefined,
+      underlying: error?.underlyingErrorMessage,
     };
   }
 }
@@ -985,18 +982,52 @@ export function getManagementURL(customerInfo: CustomerInfo): string | null {
 /**
  * Listen for customer info updates
  */
+/**
+ * Listeners that asked to subscribe before RevenueCat finished configuring.
+ *
+ * This used to return a silent no-op in that case, which made subscribing at
+ * app start - the only place you would want to - permanently useless: App.js
+ * registers on mount and configuration completes later, so the callback never
+ * fired for a restore, a renewal, an expiry, or a purchase made on another
+ * device. Registration is now order-independent and these are attached the
+ * moment configuration finishes.
+ */
+const pendingCustomerInfoListeners = new Set<(customerInfo: CustomerInfo) => void>();
+
+/** Called once configuration completes. Safe to call more than once. */
+function flushPendingCustomerInfoListeners(): void {
+  if (!isRevenueCatAvailable() || !isConfigured) return;
+  for (const listener of pendingCustomerInfoListeners) {
+    try {
+      Purchases.addCustomerInfoUpdateListener(listener);
+    } catch (error) {
+      console.warn('[RevenueCat] could not attach a deferred listener:', error);
+    }
+  }
+  pendingCustomerInfoListeners.clear();
+}
+
 export function addCustomerInfoUpdateListener(
   listener: (customerInfo: CustomerInfo) => void
 ): () => void {
-  if (!isRevenueCatAvailable() || !isConfigured) {
-    // Return no-op unsubscribe function
+  if (!isRevenueCatAvailable()) {
     return () => {};
   }
 
+  if (!isConfigured) {
+    // Hold it rather than dropping it. Configuration is asynchronous and the
+    // caller has no way to know when it lands.
+    pendingCustomerInfoListeners.add(listener);
+    return () => {
+      pendingCustomerInfoListeners.delete(listener);
+      try { Purchases.removeCustomerInfoUpdateListener(listener); } catch { /* never attached */ }
+    };
+  }
+
   Purchases.addCustomerInfoUpdateListener(listener);
-  
-  // Return unsubscribe function
+
   return () => {
+    pendingCustomerInfoListeners.delete(listener);
     if (isRevenueCatAvailable()) {
       Purchases.removeCustomerInfoUpdateListener(listener);
     }

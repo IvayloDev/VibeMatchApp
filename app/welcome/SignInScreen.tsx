@@ -9,8 +9,9 @@ import { LinearGradientFallback as LinearGradient } from '../../lib/components/L
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
-import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { requireIdentity } from '../../lib/identity';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
+import { trackEvent } from '../../lib/posthog';
 
 const { width, height } = Dimensions.get('window');
 
@@ -54,25 +55,32 @@ const SignInScreen = () => {
       return;
     }
     setLoading(true);
+    trackEvent('sign_in_started', { method: 'email' });
     const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
+      trackEvent('sign_in_failed', { method: 'email', error: error.message });
       Alert.alert('Sign In Error', error.message);
     } else if (data?.user) {
+      trackEvent('sign_in_completed', { method: 'email' });
       await routeAfterAuth();
     }
   };
 
   const handleGoogleSignIn = async () => {
     setSocialLoading('google');
+    trackEvent('sign_in_started', { method: 'google' });
     try {
       const result = await signInWithGoogle();
       if (result.success) {
+        trackEvent('sign_in_completed', { method: 'google' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('sign_in_failed', { method: 'google', error: result.error });
         Alert.alert('Google Sign-In Error', result.error);
       }
     } catch (error) {
+      trackEvent('sign_in_failed', { method: 'google', error: String(error) });
       console.error('Google sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
@@ -81,14 +89,18 @@ const SignInScreen = () => {
 
   const handleAppleSignIn = async () => {
     setSocialLoading('apple');
+    trackEvent('sign_in_started', { method: 'apple' });
     try {
       const result = await signInWithApple();
       if (result.success) {
+        trackEvent('sign_in_completed', { method: 'apple' });
         await routeAfterAuth();
       } else if (result.error) {
+        trackEvent('sign_in_failed', { method: 'apple', error: result.error });
         Alert.alert('Apple Sign-In Error', result.error);
       }
     } catch (error) {
+      trackEvent('sign_in_failed', { method: 'apple', error: String(error) });
       console.error('Apple sign-in error:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
@@ -99,8 +111,31 @@ const SignInScreen = () => {
     setShowGuestModal(true);
   };
 
+  // Reached from Welcome (back = Welcome) and from inside the app (back = where
+  // they came from). If neither is possible, land on the app rather than trap.
+  const handleDismiss = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.reset({ index: 0, routes: [{ name: 'MainTabs' as never }] });
+    }
+  };
+
   return (
     <View style={styles.container}>
+      {/* Escape hatch. These screens are reached from inside the app (Profile,
+          the paywall) as well as from Welcome, and with the stack header hidden
+          there was no way back at all - a dead end. goBack when there is
+          somewhere to go, otherwise drop into the app. */}
+      <SafeAreaView style={styles.authBackWrap} edges={['top']} pointerEvents="box-none">
+        <TouchableOpacity
+          onPress={handleDismiss}
+          style={styles.authBackButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </SafeAreaView>
       {/* Background Blur Effects */}
       <View style={styles.backgroundBlur1} />
       <View style={styles.backgroundBlur2} />
@@ -270,7 +305,10 @@ const SignInScreen = () => {
           setShowGuestModal(false);
           
           // Grant free credits to guest user
-          const granted = await grantGuestFreeCredits();
+          // Starter credits are granted by the server, once per device, inside
+      // session-bootstrap. All the client does is make sure an identity
+      // exists for the server to grant them to.
+      const granted = !!(await requireIdentity('signin'));
           if (granted) {
             console.log('✅ Guest free credits granted');
           }
@@ -288,6 +326,22 @@ const SignInScreen = () => {
 };
 
 const styles = StyleSheet.create({
+  authBackWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    zIndex: 50,
+  },
+  authBackButton: {
+    marginTop: Spacing.sm,
+    marginLeft: Spacing.md,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { 
     flex: 1,
     backgroundColor: '#221019', // Matching app background

@@ -10,6 +10,8 @@ import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFa
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { supabase, getImageSignedUrl } from '../../../lib/supabase';
+import { loadGuestHistory } from '../../../lib/guestHistory';
+import { trackEvent } from '../../../lib/posthog';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { FloatingCard } from '../../../lib/components/FloatingCard';
@@ -63,27 +65,40 @@ const HistoryScreen = () => {
       .from('history')
       .select('*')
       .order('created_at', { ascending: false });
-      
+
     if (error) {
       console.error('Error fetching history:', error);
-      setHistory([]);
-    } else {
-      console.log('Fetched history items:', data?.length || 0);
-      setHistory(data || []);
-      
-      // Generate fresh signed URLs for all images
-      const urlPromises = (data || []).map(async (item) => {
-        const signedUrl = await getImageSignedUrl(item.image_url);
-        return { id: item.id, url: signedUrl };
-      });
-      
-      const urlResults = await Promise.all(urlPromises);
-      const urlMap: { [key: string]: string } = {};
-      urlResults.forEach(({ id, url }) => {
-        if (url) urlMap[id] = url;
-      });
-      setImageUrls(urlMap);
     }
+
+    // Guest matches never reach the `history` table (the insert needs a user
+    // id), so merge the local cache in. A signed-in user normally has none,
+    // but anything left over from their guest sessions still belongs to them.
+    const guestItems = await loadGuestHistory();
+    const merged = [...(data || []), ...guestItems].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    console.log('History items:', { remote: data?.length || 0, local: guestItems.length });
+    setHistory(merged);
+    // An empty Vault on a return visit is someone who never got a match.
+    trackEvent('vault_viewed', {
+      item_count: merged.length,
+      remote_count: data?.length || 0,
+      local_count: guestItems.length,
+    });
+
+    // Generate fresh signed URLs for all images
+    const urlPromises = merged.map(async (item) => {
+      const signedUrl = await getImageSignedUrl(item.image_url);
+      return { id: item.id, url: signedUrl };
+    });
+
+    const urlResults = await Promise.all(urlPromises);
+    const urlMap: { [key: string]: string } = {};
+    urlResults.forEach(({ id, url }) => {
+      if (url) urlMap[id] = url;
+    });
+    setImageUrls(urlMap);
     
     if (showLoading) {
       setLoading(false);
@@ -136,6 +151,9 @@ const HistoryScreen = () => {
   };
 
   const handleItemPress = (item: HistoryItem, currentImageUrl: string) => {
+    trackEvent('history_item_opened', {
+      age_days: Math.floor((Date.now() - new Date(item.created_at).getTime()) / 86400000),
+    });
     navigation.navigate('HistoryResults', { 
       image: currentImageUrl || item.image_url,
       songs: item.songs,

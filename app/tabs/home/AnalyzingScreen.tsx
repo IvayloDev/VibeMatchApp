@@ -3,19 +3,33 @@ import { View, StyleSheet, Image, Animated, Dimensions, Alert, TouchableOpacity,
 import { Text } from 'react-native-paper';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
+import WallSheet from '../../../lib/components/WallSheet';
+import { nextLocalMidnight } from '../../../lib/dailyCredit';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Crypto from 'expo-crypto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '../../../lib/AuthContext';
+import { requireIdentity, refreshCreditState } from '../../../lib/identity';
+import { getCreditState, applyScanCredits } from '../../../lib/creditState';
 import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
-import { deductCredits, refundCredits } from '../../../lib/credits';
+import { describeScanFailure, noMatchFailure, networkScanFailure, imagePrepFailure } from '../../../lib/scanErrors';
+import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
 import { ensureNotificationPermission, rescheduleEngagementReminders } from '../../../lib/notifications';
 import { trackEvent } from '../../../lib/posthog';
+import { addGuestHistoryItem, loadGuestHistory } from '../../../lib/guestHistory';
+import { getDeviceId } from '../../../lib/utils/freeCredits';
+
+// How many past guest matches feed the avoid list. The server keeps its own
+// per-device record, so this only has to cover the very recent ones.
+const GUEST_AVOID_ITEMS = 5;
 
 const { width, height } = Dimensions.get('window');
 
@@ -65,17 +79,79 @@ type AnalyzingNavigationProp = CompositeNavigationProp<
   >
 >;
 
-async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
+/**
+ * Upload the photo and return the storage path.
+ *
+ * Guests get `anonymous/<uuid>/<uuid>.jpg`. The random nested uuid matters:
+ * `anon` now has INSERT-only on the bucket with no read access, so the path
+ * itself is the capability that lets the guest's own thumbnail be signed later
+ * (via the sign-image function). The old `anonymous/<ms>.jpg` scheme was
+ * guessable and is gone.
+ *
+ * Only signed-in users get a signed URL here - they own their folder under RLS.
+ * Guests hand the path to the server instead and it reads the object for them.
+ */
+/** ISO 3166-1 alpha-2 from the device locale, e.g. "en-BG" -> "BG". */
+function deviceMarket(): string | undefined {
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale || '';
+    const m = /[-_]([A-Za-z]{2})(?:[-_]|$)/.exec(locale);
+    return m ? m[1].toUpperCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const SCAN_ID_KEY_PREFIX = '@tunematch_scan_id:';
+
+/**
+ * One scan id per photo, surviving an unmount.
+ *
+ * The server charges against this id and replays the same answer for a repeat,
+ * so it is the difference between a retry costing nothing and costing a second
+ * credit. Minting it in component state would lose it the moment the screen
+ * remounts - an Android back press, a backgrounded app, a navigation retry -
+ * and the next attempt would look like a brand new scan to the server.
+ */
+async function scanIdForImage(imageKey: string): Promise<string> {
+  const key = `${SCAN_ID_KEY_PREFIX}${imageKey}`;
+  try {
+    const existing = await AsyncStorage.getItem(key);
+    if (existing) return existing;
+    const fresh = Crypto.randomUUID().toLowerCase();
+    await AsyncStorage.setItem(key, fresh);
+    return fresh;
+  } catch {
+    // Without persistence a retry may charge twice. Still better than refusing
+    // the scan, and the server's own in-flight guard catches the common case.
+    return Crypto.randomUUID().toLowerCase();
+  }
+}
+
+function buildImagePath(userId?: string): string {
+  // Every install has a uid now, anonymous or not, so there is no guest prefix
+  // to fall back to. The legacy anonymous/<uuid>/<uuid>.jpg branch below is
+  // kept only for the case where an identity genuinely could not be minted,
+  // which is a failure path rather than a normal one.
+  if (userId) return `${userId}/${Date.now()}.jpg`;
+  // Lowercase explicitly: the storage INSERT policy and both edge functions match
+  // this path with a strict lowercase-hex pattern, so an uppercase uuid would be
+  // rejected at upload. randomUUID is already lowercase per spec; this pins it.
+  const seg = () => Crypto.randomUUID().toLowerCase();
+  return `anonymous/${seg()}/${seg()}.jpg`;
+}
+
+async function uploadImageAndGetSignedUrl(localUri: string, userId?: string) {
   const response = await fetch(localUri);
   const blob = await response.blob();
   const reader = new FileReader();
-  
-  return new Promise<{ filePath: string; signedUrl: string }>((resolve, reject) => {
+
+  return new Promise<{ filePath: string; signedUrl: string | null }>((resolve, reject) => {
     reader.onload = async () => {
       try {
         const base64 = reader.result as string;
         const file = base64.split(',')[1];
-        const filePath = `${userId}/${Date.now()}.jpg`;
+        const filePath = buildImagePath(userId);
         const byteArray = Uint8Array.from(atob(file), c => c.charCodeAt(0));
 
         console.log('📤 [Upload] Attempting to upload file to path:', filePath);
@@ -84,7 +160,13 @@ async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
           .from('images')
           .upload(filePath, byteArray, {
             contentType: 'image/jpeg',
-            upsert: true,
+            // Guests must NOT upsert. Upsert makes storage do INSERT ... ON
+            // CONFLICT DO UPDATE, which needs an UPDATE policy, and `anon` is
+            // deliberately INSERT-only now - it used to hold a blanket UPDATE
+            // that let anyone overwrite any user's photo. Guest paths are random
+            // uuids, so there is nothing to overwrite anyway. Signed-in users
+            // own their folder and keep the original behaviour.
+            upsert: !!userId,
           });
 
         if (uploadError) {
@@ -97,6 +179,16 @@ async function uploadImageAndGetSignedUrl(localUri: string, userId: string) {
         
         // Use the actual path returned from upload (in case it was modified)
         const actualFilePath = uploadData?.path || filePath;
+
+        // Guests have no read policy on the bucket, so there is nothing to sign
+        // client-side. The path alone is enough: recommend-songs reads the
+        // object server-side, and the results screen shows the local image.
+        if (!userId) {
+          console.log('✅ [Upload] Guest upload complete, skipping client-side signing');
+          resolve({ filePath: actualFilePath, signedUrl: null });
+          return;
+        }
+
         console.log('🔗 [Upload] Creating signed URL for path:', actualFilePath);
 
         const { data, error: signedUrlError } = await supabase.storage
@@ -147,7 +239,27 @@ const AnalyzingScreen = () => {
   const navigation = useNavigation<AnalyzingNavigationProp>();
   const route = useRoute();
   const { image, selectedVibe, userId, fromOnboarding } = (route.params || {}) as AnalyzingParams;
-  
+
+  // Never render the raw picked file here. Three <Image> of the same uri are
+  // mounted at once on this screen (the blurRadius 80 backdrop, the scanning
+  // preview and the blurRadius 18 reveal overlay), and a blur runs over the
+  // whole decoded bitmap, so the original would be decoded and blurred at full
+  // resolution three times over. The prep is started when the photo is picked
+  // and is finished long before this screen mounts, so the seed below is
+  // normally a hit; in the rare miss the frames render without the photo
+  // rather than with the original.
+  const [displayUri, setDisplayUri] = useState<string | null>(() => peekPreparedImage(image));
+
+  useEffect(() => {
+    let cancelled = false;
+    getPreparedImage(image).then((prepared) => {
+      if (!cancelled && prepared) setDisplayUri(prepared);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
+
   const [progress, setProgress] = useState(0);
   const [activeTagIndex, setActiveTagIndex] = useState(0);
   // Shuffle tags initially for random selection
@@ -168,19 +280,49 @@ const AnalyzingScreen = () => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const pulseDotAnim = useRef(new Animated.Value(1)).current;
 
+  // "Match found" reveal
+  const [matchSong, setMatchSong] = useState<any>(null);
+  // Out-of-matches wall + what it needs to know.
+  const [showWall, setShowWall] = useState(false);
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  // The wall's register upsell asks "has an account", which the route param
+  // never answered correctly in either direction: it was seeded from a
+  // possibly-stale userId, and every guest now has one. Ask AuthContext.
+  const { isRegistered } = useAuth();
+  // Bumped to re-run the blocked scan (after a pack bought from the wall, or
+  // when the user comes back from the paywall).
+  const [scanAttempt, setScanAttempt] = useState(0);
+  const wentToPaywall = useRef(false);
+  const revealBackdrop = useRef(new Animated.Value(0)).current;
+  const checkScale = useRef(new Animated.Value(0.4)).current;
+  const checkOpacity = useRef(new Animated.Value(0)).current;
+  const cardOpacity = useRef(new Animated.Value(0)).current;
+  const cardTranslate = useRef(new Animated.Value(24)).current;
+
+  // The tab bar is hidden here by MainTabs, keyed on the focused route. This
+  // screen used to hide it with parent.setOptions and restore it on blur, and
+  // every possible restore value stripped the navigator's style - see the note
+  // in MainTabs. Nothing here touches the bar now.
+
+  // Back from the paywall the wall sent them to: re-run the gate. A new Pro
+  // or a pack bought there scans right away; otherwise the wall returns.
   useFocusEffect(
     React.useCallback(() => {
-      const parent = navigation.getParent();
-      if (parent) {
-        parent.setOptions({ tabBarStyle: { display: 'none' } });
+      if (wentToPaywall.current) {
+        wentToPaywall.current = false;
+        setScanAttempt((n) => n + 1);
       }
-      return () => {
-        if (parent) {
-          parent.setOptions({ tabBarStyle: { display: 'flex' } });
-        }
-      };
-    }, [navigation])
+    }, [])
   );
+
+  // Same "leave the blocked scan" behavior the native alert used.
+  const leaveBlockedScan = () => {
+    if (fromOnboarding) {
+      (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+    } else {
+      (navigation as any).navigate('Dashboard');
+    }
+  };
 
   // Update ref when tags change
   useEffect(() => {
@@ -296,27 +438,114 @@ const AnalyzingScreen = () => {
       });
     }, 1200);
 
+    // Both the `Analyzing` and `OnboardingAnalyzing` routes render this screen.
+    // The callers used to own the credit check and only VibeSelectionScreen did
+    // it, so the onboarding path handed out free scans. The gate lives here now,
+    // at the one point both routes pass through, and before any upload or model
+    // call so a blocked scan costs nothing.
+    const leaveOnBlocked = fromOnboarding
+      ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
+      : () => (navigation as any).navigate('Dashboard');
+
     const analyzePhoto = async () => {
       let uploadedFilePath: string | null = null;
       const scanStartTime = Date.now();
+
+      // The resize has been running in the background since the photo was
+      // picked; this is the first point the flow actually needs the bytes.
+      // Waiting here instead of on Discover means any leftover wait happens
+      // under the scanning animation, which already looks like work.
+      //
+      // No falling back to the original if it failed: the path (.jpg), the
+      // upload contentType (image/jpeg), the guest storage policy and both edge
+      // functions are all hardcoded for JPEG, so raw HEIC bytes would be stored
+      // mislabelled and come back as an unexplained failure much later.
+      const prepWaitStart = Date.now();
+      const preparedUri = await getPreparedImage(image);
+      const prepWaitMs = Date.now() - prepWaitStart;
+      if (!preparedUri) {
+        const prepFailure = imagePrepFailure();
+        trackEvent('scan_failed', {
+          reason: prepFailure.reason,
+          vibe: selectedVibe,
+          from_onboarding: !!fromOnboarding,
+          duration_ms: Date.now() - scanStartTime,
+        });
+        // Before the gate, so nothing has been read, charged or counted.
+        Alert.alert(prepFailure.title, prepFailure.message, [
+          { text: 'OK', onPress: leaveOnBlocked },
+        ]);
+        return;
+      }
+
+      // The gate is advisory now. The server decides whether this scan can
+      // be paid for, because it is the only party that cannot be lied to, and
+      // it refuses with 402 BEFORE spending anything on the model. Blocking
+      // here as well would mean two sources of truth, and the client's copy is
+      // the one that is wrong when a purchase landed on another device or a
+      // read failed and returned zero.
+      //
+      // What is kept is the reporting: credits_before still describes what the
+      // app believed, which is what makes the funnel readable.
+      const creditsBefore = getCreditState().balance;
+      const isPro = getCreditState().isPro;
+
+      // An identity has to exist before the upload, because the object goes to
+      // this user's own folder and the charge is against this user.
+      const identity = await requireIdentity('scan');
+      if (!identity) {
+        trackEvent('scan_failed', { reason: 'no_identity', vibe: selectedVibe });
+        Alert.alert(
+          "Couldn't Start",
+          "We couldn't set this match up just now. Nothing was used and nothing was charged. Please try again in a moment.",
+          [{ text: 'OK', onPress: leaveOnBlocked }]
+        );
+        return;
+      }
+
       trackEvent('scan_started', {
         vibe: selectedVibe,
         from_onboarding: !!fromOnboarding,
         signed_in: !!userId,
+        // What the CLIENT believed before the scan. Null means it had not
+        // heard from the server yet, which is different from zero and is now
+        // visible as such in the funnel.
+        credits_before: creditsBefore,
+        is_last_credit: creditsBefore === 1,
+        is_pro: isPro,
+        // How long the scan actually had to wait on the background resize.
+        // Should be ~0; anything else means the prep is not keeping up.
+        prep_wait_ms: prepWaitMs,
       });
 
       try {
         setProgress(5);
-        const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(image, userId || 'anonymous');
+        // Derive the owner from the live session rather than the `userId` route
+        // param. The server checks the upload path against the identity in the
+        // Authorization header, so if the param is stale (session expired since
+        // navigation) the two would disagree and the scan would 403.
+        const { data: { session: uploadSession } } = await supabase.auth.getSession();
+        const { filePath, signedUrl } = await uploadImageAndGetSignedUrl(
+          preparedUri,
+          uploadSession?.user?.id
+        );
         uploadedFilePath = filePath;
         setProgress(25);
 
-        // Guest users don't have a Supabase session, so the edge function
-        // cannot look up their taste profile server-side. Pass it inline.
+        // A guest's taste picks live in AsyncStorage, not in
+        // spotify_taste_profiles, so the edge function cannot look them up and
+        // they have to travel inline.
+        //
+        // `!s?.user` stopped meaning "guest" when every install got an
+        // anonymous uid, which silently stopped sending the picks of every
+        // guest who had chosen a taste on the previous build: the server found
+        // no row for their brand new uid and matched them generically from
+        // then on. The server prefers an inline profile over the row, so
+        // sending it is safe even once a row exists.
         let guestTasteProfile: any = null;
         try {
           const { data: { session: s } } = await supabase.auth.getSession();
-          if (!s?.user) {
+          if (!s?.user || s.user.is_anonymous) {
             const { loadGuestTasteProfile } = await import('../../../lib/spotify');
             guestTasteProfile = await loadGuestTasteProfile();
           }
@@ -324,10 +553,52 @@ const AnalyzingScreen = () => {
           console.warn('Could not load guest taste profile:', err);
         }
 
+        // Send the storage path, not a signed URL. The function reads the object
+        // with the service role, so the client needs no read access to storage -
+        // which is what lets guests work with an INSERT-only anon role.
+        // Registered users get their past matches excluded server-side from
+        // the history table. Guests have no row there, so their history goes
+        // up with the request; without it a guest sees the same two songs for
+        // every sunset.
+        let avoidTracks: string[] = [];
+        let avoidArtists: string[] = [];
+        try {
+          const recent = (await loadGuestHistory())
+            .slice(0, GUEST_AVOID_ITEMS)
+            .flatMap((item) => (Array.isArray(item.songs) ? item.songs : []));
+          avoidTracks = Array.from(new Set(recent.map((s) => s?.title).filter((t): t is string => !!t)));
+          avoidArtists = Array.from(new Set(recent.map((s) => s?.artist).filter((a): a is string => !!a)));
+        } catch (err) {
+          console.warn('Could not load guest history for the avoid list:', err);
+        }
+
+        // One id per photo, reused by every retry of that photo, so a repeat
+        // replays the answer already paid for instead of buying a second one.
+        const scanId = await scanIdForImage(preparedUri ?? String(image));
+
         const payload = {
-          imageUrl: signedUrl,
+          imagePath: filePath,
           vibe: selectedVibe,
           tasteProfile: guestTasteProfile ?? undefined,
+          avoidTracks: avoidTracks.length ? avoidTracks : undefined,
+          avoidArtists: avoidArtists.length ? avoidArtists : undefined,
+          // Lets the server exclude what this install was already served,
+          // even after the local history is gone.
+          deviceId: await getDeviceId().catch(() => undefined),
+          // Contract 2 means "charge me server-side". Builds that do not send
+          // it are served under the old rules and charge themselves, which is
+          // the only safe thing to do with a client that re-reads its balance
+          // after the charge and demands its own arithmetic back.
+          contract: 2,
+          scanId,
+          // Minutes to ADD to UTC for local time; getTimezoneOffset has the
+          // opposite sign. Drives the Pro day boundary and next_free_at.
+          tzOffsetMinutes: -new Date().getTimezoneOffset(),
+          // The device's region, so Spotify search runs against the user's own
+          // catalogue. Regional releases are hidden from the unscoped search,
+          // which is where a Bulgarian pick goes missing. Derived from the
+          // locale Hermes already knows; undefined when it has no region.
+          market: deviceMarket(),
         };
         
         let accessToken: string | undefined;
@@ -363,12 +634,7 @@ const AnalyzingScreen = () => {
         }
 
         if (__DEV__) {
-          console.log('[recommend-songs] request', {
-            ...payload,
-            imageUrl: payload.imageUrl
-              ? `${payload.imageUrl.substring(0, 72)}…`
-              : undefined,
-          });
+          console.log('[recommend-songs] request', payload);
         }
 
         const response = await fetch('https://mebjzwwtuzwcrwugxjvu.supabase.co/functions/v1/recommend-songs', {
@@ -400,10 +666,57 @@ const AnalyzingScreen = () => {
         }
         setProgress(90);
 
+        // Out of credits: the wall, not an error dialog. The server refused
+        // before spending anything, so nothing was charged and there is
+        // nothing to apologise for.
+        // The same photo is already running, somewhere. Not an error, and
+        // above all not a second charge: the server refused to start a
+        // duplicate rather than paying for the model twice on one credit.
+        if (response.status === 409 && data?.code === 'scan_in_flight') {
+          trackEvent('scan_in_flight', { vibe: selectedVibe });
+          Alert.alert(
+            'Still Matching',
+            "This photo is already being matched. Give it a moment and check your Vault.",
+            [{ text: 'OK', onPress: leaveOnBlocked }]
+          );
+          return;
+        }
+
+        if (response.status === 402) {
+          applyScanCredits(data?.credits);
+
+          // A subscriber who has used today's matches is not a sales
+          // opportunity. The credit wall would offer them a pack as the
+          // primary action and promise a free match Pro never gets, under a
+          // "Go Pro" button they already pressed.
+          if (getCreditState().isPro) {
+            trackEvent('pro_daily_cap_hit', { from_onboarding: !!fromOnboarding });
+            Alert.alert(
+              "That's today's matches",
+              "You've used all of today's Pro matches. A fresh set unlocks at 9am.",
+              [{ text: 'OK', onPress: leaveOnBlocked }]
+            );
+            return;
+          }
+
+          trackEvent('out_of_credits', {
+            source: 'analyzing_402',
+            credits_balance: data?.credits?.balance ?? 0,
+            from_onboarding: !!fromOnboarding,
+          });
+          setShowWall(true);
+          return;
+        }
+
         if (!response.ok || data.error || !data.songs) {
+          // Not every failure is a missing match: quota exhaustion, Spotify auth
+          // and 5xx all landed here and were reported as "No Matches Found",
+          // blaming the photo for an outage.
+          const failure = describeScanFailure(response.status, data);
           trackEvent('scan_failed', {
-            reason: 'no_matches',
+            reason: failure.reason,
             http_status: response.status,
+            error_code: data?.code ?? data?.details?.error?.code ?? null,
             vibe: selectedVibe,
             duration_ms: Date.now() - scanStartTime,
           });
@@ -418,8 +731,8 @@ const AnalyzingScreen = () => {
                 ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
                 : () => (navigation as any).navigate('Dashboard');
               Alert.alert(
-                'No Matches Found',
-                data.message || 'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
+                failure.title,
+                failure.message,
                 [{ text: 'OK', onPress: fallbackNav }]
               );
             }, 300);
@@ -447,9 +760,10 @@ const AnalyzingScreen = () => {
               const fallbackNav2 = fromOnboarding
                 ? () => (navigation as any).reset({ index: 0, routes: [{ name: 'MainTabs' }] })
                 : () => (navigation as any).navigate('Dashboard');
+              // This one really is a miss: the call succeeded, too little came back.
               Alert.alert(
-                'No Matches Found',
-                'Sorry, we couldn\'t find any matching songs for your request. Your credit has not been charged.',
+                noMatchFailure().title,
+                noMatchFailure().message,
                 [{ text: 'OK', onPress: fallbackNav2 }]
               );
             }, 300);
@@ -462,17 +776,41 @@ const AnalyzingScreen = () => {
           song_count: songs.length,
           from_onboarding: !!fromOnboarding,
           duration_ms: Date.now() - scanStartTime,
+          credits_before: creditsBefore,
+          // Whether the server had a taste profile to tune this match with.
+          has_taste: typeof data?.has_taste === 'boolean' ? data.has_taste : undefined,
         });
 
-        const deductionSuccess = await deductCredits(1);
-        if (deductionSuccess) {
-          console.log('✅ Credit deducted successfully');
+        // No client-side charge. The server took the credit before it spent
+        // anything on the model, and refunded it on every failure path, so by
+        // the time we are here the accounting is already correct.
+        //
+        // What used to be here deducted a credit AFTER a successful match and,
+        // if that write failed, withheld the result the user had just paid
+        // for. Both halves are gone: the deduct because it is the server's
+        // job, and the withholding because there is no longer a case where we
+        // hold a match the user was charged for and refuse to show it.
+        applyScanCredits(data?.credits);
+        // The response carries the balance but not the Pro count; one read
+        // brings the "N of 10 today" on the next screen up to date.
+        refreshCreditState().catch(() => {});
+        if (data?.credits?.balance === 0) {
+          trackEvent('out_of_credits', {
+            source: 'scan_completed',
+            credits_balance: 0,
+            from_onboarding: !!fromOnboarding,
+          });
         }
 
         if (currentUserId && filePath && songs) {
           await supabase.from('history').insert([
             { user_id: currentUserId, image_url: filePath, songs: songs },
           ]);
+        } else if (filePath && songs) {
+          // Guests have no user_id, so the insert above skips them and their
+          // match used to vanish the moment they left the results screen.
+          // Keep it locally instead - HistoryScreen merges this into the Vault.
+          await addGuestHistoryItem(filePath, songs);
         }
 
         // Count this genuine fresh match (drives the once-ever review prompt).
@@ -484,59 +822,89 @@ const AnalyzingScreen = () => {
         // Value-first: only now (after a real success) ask for notification
         // permission, then (re)arm the gentle re-engagement ladder.
         try {
-          await ensureNotificationPermission();
+          await ensureNotificationPermission('post_match');
           await rescheduleEngagementReminders();
         } catch {}
 
         setProgress(95);
-
         setProgress(100);
-        
+
+        // A fresh match belongs to the Discover flow, not the Vault. It used
+        // to be pushed onto the History stack, which parked that tab on a
+        // result: tapping Vault days later reopened the first match instead of
+        // the list, and the Vault tab sat highlighted while you looked at a
+        // brand new match. The Vault stack is now only ever the archive.
+        const resultParams = {
+          // Guests get no signed URL; the local photo is already on screen and
+          // is what the results view should show. Use the prepared copy, which
+          // is also the object that was just uploaded.
+          image: signedUrl ?? preparedUri,
+          songs,
+          imagePath: uploadedFilePath ?? undefined,
+          fromFreshMatch: true,
+        };
+
+        const goToResults = () => {
+          if (fromOnboarding) {
+            // From root stack (OnboardingAnalyzing) - reset nav to MainTabs
+            // with the Discover tab showing the result.
+            (navigation as any).reset({
+              index: 0,
+              routes: [{
+                name: 'MainTabs',
+                params: {
+                  screen: 'Home',
+                  params: {
+                    screen: 'Results',
+                    params: { ...resultParams, fromOnboarding: true },
+                  },
+                },
+              }],
+            });
+          } else {
+            // Reset rather than push, so Analyzing is not left underneath:
+            // back from the result goes to the Dashboard, never to a spinner
+            // for a match that already finished.
+            (navigation as any).reset({
+              index: 1,
+              routes: [
+                { name: 'Dashboard' },
+                { name: 'Results', params: resultParams },
+              ],
+            });
+          }
+        };
+
+        // Finish the bar, then play the "Match found" reveal before handing off.
         Animated.timing(progressAnim, {
           toValue: 100,
-          duration: 500,
+          duration: 350,
           useNativeDriver: false,
         }).start(() => {
-          setTimeout(() => {
-            if (fromOnboarding) {
-              // From root stack (OnboardingAnalyzing) — reset nav to MainTabs
-              // with History tab pre-showing results
-              (navigation as any).reset({
-                index: 0,
-                routes: [{
-                  name: 'MainTabs',
-                  params: {
-                    screen: 'History',
-                    params: {
-                      screen: 'HistoryResults',
-                      params: {
-                        image: signedUrl,
-                        songs,
-                        imagePath: uploadedFilePath ?? undefined,
-                        fromOnboarding: true,
-                        fromFreshMatch: true,
-                      },
-                    },
-                  },
-                }],
-              });
-            } else {
-              (navigation as any).navigate('History', {
-                screen: 'HistoryResults',
-                params: {
-                  image: signedUrl,
-                  songs: songs,
-                  imagePath: uploadedFilePath ?? undefined,
-                  fromFreshMatch: true,
-                }
-              });
-            }
-          }, 300);
+          setMatchSong(songs[0] || { title: 'Match found', artist: '' });
+          triggerHaptic('success');
+          scanningLoop.stop();
+          cornerPulseLoop.stop();
+          pulseDotLoop.stop();
+          Animated.sequence([
+            Animated.timing(revealBackdrop, { toValue: 1, duration: 260, useNativeDriver: true }),
+            Animated.parallel([
+              Animated.spring(checkScale, { toValue: 1, friction: 5, tension: 130, useNativeDriver: true }),
+              Animated.timing(checkOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+            ]),
+            Animated.delay(160),
+            Animated.parallel([
+              Animated.timing(cardOpacity, { toValue: 1, duration: 320, useNativeDriver: true }),
+              Animated.spring(cardTranslate, { toValue: 0, friction: 7, tension: 80, useNativeDriver: true }),
+            ]),
+            Animated.delay(850),
+          ]).start(() => goToResults());
         });
       } catch (error) {
         console.log('Error during analysis:', error);
+        const netFailure = networkScanFailure();
         trackEvent('scan_failed', {
-          reason: 'error',
+          reason: netFailure.reason,
           error_message: error instanceof Error ? error.message : String(error),
           vibe: selectedVibe,
           duration_ms: Date.now() - scanStartTime,
@@ -549,7 +917,7 @@ const AnalyzingScreen = () => {
         }).start(() => {
           setTimeout(() => {
             if (fromOnboarding) {
-              // Don't leave user stuck — onboarding already marked complete, go to app
+              // Don't leave user stuck - onboarding already marked complete, go to app
               Alert.alert(
                 'Analysis Failed',
                 'We couldn\'t analyze your photo this time. You can try again from the app!',
@@ -557,8 +925,8 @@ const AnalyzingScreen = () => {
               );
             } else {
               Alert.alert(
-                'Analysis Failed',
-                'Sorry, we encountered an error while analyzing your photo. Your credit has not been charged. Please try again.',
+                netFailure.title,
+                netFailure.message,
                 [{ text: 'OK', onPress: () => (navigation as any).navigate('Dashboard') }]
               );
             }
@@ -575,7 +943,7 @@ const AnalyzingScreen = () => {
       cornerPulseLoop.stop();
       pulseDotLoop.stop();
     };
-  }, [navigation, image, selectedVibe, userId, fromOnboarding]);
+  }, [navigation, image, selectedVibe, userId, fromOnboarding, scanAttempt]);
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -602,7 +970,9 @@ const AnalyzingScreen = () => {
       <View style={styles.backgroundBlur2} />
       {/* Background with blurred image overlay */}
       <View style={styles.backgroundImageContainer}>
-        <Image source={{ uri: image }} style={styles.backgroundImage} blurRadius={80} />
+        {displayUri ? (
+          <Image source={{ uri: displayUri }} style={styles.backgroundImage} blurRadius={80} />
+        ) : null}
         <LinearGradient
           colors={[DesignColors.backgroundDark + '60', DesignColors.backgroundDark + '80', DesignColors.backgroundDark]}
           start={{ x: 0, y: 0 }}
@@ -635,7 +1005,7 @@ const AnalyzingScreen = () => {
           <View style={styles.mainContent}>
             {/* Image with scanning line and corner boxes */}
             <View style={[styles.imageContainer, { width: imageSize, height: imageSize * 1.25 }]}>
-              <Image source={{ uri: image }} style={styles.image} />
+              {displayUri ? <Image source={{ uri: displayUri }} style={styles.image} /> : null}
               <View style={styles.imageOverlay} />
               
               {/* Scanning line */}
@@ -682,7 +1052,7 @@ const AnalyzingScreen = () => {
             {/* Title and Description */}
             <View style={styles.textContainer}>
               <Text style={styles.mainTitle}>Analyzing the Vibe...</Text>
-              <Text style={styles.subtitle}>Reading the mood and atmosphere</Text>
+              <Text style={styles.subtitle}>Matching the mood and atmosphere</Text>
             </View>
 
             {/* Cycling Tags */}
@@ -759,6 +1129,60 @@ const AnalyzingScreen = () => {
           </View>
         </Animated.View>
       </SafeAreaView>
+
+      {matchSong && (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.revealOverlay, { opacity: revealBackdrop }]}>
+          {displayUri ? (
+            <Image source={{ uri: displayUri }} style={StyleSheet.absoluteFill} blurRadius={18} />
+          ) : null}
+          <View style={styles.revealScrim} />
+          <View style={styles.revealCenter}>
+            <Animated.View style={[styles.checkCircle, { opacity: checkOpacity, transform: [{ scale: checkScale }] }]}>
+              <MaterialCommunityIcons name="check" size={40} color="#FFFFFF" />
+            </Animated.View>
+            <Animated.View style={{ opacity: cardOpacity, transform: [{ translateY: cardTranslate }], alignItems: 'center' }}>
+              <Text style={styles.revealEyebrow}>MATCH FOUND</Text>
+              {matchSong.album_cover ? (
+                <Image source={{ uri: matchSong.album_cover }} style={styles.revealArt} />
+              ) : (
+                <View style={[styles.revealArt, styles.revealArtFallback]}>
+                  <MaterialCommunityIcons name="music-note" size={44} color="rgba(255,255,255,0.6)" />
+                </View>
+              )}
+              <Text style={styles.revealTitle} numberOfLines={1}>{matchSong.title}</Text>
+              {!!matchSong.artist && <Text style={styles.revealArtist} numberOfLines={1}>{matchSong.artist}</Text>}
+            </Animated.View>
+          </View>
+        </Animated.View>
+      )}
+
+      <WallSheet
+        visible={showWall}
+        source="analyzing_gate"
+        credits={0}
+        nextFreeAt={nextFreeAt}
+        isAuthenticated={isRegistered}
+        isPro={getCreditState().isPro}
+        onClose={() => {
+          setShowWall(false);
+          leaveBlockedScan();
+        }}
+        onBoughtPack={() => {
+          // Paid for matches with the photo still on screen: run the scan now.
+          setShowWall(false);
+          setScanAttempt((n) => n + 1);
+        }}
+        onGoPro={() => {
+          setShowWall(false);
+          wentToPaywall.current = true;
+          (navigation as any).navigate('Payment');
+        }}
+        onRegister={() => {
+          setShowWall(false);
+          wentToPaywall.current = true;
+          (navigation as any).navigate('SignUp');
+        }}
+      />
     </View>
   );
 };
@@ -770,6 +1194,64 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+  },
+  revealOverlay: {
+    zIndex: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: DesignColors.backgroundDark,
+  },
+  revealScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(20,10,16,0.74)',
+  },
+  revealCenter: {
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  checkCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: DesignColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28,
+    shadowColor: DesignColors.primary,
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  revealEyebrow: {
+    color: '#FF7FB0',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 2,
+    marginBottom: 16,
+  },
+  revealArt: {
+    width: 150,
+    height: 150,
+    borderRadius: 18,
+    marginBottom: 20,
+    backgroundColor: '#2a1521',
+  },
+  revealArtFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  revealTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+    textAlign: 'center',
+  },
+  revealArtist: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 15,
+    marginTop: 4,
+    textAlign: 'center',
   },
   backgroundImageContainer: {
     ...StyleSheet.absoluteFillObject,

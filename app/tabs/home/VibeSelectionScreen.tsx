@@ -14,9 +14,16 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getUserCredits } from '../../../lib/credits';
+import { getCreditState } from '../../../lib/creditState';
+import { trackEvent } from '../../../lib/posthog';
+import { hasProEntitlement } from '../../../lib/revenuecat';
+import { PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
+import WallSheet from '../../../lib/components/WallSheet';
+import { nextLocalMidnight } from '../../../lib/dailyCredit';
+import { useAuth } from '../../../lib/AuthContext';
+import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 
 const { width, height } = Dimensions.get('window');
 
@@ -29,6 +36,7 @@ const DesignColors = {
 type RootStackParamList = {
   Analyzing: { image: string; selectedVibe?: string };
   Payment: undefined;
+  SignUp: undefined;
 };
 
 type RouteParams = {
@@ -42,10 +50,31 @@ const VibeSelectionScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { image } = (route.params || {}) as RouteParams;
+  const { user, isRegistered } = useAuth();
 
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showWall, setShowWall] = useState(false);
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // The route param is the raw picked file, so the push could start on the
+  // frame after the picker closed. Show it immediately, then swap to the
+  // resized copy the moment it lands so this screen is not holding a
+  // full-resolution bitmap for the rest of the flow. In practice the prep has
+  // already finished by the time this screen mounts and the seed below is a
+  // hit, so no swap happens at all.
+  const [displayUri, setDisplayUri] = useState<string>(() => peekPreparedImage(image) ?? image);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPreparedImage(image).then((prepared) => {
+      if (!cancelled && prepared) setDisplayUri(prepared);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -59,16 +88,18 @@ const VibeSelectionScreen = () => {
     if (!selectedVibe) return;
     try {
       setLoading(true);
-      const currentCredits = await getUserCredits();
-      if (currentCredits < 1) {
-        Alert.alert(
-          'No Credits Available',
-          'You need at least 1 credit to analyze a photo. Would you like to purchase more credits?',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Buy Credits', onPress: () => navigation.navigate('Payment') },
-          ]
-        );
+      // An early exit only, and only when we are sure. The server is what
+      // actually refuses a scan it cannot charge for, and it does so before
+      // spending anything, so a user whose balance we could not read still
+      // reaches their match instead of being walled on a guess.
+      //
+      // No daily claim here either: granting credits is the server's job now,
+      // and doing it on a screen transition is what used to write a 1 over a
+      // real balance.
+      const { balance, isPro, source } = getCreditState();
+      if (!isPro && source === 'server' && balance === 0) {
+        trackEvent('out_of_credits', { source: 'vibe_selection', credits_balance: 0 });
+        setShowWall(true);
         return;
       }
       navigation.navigate('Analyzing', { image, selectedVibe });
@@ -84,7 +115,6 @@ const VibeSelectionScreen = () => {
     (navigation as any).goBack();
   };
 
-  const previewHeight = width * 0.42;
 
   return (
     <View style={styles.container}>
@@ -107,7 +137,7 @@ const VibeSelectionScreen = () => {
           </View>
 
           {/* Image preview */}
-          <View style={[styles.previewWrapper, { height: previewHeight }]}>
+          <View style={styles.previewWrapper}>
             <View style={styles.previewBorder}>
               <LinearGradient
                 colors={[DesignColors.primary + '60', 'transparent']}
@@ -116,8 +146,8 @@ const VibeSelectionScreen = () => {
                 style={StyleSheet.absoluteFill}
               />
               <View style={styles.previewInner}>
-                {image ? (
-                  <Image source={{ uri: image }} style={styles.previewImage} />
+                {displayUri ? (
+                  <Image source={{ uri: displayUri }} style={styles.previewImage} />
                 ) : null}
                 <LinearGradient
                   colors={[DesignColors.backgroundDark + 'CC', 'transparent']}
@@ -133,7 +163,13 @@ const VibeSelectionScreen = () => {
           <Text style={styles.subtitle}>Choose your mood</Text>
 
           {/* Vibe grid 2x2 (shared component) */}
-          <VibeGrid selected={selectedVibe} onSelect={setSelectedVibe} />
+          <VibeGrid
+            selected={selectedVibe}
+            onSelect={(id) => {
+              trackEvent('vibe_selected', { vibe: id, from_onboarding: false });
+              setSelectedVibe(id);
+            }}
+          />
 
           {/* Continue button */}
           <View style={styles.footer}>
@@ -169,6 +205,29 @@ const VibeSelectionScreen = () => {
           </View>
         </Animated.View>
       </SafeAreaView>
+
+      <WallSheet
+        visible={showWall}
+        source="vibe_selection"
+        credits={0}
+        nextFreeAt={nextFreeAt}
+        isAuthenticated={isRegistered}
+        isPro={false}
+        onClose={() => setShowWall(false)}
+        onBoughtPack={() => {
+          // The photo and mood are already chosen - straight into the scan.
+          setShowWall(false);
+          navigation.navigate('Analyzing', { image, selectedVibe: selectedVibe ?? undefined });
+        }}
+        onGoPro={() => {
+          setShowWall(false);
+          navigation.navigate('Payment');
+        }}
+        onRegister={() => {
+          setShowWall(false);
+          navigation.navigate('SignUp');
+        }}
+      />
     </View>
   );
 };
@@ -234,6 +293,11 @@ const styles = StyleSheet.create({
   },
   previewWrapper: {
     width: '100%',
+    // Absorb whatever vertical space is left after the header, mood grid and
+    // CTA, so the photo reads like the results hero and the page never needs to
+    // scroll - on a short screen the image shrinks instead of pushing content off.
+    flex: 1,
+    minHeight: 120,
     marginBottom: Spacing.lg,
   },
   previewBorder: {
@@ -266,7 +330,9 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
+    // Clear the floating bottom tab bar, which overlays this screen - otherwise
+    // the flexed photo pushes the CTA underneath it.
+    paddingBottom: 70,
   },
   continueButton: {
     borderRadius: 9999,

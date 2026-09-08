@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Platform, StyleSheet } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { CommonActions } from '@react-navigation/native';
+import { CommonActions, StackActions, getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { LinearGradientFallback as LinearGradient } from '../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -16,6 +16,34 @@ import { Colors, Spacing, BorderRadius, Shadows } from '../../lib/designSystem';
 import { triggerHaptic } from '../../lib/utils/haptics';
 
 const Tab = createBottomTabNavigator();
+
+const TAB_BAR_STYLE = {
+  position: 'absolute' as const,
+  bottom: 0,
+  left: 0,
+  right: 0,
+  backgroundColor: 'transparent',
+  borderTopWidth: 0,
+  elevation: 0,
+  height: Platform.OS === 'ios' ? 90 : 80,
+  paddingBottom: Platform.OS === 'ios' ? 24 : 12,
+  paddingTop: Spacing.xs,
+  paddingHorizontal: Spacing.lg,
+};
+
+/**
+ * Which nested screens run without the bar: the scan itself, and a Results
+ * view reached from onboarding, whose only way forward is its own footer.
+ */
+function tabBarHiddenFor(route: any): boolean {
+  const focused = getFocusedRouteNameFromRoute(route);
+  if (focused === 'Analyzing') return true;
+  if (focused === 'Results') {
+    const nested = route?.state?.routes?.[route.state.index ?? 0];
+    return nested?.params?.fromOnboarding === true;
+  }
+  return false;
+}
 const HomeStack = createNativeStackNavigator();
 const HistoryStack = createNativeStackNavigator();
 const ProfileStack = createNativeStackNavigator();
@@ -75,19 +103,17 @@ const MainTabs = () => {
       initialRouteName="Home"
       screenOptions={({ route }) => ({
           headerShown: false,
-          tabBarStyle: {
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            backgroundColor: 'transparent',
-            borderTopWidth: 0,
-            elevation: 0,
-            height: Platform.OS === 'ios' ? 90 : 80,
-            paddingBottom: Platform.OS === 'ios' ? 24 : 12,
-            paddingTop: Spacing.xs,
-            paddingHorizontal: Spacing.lg,
-          },
+          // The navigator decides when the bar is hidden, from the focused
+          // nested route. Screens used to call parent.setOptions({tabBarStyle})
+          // to hide it and then "restore" it, and every restore stripped the
+          // bar: React Navigation spreads per-screen options over these, so
+          // both { display: 'flex' } and undefined REPLACE this style object
+          // rather than falling back to it. The result was a stock, unpadded,
+          // opaque bar on the Home tab after every scan - until the Discover
+          // tabPress reset recreated the route and snapped it back, which is
+          // the "bar changes when I tap Discover" symptom. With the decision
+          // here there is no restore step, so nothing can leak.
+          tabBarStyle: tabBarHiddenFor(route) ? { display: 'none' } : TAB_BAR_STYLE,
           tabBarBackground: () => (
             <View style={{ 
               flex: 1, 
@@ -121,12 +147,14 @@ const MainTabs = () => {
             let iconName: string;
             let iconSize = 28;
 
+            // Icons matched to the results-redesign reference: concentric rings
+            // for Discover, stacked list lines for Vault, pie for Profile.
             if (route.name === 'Home') {
-              iconName = 'compass';
+              iconName = 'circle-double';
             } else if (route.name === 'History') {
-              iconName = 'clock-outline';
+              iconName = 'view-list-outline';
             } else if (route.name === 'Profile') {
-              iconName = 'account-circle-outline';
+              iconName = 'circle-slice-2';
             } else {
               iconName = 'circle';
             }
@@ -201,19 +229,17 @@ const MainTabs = () => {
           tabBarLabel: 'Vault',
         }}
         listeners={({ navigation }) => ({
-          tabPress: (e) => {
+          tabPress: () => {
             triggerHaptic('light');
-            // Always navigate to History list screen when tab is pressed
-            // Use nested navigation to go to the History screen in the History stack
-            const state = navigation.getState();
-            const historyTab = state.routes.find((r: any) => r.name === 'History');
-            
-            if (historyTab?.state) {
-              const currentRoute = historyTab.state.routes[historyTab.state.index];
-              if (currentRoute.name !== 'History') {
-                // Navigate to History screen in the History stack
-                navigation.navigate('History', { screen: 'History' });
-              }
+            // The Vault always opens on the list. Open a match, switch tabs,
+            // come back a day later and the stack would otherwise still be
+            // sitting on that one result, which reads as the app being stuck.
+            const historyTab = navigation
+              .getState()
+              .routes.find((r: any) => r.name === 'History');
+            const stack = historyTab?.state as any;
+            if (stack?.key && (stack.index ?? 0) > 0) {
+              navigation.dispatch({ ...StackActions.popToTop(), target: stack.key });
             }
           },
         })}

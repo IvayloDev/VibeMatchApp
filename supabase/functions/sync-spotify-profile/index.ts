@@ -5,6 +5,10 @@
 // profile persisted in spotify_taste_profiles.
 // Guest users: client sends access_token + refresh_token inline; server returns the
 // derived profile for the client to cache locally.
+//
+// If every Spotify call answers 403 (the app is in Development mode and the account is not
+// on its allowlist) the function responds 403 { error: "spotify_not_allowlisted",
+// code: "spotify_not_allowlisted", spotify_status_summary: { path: status } } and saves nothing.
 
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -26,15 +30,21 @@ const SPOTIFY_API = "https://api.spotify.com/v1";
 type CompactArtist = { id: string; name: string; genres: string[]; image: string | null };
 type CompactTrack = { id: string; name: string; artist: string; image: string | null };
 
-async function spotifyGet(path: string, token: string): Promise<any | null> {
+type SpotifyResult = { status: number; data: any | null };
+
+// Returns the HTTP status next to the body so buildTasteProfile can tell an
+// empty library (2xx, no items) from a refused account (403 on every call
+// while the Spotify app is in Development mode and the account is not on
+// its allowlist).
+async function spotifyGet(path: string, token: string): Promise<SpotifyResult> {
   const resp = await fetch(`${SPOTIFY_API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!resp.ok) {
     console.warn(`⚠️ Spotify ${path} -> ${resp.status}`);
-    return null;
+    return { status: resp.status, data: null };
   }
-  return await resp.json();
+  return { status: resp.status, data: await resp.json() };
 }
 
 async function refreshIfNeeded(
@@ -96,15 +106,27 @@ function deriveTopGenres(artists: CompactArtist[]): string[] {
     .map(([g]) => g);
 }
 
+const TASTE_PATHS = [
+  "/me/top/artists?time_range=short_term&limit=20",
+  "/me/top/artists?time_range=medium_term&limit=30",
+  "/me/top/tracks?time_range=short_term&limit=20",
+  "/me/top/tracks?time_range=medium_term&limit=30",
+  "/me/player/recently-played?limit=30",
+  "/me/tracks?limit=30",
+];
+
 async function buildTasteProfile(accessToken: string) {
-  const [topShort, topMedium, topTracksShort, topTracksMedium, recent, saved] = await Promise.all([
-    spotifyGet("/me/top/artists?time_range=short_term&limit=20", accessToken),
-    spotifyGet("/me/top/artists?time_range=medium_term&limit=30", accessToken),
-    spotifyGet("/me/top/tracks?time_range=short_term&limit=20", accessToken),
-    spotifyGet("/me/top/tracks?time_range=medium_term&limit=30", accessToken),
-    spotifyGet("/me/player/recently-played?limit=30", accessToken),
-    spotifyGet("/me/tracks?limit=30", accessToken),
-  ]);
+  const results = await Promise.all(TASTE_PATHS.map((path) => spotifyGet(path, accessToken)));
+
+  // path -> HTTP status, so the handler can refuse the whole sync when Spotify
+  // refused every call instead of saving an empty profile as a success.
+  const statuses: Record<string, number> = {};
+  TASTE_PATHS.forEach((path, i) => {
+    statuses[path] = results[i].status;
+  });
+
+  const [topShort, topMedium, topTracksShort, topTracksMedium, recent, saved] =
+    results.map((r) => r.data);
 
   const artistsMap = new Map<string, CompactArtist>();
   for (const a of [...(topShort?.items ?? []), ...(topMedium?.items ?? [])]) {
@@ -130,7 +152,10 @@ async function buildTasteProfile(accessToken: string) {
 
   const topGenres = deriveTopGenres(topArtists);
 
-  return { topArtists, topTracks, recentlyPlayed, savedTracks, topGenres };
+  return {
+    profile: { topArtists, topTracks, recentlyPlayed, savedTracks, topGenres },
+    statuses,
+  };
 }
 
 serve(async (req) => {
@@ -215,7 +240,23 @@ serve(async (req) => {
   if (!accessToken) return json({ error: "No access token" }, 401);
 
   try {
-    const profile = await buildTasteProfile(accessToken);
+    const { profile, statuses } = await buildTasteProfile(accessToken);
+
+    // Every call answered 403: the account is not on the Development-mode
+    // allowlist, so there is no listening data to save. Report it instead of
+    // upserting an empty profile that the app would mistake for a connected
+    // user with an empty library. A single successful call is enough to
+    // proceed as before.
+    const statusList = Object.values(statuses);
+    const allForbidden = statusList.length > 0 && statusList.every((status) => status === 403);
+    if (allForbidden) {
+      console.warn("⚠️ Spotify answered 403 to every taste call, account not on the app allowlist:", statuses);
+      return json({
+        error: "spotify_not_allowlisted",
+        code: "spotify_not_allowlisted",
+        spotify_status_summary: statuses,
+      }, 403);
+    }
 
     if (userId && admin) {
       const { error: upsertError } = await admin.from("spotify_taste_profiles").upsert({
