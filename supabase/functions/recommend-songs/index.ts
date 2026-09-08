@@ -471,6 +471,12 @@ function shippedSong(rec: any, track: any) {
     // describe a song we are not showing. Nothing on the client reads them.
     mood_tags: kind === "exact" ? rec.mood_tags : [],
     match_kind: kind,
+    // What the model asked for, kept beside what shipped. On a substitution
+    // this is the only record of the title that failed to resolve, and it is
+    // what distinguishes "the model invents titles for this artist" from "the
+    // track exists and search cannot see it" - two problems with different
+    // fixes. Nothing on the client renders it.
+    requested: { title: rec?.title ?? null, artist: rec?.artist ?? null },
     language: "en",
     spotify_url: track.external_urls?.spotify || `https://open.spotify.com/track/${track.id}`,
     album_cover: track.album?.images?.[0]?.url,
@@ -1816,6 +1822,9 @@ serve(async (req) => {
     exact: shipped.filter((s: any) => s.match_kind === "exact").length,
     artist: shipped.filter((s: any) => s.match_kind !== "exact").length,
     failed: failedSongs.length,
+    // The picks that resolved to nothing, so a stored result says what was
+    // asked for and not merely how many were lost.
+    unresolved: failedSongs.map((r: any) => ({ title: r?.title ?? null, artist: r?.artist ?? null })),
   };
   const usage = openaiUsage
     ? { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens }
