@@ -25,6 +25,8 @@ import { OB, OnboardingFooter } from '../../../lib/components/OnboardingChrome';
 import { triggerHaptic } from '../../../lib/utils/haptics';
 import { maybeRequestReview } from '../../../lib/reviewPrompt';
 import { trackEvent } from '../../../lib/posthog';
+import { subscribeToCredits } from '../../../lib/creditState';
+import OutOfMatchesCard from '../../../lib/components/OutOfMatchesCard';
 import { isGuestHistoryId, removeGuestHistoryItem } from '../../../lib/guestHistory';
 import { TrackPreviewProvider } from '../../../lib/trackPreview';
 import { TrackPreviewButton } from '../../../lib/components/TrackPreviewButton';
@@ -90,6 +92,18 @@ const ResultsScreen = () => {
   const route = useRoute();
   const navigation = useNavigation<ResultsNavigationProp>();
   const insets = useSafeAreaInsets();
+  // The balance after this scan, straight from the response the server sent.
+  // Only a FRESH match can be somebody's last one; re-reading an old match
+  // from the Vault must never turn into a sales pitch.
+  const [creditsLeft, setCreditsLeft] = useState<number | null>(null);
+  const [creditsArePro, setCreditsArePro] = useState(false);
+  const [nextFreeAt, setNextFreeAt] = useState<Date | null>(null);
+  useEffect(() => subscribeToCredits((state) => {
+    setCreditsLeft(state.source === 'server' ? state.balance : null);
+    setCreditsArePro(state.isPro);
+    setNextFreeAt(state.nextFreeAt);
+  }), []);
+
   const { image, songs = [], historyItemId, imagePath, fromOnboarding, fromFreshMatch } =
     (route.params || {}) as ResultsParams;
 
@@ -404,6 +418,21 @@ const ResultsScreen = () => {
                   </View>
                 ))}
               </View>
+            ) : null}
+            {/* The pitch goes here, under a result they are still looking at,
+                rather than as a dialog when they try to navigate away. Tapping
+                Vault after a match is somebody going to look at the thing they
+                just made; interrupting that is the worst moment to sell. */}
+            {fromFreshMatch && !creditsArePro && creditsLeft === 0 ? (
+              <OutOfMatchesCard
+                variant="results"
+                nextFreeAt={nextFreeAt}
+                style={{ marginTop: 22 }}
+                onBuy={() => {
+                  trackEvent('paywall_cta_tapped', { source: 'results_last_match' });
+                  (navigation as any).navigate('Payment');
+                }}
+              />
             ) : null}
           </Animated.View>
         </ScrollView>

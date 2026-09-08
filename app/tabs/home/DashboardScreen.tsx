@@ -479,7 +479,14 @@ const DashboardScreen = () => {
                       end={{ x: 1, y: 1 }}
                       style={styles.ctaButtonGradient}
                     >
-                      <Text style={styles.ctaButtonText}>OPEN GALLERY</Text>
+                      {/* The label has to describe what the button does. When
+                          there are no matches left this opens the wall, not
+                          the picker, and telling someone "OPEN GALLERY" under
+                          a line that says their next match is tomorrow is the
+                          app contradicting itself in two adjacent sentences. */}
+                      <Text style={styles.ctaButtonText}>
+                        {outOfMatches ? 'GET MORE MATCHES' : 'OPEN GALLERY'}
+                      </Text>
                     </LinearGradient>
                   </TouchableOpacity>
                 </Animated.View>
