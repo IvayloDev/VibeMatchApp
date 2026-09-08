@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { AppState } from 'react-native';
 import { bindAuthRefreshToAppState } from './lib/supabase';
+import { setProFromClient } from './lib/creditState';
+import { bootstrapSession } from './lib/identity';
 import { NavigationContainer, DefaultTheme, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Provider as PaperProvider, MD3DarkTheme } from 'react-native-paper';
@@ -17,7 +19,7 @@ import PaymentScreen from './app/payment/PaymentScreen';
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import LoadingScreen from './lib/LoadingScreen';
 import { Colors } from './lib/designSystem';
-import { initRevenueCat, identifyUser, logOutUser, reconcileProAfterLogin } from './lib/revenuecat';
+import { initRevenueCat, identifyUser, logOutUser, reconcileProAfterLogin, subscribeToProStatus } from './lib/revenuecat';
 import { identifyUser as posthogIdentify, resetUser as posthogReset, trackScreen } from './lib/posthog';
 import { rescheduleEngagementReminders } from './lib/notifications';
 import { primeFeatureFlags, isSpotifyConnectEnabled } from './lib/featureFlags';
@@ -155,6 +157,19 @@ function AppContent() {
   // resumed app carries an expired token and 401s until something forces a
   // refresh, which now means a guest whose own account looks unreachable.
   React.useEffect(() => bindAuthRefreshToAppState(), []);
+
+  // Pro status, the instant RevenueCat knows it, from anywhere in the app.
+  //
+  // The purchase screens ask the server to re-read RevenueCat when a purchase
+  // finishes, but that is one path and it is asynchronous. This listener fires
+  // on every customer-info change - a purchase, a restore, a renewal, a
+  // subscription bought on another device - so the UI flips immediately and
+  // the server is asked to catch up in the same breath. Without it there is a
+  // window where somebody who has just paid is still being sold Pro.
+  React.useEffect(() => subscribeToProStatus((isPro) => {
+    setProFromClient(isPro);
+    if (isPro) void bootstrapSession();
+  }), []);
 
   // Navigate based on auth + Spotify connection state.
   // onboardingComplete intentionally excluded from deps — changes to it are handled

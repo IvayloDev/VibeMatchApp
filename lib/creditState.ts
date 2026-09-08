@@ -73,6 +73,19 @@ export function markCreditsStale() {
   if (state.source === 'server') publish({ ...state, source: 'stale' });
 }
 
+/**
+ * RevenueCat told us the subscription changed, on this device, right now.
+ *
+ * This moves `isPro` only. It is a UI fact, not an authorisation: the server
+ * still decides what a scan costs, and it decides from its own RevenueCat
+ * lookup. But a subscriber must never be shown "Go Pro" for the seconds it
+ * takes the server to agree, so the moment the SDK knows, the app knows.
+ */
+export function setProFromClient(isPro: boolean) {
+  if (state.isPro === isPro) return;
+  publish({ ...state, isPro });
+}
+
 /** On sign-out or identity change, the old balance belongs to somebody else. */
 export function resetCreditState() {
   publish({ balance: null, isPro: false, nextFreeAt: null, source: 'unknown' });
