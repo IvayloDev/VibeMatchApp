@@ -91,6 +91,17 @@ type AnalyzingNavigationProp = CompositeNavigationProp<
  * Only signed-in users get a signed URL here - they own their folder under RLS.
  * Guests hand the path to the server instead and it reads the object for them.
  */
+/** ISO 3166-1 alpha-2 from the device locale, e.g. "en-BG" -> "BG". */
+function deviceMarket(): string | undefined {
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale || '';
+    const m = /[-_]([A-Za-z]{2})(?:[-_]|$)/.exec(locale);
+    return m ? m[1].toUpperCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const SCAN_ID_KEY_PREFIX = '@tunematch_scan_id:';
 
 /**
@@ -583,6 +594,11 @@ const AnalyzingScreen = () => {
           // Minutes to ADD to UTC for local time; getTimezoneOffset has the
           // opposite sign. Drives the Pro day boundary and next_free_at.
           tzOffsetMinutes: -new Date().getTimezoneOffset(),
+          // The device's region, so Spotify search runs against the user's own
+          // catalogue. Regional releases are hidden from the unscoped search,
+          // which is where a Bulgarian pick goes missing. Derived from the
+          // locale Hermes already knows; undefined when it has no region.
+          market: deviceMarket(),
         };
         
         let accessToken: string | undefined;
