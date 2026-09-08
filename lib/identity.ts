@@ -180,6 +180,38 @@ async function postJson(fn: string, token: string, body: unknown): Promise<any |
   }
 }
 
+/**
+ * Ask the server to re-read RevenueCat for this user and write what it finds.
+ *
+ * Call it after any purchase. session-bootstrap does its own
+ * /v1/subscribers/{uid} lookup, so this does not trust the client's word about
+ * what was bought - it just tells the server that now is a good moment to
+ * look. That means a subscription becomes real server-side immediately rather
+ * than whenever the webhook happens to arrive, and it self-heals if the
+ * webhook never does.
+ */
+export async function bootstrapSession(): Promise<void> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) return;
+    const result = await postJson('session-bootstrap', token, {
+      deviceId: await getDeviceId(),
+      starterMarkerPresent: await starterMarkerPresent(),
+      tzOffsetMinutes: tzOffsetMinutes(),
+    });
+    if (result?.balance !== undefined) {
+      setServerCredits({
+        balance: result.balance,
+        isPro: result.is_pro,
+        nextFreeAt: result.next_free_at,
+      });
+    }
+  } catch (error) {
+    console.warn('[identity] bootstrapSession failed:', error);
+  }
+}
+
 /** Refresh the balance from the server for whoever is currently signed in. */
 export async function refreshCreditState(): Promise<void> {
   try {
@@ -192,6 +224,23 @@ export async function refreshCreditState(): Promise<void> {
       isPro: row.is_pro,
       nextFreeAt: row.next_free_at,
     });
+
+    // The client's RevenueCat SDK knows about a subscription the moment it is
+    // bought; the server only knows once its entitlements row is written, by
+    // the webhook or by a bootstrap. If they disagree in that direction, the
+    // server is simply behind - so ask it to look again rather than telling a
+    // paying subscriber to Go Pro.
+    //
+    // Only ever in this direction. A client claiming Pro the server cannot
+    // confirm changes nothing on its own: bootstrapSession re-reads
+    // RevenueCat server-side and believes that, not the app.
+    if (!row.is_pro) {
+      const { hasProEntitlement } = await import('./revenuecat');
+      if (await hasProEntitlement()) {
+        console.log('[identity] client says Pro but the server does not yet; re-bootstrapping');
+        await bootstrapSession();
+      }
+    }
   } catch { /* leave whatever we had; a stale number beats a wrong zero */ }
 }
 

@@ -22,6 +22,7 @@ import {
 } from '../revenuecat';
 import { validatePurchaseWithRetry } from '../supabase';
 import { storePendingValidation } from '../credits';
+import { bootstrapSession } from '../identity';
 import { scheduleFreeMatchReminder } from '../notifications';
 import { formatUntil } from '../dailyCredit';
 import { trackEvent } from '../posthog';
@@ -216,6 +217,9 @@ export default function WallSheet({
         source: 'wall_sheet',
       });
       triggerHaptic('success');
+      // The server granted this; ask it for the resulting state rather than
+      // trusting the arithmetic done here.
+      await bootstrapSession();
       onBoughtPack(newBalance);
     } catch (error: any) {
       trackEvent('purchase_failed', {

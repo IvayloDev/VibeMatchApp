@@ -27,7 +27,7 @@ import {
   updatePendingValidationRetry,
 } from '../../lib/credits';
 import { getCreditState } from '../../lib/creditState';
-import { refreshCreditState } from '../../lib/identity';
+import { refreshCreditState, bootstrapSession } from '../../lib/identity';
 import { validatePurchaseWithRetry } from '../../lib/supabase';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
@@ -335,6 +335,13 @@ const PaymentScreen = () => {
       is_trial: isTrial,
       is_authenticated: isAuthenticated,
     });
+
+    // Make the subscription real to the SERVER before navigating. Until an
+    // entitlements row exists, charge_scan sees no Pro and spends credits, and
+    // the Dashboard tells a paying subscriber to Go Pro. session-bootstrap
+    // does its own RevenueCat lookup, so this is the client asking the server
+    // to look, not the client asserting what it bought.
+    await bootstrapSession();
 
     triggerHaptic('success');
     // Do NOT goBack() here. The paywall can be opened from ResultsScreen, and
