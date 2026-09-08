@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { AppState, AppStateStatus, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
@@ -17,6 +17,28 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     detectSessionInUrl: true, // Enable to detect OAuth redirects
   },
 });
+
+/**
+ * Tie the refresh timer to the app being in the foreground.
+ *
+ * supabase-js runs its refresh on a JS interval, and React Native freezes
+ * timers in the background. Left alone, a backgrounded app wakes up with an
+ * access token that expired hours ago and a refresh loop that never ran, so
+ * the next request 401s. That used to be survivable because a guest had
+ * nothing to lose; now the identity IS the guest's account, and a 401 storm on
+ * resume is a user staring at a balance the app cannot read.
+ *
+ * Called once from App.js. Safe to call again: the SDK tolerates it.
+ */
+export function bindAuthRefreshToAppState(): () => void {
+  const apply = (state: AppStateStatus) => {
+    if (state === 'active') supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  };
+  apply(AppState.currentState);
+  const sub = AppState.addEventListener('change', apply);
+  return () => sub.remove();
+}
 
 // Utility function to check if an error is a refresh token error or invalid user error
 export function isRefreshTokenError(error: any): boolean {

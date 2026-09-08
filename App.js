@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { AppState } from 'react-native';
+import { bindAuthRefreshToAppState } from './lib/supabase';
 import { NavigationContainer, DefaultTheme, NavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Provider as PaperProvider, MD3DarkTheme } from 'react-native-paper';
@@ -93,20 +94,30 @@ function AppContent() {
     // Delay initialization slightly to ensure native module is ready
     const setupRevenueCat = async () => {
       try {
-        // Longer delay to ensure native modules are fully loaded
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Initialize with user ID if available
-        await initRevenueCat(user?.id);
+        // Configure with NO app user id, so RevenueCat starts on its own
+        // anonymous id and is told who this is later, by identifyUser inside
+        // the identity broker. That transition is what moves a guest's
+        // existing purchases onto the Supabase uid; configuring straight into
+        // a uid skips the transition and orphans anything bought before.
+        //
+        // The one-second sleep that used to be here was a guess at when the
+        // native module is ready. initRevenueCat waits for it properly, and
+        // the sleep only delayed the paywall for everyone.
+        await initRevenueCat();
 
-        if (user?.id) {
+        // Registered users only. An anonymous identity is handled by the
+        // identity broker's afterMint, which already tells RevenueCat who this
+        // is; doing it twice would race two logIn calls for the same uid, and
+        // reconcileProAfterLogin is about carrying a subscription onto a REAL
+        // account, which an anonymous id is not.
+        if (user?.id && !user.is_anonymous) {
           // Carry a guest's subscription across to the new account. Without this
           // a user who subscribes as a guest and then signs up loses Pro while
           // still being charged.
           await reconcileProAfterLogin(user.id);
           prevUserIdRef.current = user.id;
           posthogIdentify(user.id, { email: user.email });
-        } else if (prevUserIdRef.current) {
+        } else if (!user?.id && prevUserIdRef.current) {
           // User logged out - reset RevenueCat and PostHog
           await logOutUser();
           posthogReset();
@@ -132,6 +143,11 @@ function AppContent() {
     });
     return () => sub.remove();
   }, []);
+
+  // Keep the auth token alive across foreground/background. Without this a
+  // resumed app carries an expired token and 401s until something forces a
+  // refresh, which now means a guest whose own account looks unreachable.
+  React.useEffect(() => bindAuthRefreshToAppState(), []);
 
   // Navigate based on auth + Spotify connection state.
   // onboardingComplete intentionally excluded from deps — changes to it are handled
