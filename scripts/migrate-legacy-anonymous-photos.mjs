@@ -88,6 +88,17 @@ function destinationFor(userId, sourcePath) {
   return `${userId}/${basename}`;
 }
 
+/** Byte size of an object, or null when it is not there. */
+async function sizeOf(path) {
+  const slash = path.lastIndexOf('/');
+  const dir = slash === -1 ? '' : path.slice(0, slash);
+  const name = slash === -1 ? path : path.slice(slash + 1);
+  const { data, error } = await sb.storage.from(BUCKET).list(dir, { search: name, limit: 100 });
+  if (error) return null;
+  const hit = (data ?? []).find((o) => o.name === name);
+  return hit?.metadata?.size ?? null;
+}
+
 async function countWhere(build) {
   const { count, error } = await build(
     sb.from('history').select('id', { count: 'exact', head: true })
@@ -154,7 +165,7 @@ async function main() {
 
   for (const [i, row] of todo.entries()) {
     const from = row.image_url;
-    const to = destinationFor(row.user_id, from);
+    let to = destinationFor(row.user_id, from);
     const label = `[${i + 1}/${todo.length}] ${from} -> ${to}`;
 
     if (!APPLY) {
@@ -172,7 +183,25 @@ async function main() {
       if (copyError) {
         const msg = (copyError.message || '').toLowerCase();
         if (msg.includes('exists') || msg.includes('duplicate')) {
-          resumed = true;
+          // Something is already sitting at the destination. Almost always
+          // this run's own earlier attempt, because the source is deleted
+          // only after the row is repointed, so an interrupted run leaves
+          // exactly this state. But "almost always" is not good enough when
+          // being wrong means pointing a row at a different photo and then
+          // deleting the real one, so compare before believing it.
+          const [srcSize, dstSize] = await Promise.all([sizeOf(from), sizeOf(to)]);
+          if (srcSize !== null && dstSize !== null && srcSize === dstSize) {
+            resumed = true;
+          } else {
+            // A genuine name clash with an unrelated object. Give this one its
+            // own name rather than overwriting or adopting anything.
+            const dot = to.lastIndexOf('.');
+            const alt = dot === -1 ? `${to}-legacy` : `${to.slice(0, dot)}-legacy${to.slice(dot)}`;
+            const { error: altError } = await sb.storage.from(BUCKET).copy(from, alt);
+            if (altError) throw new Error(`copy to ${alt} failed: ${altError.message}`);
+            console.warn(`${label}  destination was taken by a different object, stored as ${alt}`);
+            to = alt;
+          }
         } else if (msg.includes('not found') || msg.includes('does not exist')) {
           // The row outlived its object. Leave the row alone rather than
           // repointing it at a path that holds nothing: a broken thumbnail
