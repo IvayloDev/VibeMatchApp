@@ -88,8 +88,49 @@ function destinationFor(userId, sourcePath) {
   return `${userId}/${basename}`;
 }
 
+async function countWhere(build) {
+  const { count, error } = await build(
+    sb.from('history').select('id', { count: 'exact', head: true })
+  );
+  if (error) throw new Error(error.message);
+  return count ?? 0;
+}
+
+/**
+ * Say what is actually in the table before proposing to move any of it. A dry
+ * run that prints an empty plan is ambiguous: it means either "nothing to do"
+ * or "my filter is wrong", and those want opposite responses.
+ */
+async function census() {
+  const total = await countWhere((q) => q);
+  const legacy = await countWhere((q) => q.like('image_url', 'anonymous/%'));
+  const owned = await countWhere((q) => q.like('image_url', 'anonymous/%').not('user_id', 'is', null));
+  const unowned = legacy - owned;
+
+  console.log('history rows            :', total);
+  console.log('  under anonymous/      :', legacy);
+  console.log('    owned (has user_id) :', owned, '<- this script moves these');
+  console.log('    unowned (user_id is null):', unowned, '<- left alone');
+  console.log('  already elsewhere     :', total - legacy);
+
+  if (legacy === 0 && total > 0) {
+    // Either the work is done, or image_url does not look the way this script
+    // assumes. Show real values rather than guessing.
+    const { data: sample } = await sb
+      .from('history')
+      .select('image_url')
+      .limit(5)
+      .order('created_at', { ascending: false });
+    console.log('\nNo row matches the anonymous/ prefix. A sample of what image_url actually holds:');
+    for (const r of sample ?? []) console.log('  ', r.image_url);
+  }
+  console.log('');
+  return owned;
+}
+
 async function main() {
   console.log(APPLY ? '=== APPLYING ===' : '=== DRY RUN (nothing is written) ===');
+  await census();
 
   const { data: rows, error } = await sb
     .from('history')
@@ -106,7 +147,9 @@ async function main() {
   const todo = rows.slice(0, LIMIT === Infinity ? rows.length : LIMIT);
   console.log(`${rows.length} owned legacy objects found; processing ${todo.length}.`);
 
-  const tally = { moved: 0, alreadyThere: 0, missingSource: 0, failed: 0 };
+  const tally = APPLY
+    ? { moved: 0, alreadyThere: 0, missingSource: 0, failed: 0 }
+    : { wouldMove: 0 };
   const failures = [];
 
   for (const [i, row] of todo.entries()) {
@@ -115,6 +158,7 @@ async function main() {
     const label = `[${i + 1}/${todo.length}] ${from} -> ${to}`;
 
     if (!APPLY) {
+      tally.wouldMove += 1;
       console.log(`${label}  (dry run)`);
       continue;
     }
@@ -169,6 +213,13 @@ async function main() {
 
   console.log('\n--- summary ---');
   console.log(tally);
+  if (!APPLY) {
+    console.log(
+      tally.wouldMove === 0
+        ? 'Nothing to move. Check the census above before concluding the job is done.'
+        : `Re-run with --apply to move these ${tally.wouldMove}.`
+    );
+  }
   if (failures.length) {
     console.log('\nfailures:');
     for (const f of failures) console.log(` ${f.from}: ${f.error}`);
