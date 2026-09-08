@@ -28,11 +28,11 @@ type RcVerdict =
   /** RevenueCat answered and has no such purchase for this user. */
   | { status: 'not_found' }
   /**
-   * We could not ask. A bad or rotated key, a RevenueCat outage, a network
-   * failure. Never treated as fraud: refusing here charges a real customer and
-   * gives them nothing, which is worse than the abuse this check exists to
-   * stop. It happened once already, when a placeholder string was stored as
-   * the key and every purchase started coming back 403.
+   * We could not ask. A bad or rotated key, a RevenueCat outage, a rate limit,
+   * a network failure. Never treated as fraud AND never treated as proof: the
+   * caller is told to come back, which is what the client's pending-validation
+   * queue already does. Granting here instead was a credit-minting hole, since
+   * an attacker can induce it just by exhausting our RevenueCat rate limit.
    */
   | { status: 'unavailable'; detail: string };
 
@@ -188,63 +188,94 @@ serve(async (req) => {
     }
     const creditsToGrant = baseCredits;
 
-    // RevenueCat validates the store receipt, but nothing here used to check
-    // that RevenueCat had actually seen this transaction: any signed-in user
-    // could post a made-up transaction id and the largest product id and be
-    // granted its credits. When REVENUECAT_SECRET_API_KEY is set, the purchase
-    // has to exist on the subscriber that RevenueCat holds for this user id.
-    // Without the secret the old trusting path runs, loudly, so a missing
-    // secret never blocks a real purchase.
+    // A grant only ever follows a purchase RevenueCat confirms.
+    //
+    // The rule here used to be "grant when we cannot verify", reasoning that a
+    // customer the store has already charged must never be refused. That is
+    // right about the customer and wrong about the mechanism. It meant:
+    //   - with no secret set, ANY signed-in caller posting a fresh uuid and
+    //     the largest product id was granted 150 credits, repeatably;
+    //   - with the secret set, the same held whenever RevenueCat answered 429,
+    //     which an attacker induces simply by making this endpoint call it.
+    // The grant runs on the service role, so the user_profiles credits guard
+    // does not (and should not) stand in its way. Verification is the only
+    // thing between a forged body and a balance.
+    //
+    // Refusing costs a real customer nothing, because the client already
+    // queues an unconfirmed purchase (storePendingValidation) and retries it
+    // from the Pro screen, having told the user their credits arrive shortly.
+    // So an outage delays a genuine buyer and permanently refuses a forged
+    // one. 503, not 403, so the queue keeps retrying rather than giving up.
     const rcSecret = Deno.env.get('REVENUECAT_SECRET_API_KEY') ?? '';
-    let verifiedTransactionId = transactionId;
-    if (rcSecret) {
-      let verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
-      // One retry before refusing. The client calls this the moment the
-      // RevenueCat SDK resolves the purchase, which can be marginally ahead of
-      // RevenueCat's own servers having recorded it. Refusing on that race
-      // would charge a real customer and give them nothing, so a miss costs us
-      // one and a half seconds before it is believed.
-      if (verdict.status === 'not_found') {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
-      }
-      if (verdict.status === 'not_found') {
-        console.warn('🚫 RevenueCat has no such purchase', { userId: user.id, productId, transactionId });
-        return new Response(
-          JSON.stringify({ success: false, error: 'Purchase not found' }),
-          {
-            status: 403,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          }
-        );
-      }
-      if (verdict.status === 'unavailable') {
-        // Grant, loudly. A customer who has already been charged must not be
-        // refused because our own key is wrong or RevenueCat is down.
-        console.error(
-          '⚠️ RevenueCat unreachable, granting without verification:',
-          verdict.detail,
-          { userId: user.id, productId, transactionId }
-        );
-      } else {
-        verifiedTransactionId = verdict.transactionId;
-      }
-      // The client may have sent a synthetic id; dedupe on the real one.
-      if (verifiedTransactionId !== transactionId) {
-        const { data: dup } = await adminClient
-          .from('purchases')
-          .select('credits_granted')
-          .eq('transaction_id', verifiedTransactionId)
+    const unverifiable = (detail: string) => {
+      console.error('⚠️ Cannot verify purchase, refusing to grant:', detail, {
+        userId: user.id,
+        productId,
+        transactionId,
+      });
+      return new Response(
+        JSON.stringify({
+          success: false,
+          retryable: true,
+          error: 'Could not verify this purchase yet. It will be granted automatically once we can.',
+        }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    };
+
+    if (!rcSecret) {
+      // Deliberately fatal rather than trusting: an unset key is an operator
+      // error, and the whole point of this endpoint is that it does not take
+      // the client's word for money.
+      return unverifiable('REVENUECAT_SECRET_API_KEY is not set');
+    }
+
+    let verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+    // One retry before believing a miss. The client calls this the moment the
+    // RevenueCat SDK resolves the purchase, which can be marginally ahead of
+    // RevenueCat's own servers having recorded it.
+    if (verdict.status === 'not_found') {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      verdict = await verifyWithRevenueCat(rcSecret, user.id, productId, transactionId);
+    }
+    if (verdict.status === 'unavailable') {
+      return unverifiable(verdict.detail);
+    }
+    if (verdict.status === 'not_found') {
+      console.warn('🚫 RevenueCat has no such purchase', { userId: user.id, productId, transactionId });
+      return new Response(
+        JSON.stringify({ success: false, error: 'Purchase not found' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // From here the id is RevenueCat's own, never the client's string. That is
+    // what makes the dedupe real: a forged id can no longer reserve a row,
+    // and a replay of the same genuine purchase collides on the id RevenueCat
+    // assigned it however the client chose to name it.
+    const verifiedTransactionId = verdict.transactionId;
+    if (verifiedTransactionId !== transactionId) {
+      const { data: dup } = await adminClient
+        .from('purchases')
+        .select('credits_granted')
+        .eq('transaction_id', verifiedTransactionId)
+        .maybeSingle();
+      if (dup) {
+        const { data: dupProfile } = await adminClient
+          .from('user_profiles')
+          .select('credits')
+          .eq('user_id', user.id)
           .maybeSingle();
-        if (dup) {
-          return new Response(
-            JSON.stringify({ success: true, alreadyProcessed: true, creditsGranted: dup.credits_granted, newBalance: dup.credits_granted }),
-            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
+        return new Response(
+          JSON.stringify({
+            success: true,
+            alreadyProcessed: true,
+            creditsGranted: dup.credits_granted,
+            newBalance: dupProfile?.credits ?? null,
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
-    } else {
-      console.warn('⚠️ REVENUECAT_SECRET_API_KEY not set: granting on the client\'s word');
     }
 
     // Record the purchase in the database
@@ -257,7 +288,7 @@ serve(async (req) => {
         platform: platform,
         credits_granted: creditsToGrant,
         validation_data: {
-          validated_by: verifiedTransactionId !== transactionId ? 'revenuecat_api' : (rcSecret ? 'revenuecat_api_or_unavailable' : 'client'),
+          validated_by: 'revenuecat_api',
           validated_at: new Date().toISOString(),
           base_credits: baseCredits,
           launch_offer_bonus: 0,
