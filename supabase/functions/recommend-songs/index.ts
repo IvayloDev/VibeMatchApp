@@ -927,6 +927,17 @@ IMPORTANT: Default to international (primarily English) songs unless the user's 
 }
 
 // Edge function
+/**
+ * A stable fingerprint of the semantic request, so a retry can be told apart
+ * from a different question wearing the same scan id. Only the inputs that
+ * change the answer go in: the debug flag and the device id do not.
+ */
+async function requestFingerprint(parts: Record<string, unknown>): Promise<string> {
+  const canonical = JSON.stringify(parts, Object.keys(parts).sort());
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 serve(async (req) => {
   console.log("🔔 Invocation start");
 
@@ -977,6 +988,10 @@ serve(async (req) => {
   // When true the success response carries the OpenAI token counts, so a
   // prompt change can be measured instead of guessed. Off for the app.
   let debugUsage = false;
+  // Contract 2 means "charge me server-side"; anything less is served under the
+  // old client-charges rules.
+  let contract = 1;
+  let scanId: string | undefined;
 
   try {
     const body = await req.json();
@@ -984,6 +999,12 @@ serve(async (req) => {
       deviceId = body.deviceId;
     }
     debugUsage = body.debug === true;
+    // The contract marker. No build in the field sends it, which is exactly
+    // how the server knows not to charge them: an old client still deducts
+    // client-side, and charging it as well would take two credits for one
+    // match, or withhold a match it had already paid for.
+    if (Number.isInteger(body.contract)) contract = body.contract;
+    if (typeof body.scanId === "string" && /^[0-9a-f-]{36}$/i.test(body.scanId)) scanId = body.scanId;
     imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
@@ -1192,11 +1213,147 @@ serve(async (req) => {
     }
   }
 
+  // 2b) The charge.
+  //
+  // Only for callers that asked to be charged. A request without contract 2 is
+  // served exactly as before and pays for itself on the client, because the
+  // shipped build re-reads its balance AFTER any server charge would land,
+  // computes old-1 from that, writes it, and then demands a later read equal
+  // exactly its own arithmetic. Charging such a client either takes two credits
+  // or makes it withhold a match the user already paid for. There is no version
+  // of charging an old build that is not worse than not charging it.
+  //
+  // Placed before the image is fetched and long before OpenAI, so a caller with
+  // no balance costs nothing, and so a replay short-circuits before any work.
+  let heldScanId: string | undefined;
+  let chargeMeter: string | undefined;
+  let creditsBalance: number | null = null;
+
+  if (contract >= 2) {
+    if (!userId) {
+      return jsonResponse({ error: "Unauthorized", code: "auth_required" }, 401);
+    }
+    if (!scanId) {
+      return jsonResponse({ error: "Missing scanId", code: "bad_request" }, 400);
+    }
+    if (!logClient) {
+      // No service role means no way to charge. Refusing is the only honest
+      // answer: serving would be a free match for anyone who noticed.
+      console.error("❌ contract 2 request but no service role key");
+      return jsonResponse({ error: "Server misconfiguration" }, 500);
+    }
+
+    const requestHash = await requestFingerprint({
+      imagePath: imagePath ?? null,
+      imageUrl: imagePath ? null : imageUrl,
+      vibe: vibe ?? null,
+      avoidTracks: avoidTracks ?? [],
+      avoidArtists: avoidArtists ?? [],
+      hasTasteProfile: !!tasteProfile,
+    });
+
+    const { data: chargeRows, error: chargeError } = await logClient.rpc('charge_scan', {
+      p_user: userId,
+      p_scan_id: scanId,
+      p_request_hash: requestHash,
+    });
+
+    if (chargeError) {
+      console.error("❌ charge_scan failed:", chargeError.message);
+      return jsonResponse({ error: "Could not start the match", code: "charge_failed" }, 503);
+    }
+
+    const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
+    chargeMeter = charge?.meter;
+    creditsBalance = typeof charge?.balance === "number" ? charge.balance : null;
+
+    if (charge?.outcome === "insufficient") {
+      return jsonResponse({
+        error: "Out of credits",
+        code: "insufficient_credits",
+        credits: { balance: creditsBalance ?? 0 },
+      }, 402);
+    }
+    if (charge?.outcome === "conflict") {
+      return jsonResponse({
+        error: "That match id is already in use for a different photo",
+        code: "scan_conflict",
+      }, 409);
+    }
+    if (charge?.outcome === "replay" && charge?.response) {
+      // Already paid for. Hand back the same answer rather than running the
+      // model again and charging for it.
+      console.log("♻️ replaying a settled scan", scanId);
+      return jsonResponse({ ...charge.response, credits: { balance: creditsBalance, meter: chargeMeter } }, 200);
+    }
+    if (charge?.outcome !== "charged" && charge?.outcome !== "pro" && charge?.outcome !== "replay") {
+      console.error("❌ unexpected charge outcome:", charge?.outcome);
+      return jsonResponse({ error: "Could not start the match", code: "charge_failed" }, 503);
+    }
+
+    heldScanId = scanId;
+    logClient.rpc('note_client_contract', { p_user: userId, p_contract: contract })
+      .then(({ error }: any) => {
+        if (error) console.warn("⚠️ note_client_contract failed:", error.message);
+      });
+  }
+
+  /**
+   * Every exit after the charge goes through one of these two, so a credit can
+   * never be kept for work that was not delivered. `respond` refunds;
+   * `settleAndRespond` is used at the single success return.
+   */
+  const respond = async (payload: any, status = 200): Promise<Response> => {
+    if (heldScanId && logClient && userId) {
+      const { data, error } = await logClient.rpc('refund_scan', {
+        p_user: userId,
+        p_scan_id: heldScanId,
+        p_reason: `status ${status}`,
+      });
+      if (error) console.error("🚨 refund failed, hold left for the sweeper:", error.message);
+      else creditsBalance = typeof data === "number" ? data : creditsBalance;
+      heldScanId = undefined;
+    }
+    const withCredits = contract >= 2
+      ? { ...payload, credits: { balance: creditsBalance, meter: chargeMeter } }
+      : payload;
+    return jsonResponse(withCredits, status);
+  };
+
+  const refundThen = async (response: Response): Promise<Response> => {
+    if (heldScanId && logClient && userId) {
+      const { error } = await logClient.rpc('refund_scan', {
+        p_user: userId,
+        p_scan_id: heldScanId,
+        p_reason: 'spotify auth failure',
+      });
+      if (error) console.error("🚨 refund failed, hold left for the sweeper:", error.message);
+      heldScanId = undefined;
+    }
+    return response;
+  };
+
+  const settleAndRespond = async (payload: any): Promise<Response> => {
+    if (heldScanId && logClient && userId) {
+      const { error } = await logClient.rpc('settle_scan', {
+        p_user: userId,
+        p_scan_id: heldScanId,
+        p_response: payload,
+      });
+      if (error) console.warn("⚠️ settle_scan failed, the sweeper will refund a delivered match:", error.message);
+      heldScanId = undefined;
+    }
+    const withCredits = contract >= 2
+      ? { ...payload, credits: { balance: creditsBalance, meter: chargeMeter } }
+      : payload;
+    return jsonResponse(withCredits, 200);
+  };
+
   // 3) Load API keys
   const openaiKey = Deno.env.get("OPENAI_API_KEY");
   if (!openaiKey) {
     console.error("❌ OPENAI_API_KEY not set");
-    return jsonResponse({
+    return await respond({
       error: "Server misconfiguration"
     }, 500);
   }
@@ -1213,7 +1370,7 @@ serve(async (req) => {
     console.log("🔗 Data URL length:", dataUrl.length);
   } catch (err) {
     console.error("❌ Image conversion failed:", err);
-    return jsonResponse({
+    return await respond({
       error: "Failed to fetch or encode image"
     }, 502);
   }
@@ -1334,7 +1491,7 @@ serve(async (req) => {
     });
   } catch (err) {
     console.error("❌ Network error calling OpenAI:", err);
-    return jsonResponse({
+    return await respond({
       error: "OpenAI request network failure"
     }, 502);
   }
@@ -1349,7 +1506,7 @@ serve(async (req) => {
       console.error("❌ Missing or invalid Authorization header detected");
     }
     
-    return jsonResponse({
+    return await respond({
       error: "OpenAI request failed",
       details: errBody
     }, openaiResp.status);
@@ -1398,7 +1555,7 @@ serve(async (req) => {
     console.log(`✅ Got ${openaiData.recommendations.length} recommendations from OpenAI`);
   } catch (err) {
     console.error("❌ Failed to parse OpenAI response:", err);
-    return jsonResponse({
+    return await respond({
       error: "Failed to parse OpenAI response",
       message: "We couldn't process the music recommendations. Please try again."
     }, 500);
@@ -1408,7 +1565,7 @@ serve(async (req) => {
   const spotifyToken = await getSpotifyToken();
   if (!spotifyToken) {
     console.warn("⚠️ No Spotify token, returning OpenAI recommendations without Spotify URLs");
-    return jsonResponse({
+    return await respond({
       songs: openaiData.recommendations.map((rec: any) => ({
         title: rec.title,
         artist: rec.artist,
@@ -1470,9 +1627,9 @@ serve(async (req) => {
     // If no songs found at all, return error
     if (resolvedSongs.length === 0) {
       if (isSpotifyAuthFailure(spotifySearchState.lastHttpStatus)) {
-        return spotifyAuthErrorResponse();
+        return await refundThen(spotifyAuthErrorResponse());
       }
-      return jsonResponse({
+      return await respond({
         error: "No matches found",
         message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
         // null = every Spotify Search call returned 2xx; failure was empty results or strict title/artist scoring
@@ -1519,7 +1676,7 @@ serve(async (req) => {
     // In production, you could implement retry logic here to get replacements
     if (deduplicatedSongs.length > 0) {
       console.warn("⚠️ Returning partial results - some songs not found on Spotify or had duplicate artists");
-      return jsonResponse({
+      return await respond({
         ...(debugUsage && openaiUsage ? { usage: { prompt: openaiUsage.prompt_tokens, completion: openaiUsage.completion_tokens, total: openaiUsage.total_tokens } } : {}),
         songs: deduplicatedSongs,
         warning: failedSongs.length > 0 ? `${failedSongs.length} song(s) could not be found on Spotify` : undefined,
@@ -1533,12 +1690,12 @@ serve(async (req) => {
     } else {
       // No songs found at all - return error
       if (isSpotifyAuthFailure(spotifySearchState.lastHttpStatus)) {
-        return spotifyAuthErrorResponse();
+        return await refundThen(spotifyAuthErrorResponse());
       }
       // Say what was asked for. Without this a resolution failure is a black
       // box: the model may have picked fine songs that Spotify could not
       // match, and there is no way to tell that from a bad prompt.
-      return jsonResponse({
+      return await respond({
         error: "No matches found",
         message: "We couldn't find any songs matching your request on Spotify. Please try a different search.",
         lastSpotifyHttpStatus: spotifySearchState.lastHttpStatus ?? null,
@@ -1589,7 +1746,7 @@ serve(async (req) => {
       });
   }
 
-  return jsonResponse({
+  return await settleAndRespond({
     ...(debugUsage && usage ? { usage } : {}),
     songs: shipped, // Ensure exactly 3
     // Whether a Spotify taste profile shaped these picks, so the client can
@@ -1598,5 +1755,5 @@ serve(async (req) => {
     // How many shipped picks are the song the model actually named. Without
     // this the substitution rate is invisible outside the function logs.
     resolution,
-  }, 200);
+  });
 });
