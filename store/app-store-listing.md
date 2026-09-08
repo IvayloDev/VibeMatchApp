@@ -83,4 +83,10 @@ reopened before it arrived. It lands on its own now.
 
 Fixed: the Profile screen needed scrolling to reach Terms and Privacy.
 
+Fixed: some matches came back as "we couldn't find the track". When our first
+pick isn't on Spotify, you now get a real song from that artist instead.
+
+Fixed: the daily count for Pro members sat at 10 of 10 no matter how many
+matches you ran.
+
 New: two matches when you start, and a free one every day at 9am.
