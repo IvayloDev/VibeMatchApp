@@ -125,6 +125,8 @@ export async function afterMint(uid: string): Promise<void> {
         balance: bootstrap.balance,
         isPro: bootstrap.is_pro,
         nextFreeAt: bootstrap.next_free_at,
+        proUsedToday: bootstrap.pro_used_today,
+        proDailyLimit: bootstrap.pro_daily_limit,
       });
     }
 
@@ -208,6 +210,8 @@ export async function bootstrapSession(): Promise<void> {
         balance: result.balance,
         isPro: result.is_pro,
         nextFreeAt: result.next_free_at,
+        proUsedToday: result.pro_used_today,
+        proDailyLimit: result.pro_daily_limit,
       });
     }
   } catch (error) {
@@ -226,6 +230,8 @@ export async function refreshCreditState(): Promise<void> {
       balance: row.balance,
       isPro: row.is_pro,
       nextFreeAt: row.next_free_at,
+      proUsedToday: row.pro_used_today,
+      proDailyLimit: row.pro_daily_limit,
     });
 
     // The client's RevenueCat SDK knows about a subscription the moment it is

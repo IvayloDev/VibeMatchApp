@@ -9,10 +9,10 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getCreditState, subscribeToCredits } from '../../../lib/creditState';
+import { getCreditState, subscribeToCredits, proRemaining } from '../../../lib/creditState';
 import { refreshCreditState, requireIdentity } from '../../../lib/identity';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
-import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
+import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent, registerSuperProperties } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -95,7 +95,8 @@ const DashboardScreen = () => {
         trackEvent('dashboard_viewed', { credits_balance: state.balance, is_pro: pro, signed_in: isRegistered });
       }
       // Refreshed alongside credits so the badge is right after every scan.
-      if (pro) setProScansToday(await getProScansToday());
+      // From the server, not the local counter that no longer increments.
+      setProScansToday(state.proUsedToday ?? 0);
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -200,6 +201,7 @@ const DashboardScreen = () => {
       setCredits(state.balance);
       setCreditSource(state.source);
       setIsPro(state.isPro);
+      setProScansToday(state.proUsedToday ?? 0);
       if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
     });
 
@@ -249,7 +251,7 @@ const DashboardScreen = () => {
     // Pro subscribers with quota left skip the credit gate entirely; the
     // stricter per-scan check (including the daily cap) lives in
     // AnalyzingScreen, which every scan path funnels through.
-    const proCanScan = isPro && (await canProScanToday());
+    const proCanScan = isPro && ((proRemaining(getCreditState()) ?? 1) > 0);
     // `creditSource === 'server'` is the whole point: without it, a user
     // holding a paid pack on a bad connection was walled for credits they own,
     // because a failed read returned 0 and this line believed it.

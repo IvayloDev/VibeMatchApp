@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getCreditState } from '../../../lib/creditState';
 import { trackEvent } from '../../../lib/posthog';
 import { hasProEntitlement } from '../../../lib/revenuecat';
-import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
+import { PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
 import WallSheet from '../../../lib/components/WallSheet';

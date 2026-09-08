@@ -19,7 +19,7 @@ import {
   CREDITS_PER_PRODUCT,
   STARTER_PACK_PRODUCT_ID,
 } from '../../lib/revenuecat';
-import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../lib/proQuota';
+import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../lib/proQuota';
 import {
   storePendingValidation,
   getPendingValidations,
@@ -117,7 +117,8 @@ const PaymentScreen = () => {
 
     // Already-subscribed users get a manage screen, not a sales pitch.
     if (await hasProEntitlement()) {
-      setProScansToday(await getProScansToday());
+      await refreshCreditState();
+      setProScansToday(getCreditState().proUsedToday ?? 0);
       setScreenState('entitled');
       return;
     }

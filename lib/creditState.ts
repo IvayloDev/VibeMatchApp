@@ -16,10 +16,19 @@ export type CreditState = {
   balance: number | null;
   isPro: boolean;
   nextFreeAt: Date | null;
+  /**
+   * Pro matches used in the current match-day, counted by the server from
+   * match_charges. The client used to keep its own count in AsyncStorage and
+   * stopped incrementing it when charging moved server-side, so the number on
+   * screen froze at 10-of-10 while the server enforced the real cap.
+   */
+  proUsedToday: number | null;
+  proDailyLimit: number;
   source: CreditSource;
 };
 
-let state: CreditState = { balance: null, isPro: false, nextFreeAt: null, source: 'unknown' };
+const EMPTY: CreditState = { balance: null, isPro: false, nextFreeAt: null, proUsedToday: null, proDailyLimit: 10, source: 'unknown' };
+let state: CreditState = { ...EMPTY };
 const listeners = new Set<(s: CreditState) => void>();
 
 export function getCreditState(): CreditState {
@@ -44,6 +53,8 @@ export function setServerCredits(input: {
   balance: number | null;
   isPro?: boolean;
   nextFreeAt?: string | Date | null;
+  proUsedToday?: number | null;
+  proDailyLimit?: number | null;
 }) {
   publish({
     balance: typeof input.balance === 'number' ? input.balance : state.balance,
@@ -51,8 +62,16 @@ export function setServerCredits(input: {
     nextFreeAt: input.nextFreeAt
       ? (input.nextFreeAt instanceof Date ? input.nextFreeAt : new Date(input.nextFreeAt))
       : state.nextFreeAt,
+    proUsedToday: typeof input.proUsedToday === 'number' ? input.proUsedToday : state.proUsedToday,
+    proDailyLimit: typeof input.proDailyLimit === 'number' ? input.proDailyLimit : state.proDailyLimit,
     source: 'server',
   });
+}
+
+/** Pro matches left today, or null until the server has said. */
+export function proRemaining(s: CreditState = state): number | null {
+  if (s.proUsedToday === null) return null;
+  return Math.max(0, s.proDailyLimit - s.proUsedToday);
 }
 
 /**
@@ -88,5 +107,5 @@ export function setProFromClient(isPro: boolean) {
 
 /** On sign-out or identity change, the old balance belongs to somebody else. */
 export function resetCreditState() {
-  publish({ balance: null, isPro: false, nextFreeAt: null, source: 'unknown' });
+  publish({ ...EMPTY });
 }

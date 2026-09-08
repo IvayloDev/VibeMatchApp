@@ -23,7 +23,7 @@ import {
   PRO_ENTITLEMENT_ID,
 } from '../../../lib/revenuecat';
 import type { ProPlanSummary } from '../../../lib/revenuecat';
-import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
+import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { connectSpotify } from '../../../lib/spotify';
 import RevenueCatUI from 'react-native-purchases-ui';
 import { supabase } from '../../../lib/supabase';
@@ -135,7 +135,7 @@ const ProfileScreen = () => {
       const pro = await hasProEntitlement();
       setIsPro(pro);
       if (pro) {
-        setProScansToday(await getProScansToday());
+        setProScansToday(getCreditState().proUsedToday ?? 0);
         setProPlan(await getProPlanSummary());
       } else {
         setProPlan(null);

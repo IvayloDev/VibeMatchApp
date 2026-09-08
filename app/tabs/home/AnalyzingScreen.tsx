@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../../lib/AuthContext';
-import { requireIdentity } from '../../../lib/identity';
+import { requireIdentity, refreshCreditState } from '../../../lib/identity';
 import { getCreditState, applyScanCredits } from '../../../lib/creditState';
 import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
@@ -791,6 +791,9 @@ const AnalyzingScreen = () => {
         // job, and the withholding because there is no longer a case where we
         // hold a match the user was charged for and refuse to show it.
         applyScanCredits(data?.credits);
+        // The response carries the balance but not the Pro count; one read
+        // brings the "N of 10 today" on the next screen up to date.
+        refreshCreditState().catch(() => {});
         if (data?.credits?.balance === 0) {
           trackEvent('out_of_credits', {
             source: 'scan_completed',

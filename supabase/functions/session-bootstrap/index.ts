@@ -160,6 +160,8 @@ serve(async (req) => {
       balance: state?.balance ?? 0,
       is_pro: state?.is_pro ?? false,
       next_free_at: state?.next_free_at ?? null,
+      pro_used_today: state?.pro_used_today ?? null,
+      pro_daily_limit: state?.pro_daily_limit ?? 10,
       granted,
       definite,
     });
