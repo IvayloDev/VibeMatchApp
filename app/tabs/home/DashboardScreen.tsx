@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert, AppState } from 'react-native';
+import { View, StyleSheet, ScrollView, Animated, Dimensions, Pressable, TouchableOpacity, Alert, AppState, InteractionManager } from 'react-native';
 import { Text } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -9,8 +9,8 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getCreditState } from '../../../lib/creditState';
-import { refreshCreditState } from '../../../lib/identity';
+import { getCreditState, subscribeToCredits } from '../../../lib/creditState';
+import { refreshCreditState, requireIdentity } from '../../../lib/identity';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
 import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
@@ -175,6 +175,35 @@ const DashboardScreen = () => {
     if (after.nextFreeAt) setNextFreeAt(after.nextFreeAt);
     return typeof after.balance === 'number' && after.balance > (before ?? 0);
   };
+
+  // Two things the lazy identity needs to be usable rather than merely safe.
+  //
+  // 1. Something has to ask for an identity before the user tries to spend.
+  //    Minting is deliberately lazy so a cold launch never blocks on the
+  //    network and nothing bounces the router mid-onboarding, but the Dashboard
+  //    is past onboarding by definition and is where a balance is expected to
+  //    be visible. Deferred until after interactions so it cannot compete with
+  //    the first paint.
+  //
+  // 2. The balance arrives asynchronously, from session-bootstrap. Without a
+  //    subscription the screen would show the placeholder until something else
+  //    happened to re-read it.
+  useEffect(() => {
+    const unsubscribe = subscribeToCredits((state) => {
+      setCredits(state.balance);
+      setCreditSource(state.source);
+      setIsPro(state.isPro);
+      if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
+    });
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      requireIdentity('dashboard')
+        .then((uid) => { if (uid) return refreshCreditState(); })
+        .catch(() => {});
+    });
+
+    return () => { unsubscribe(); task.cancel(); };
+  }, []);
 
   const openWall = (source: 'dashboard_cta' | 'dashboard_picker') => {
     trackEvent('out_of_credits', { source, credits_balance: credits });
