@@ -56,17 +56,17 @@ begin
 
   -- Hand back anything stranded by a scan that never came back.
   for v_stale in
-    select scan_id from public.match_charges
-     where user_id = p_user
-       and status = 'held'
-       and scan_id <> p_scan_id
-       and created_at < now() - interval '15 minutes'
+    select mc.scan_id from public.match_charges mc
+     where mc.user_id = p_user
+       and mc.status = 'held'
+       and mc.scan_id <> p_scan_id
+       and mc.created_at < now() - interval '15 minutes'
      limit 20
   loop
     perform public.refund_scan(p_user, v_stale.scan_id, 'stale hold, swept at next charge');
   end loop;
 
-  select * into v_existing from public.match_charges where scan_id = p_scan_id;
+  select * into v_existing from public.match_charges mc where mc.scan_id = p_scan_id;
 
   if found then
     if v_existing.user_id <> p_user or v_existing.request_hash <> p_request_hash then
@@ -87,7 +87,7 @@ begin
       return;
     end if;
 
-    delete from public.match_charges where scan_id = p_scan_id;
+    delete from public.match_charges mc where mc.scan_id = p_scan_id;
   end if;
 
   select (e.status = 'active' and (e.expires_at is null or e.expires_at > now()))
@@ -106,12 +106,16 @@ begin
                  - make_interval(mins => p_tz_offset_minutes);
     end if;
 
+    -- Aliased, and every column qualified. This function RETURNS TABLE with
+    -- an OUT parameter called `meter`, so a bare `meter = 'pro'` is ambiguous
+    -- between the variable and the column and Postgres refuses it outright.
+    -- The same trap waits for `balance`, `outcome` and `response`.
     select count(*) into v_pro_today
-      from public.match_charges
-     where user_id = p_user
-       and meter = 'pro'
-       and status <> 'refunded'
-       and created_at >= v_since;
+      from public.match_charges mc
+     where mc.user_id = p_user
+       and mc.meter = 'pro'
+       and mc.status <> 'refunded'
+       and mc.created_at >= v_since;
 
     if v_pro_today < 10 then
       insert into public.match_charges (scan_id, user_id, meter, request_hash, status)
