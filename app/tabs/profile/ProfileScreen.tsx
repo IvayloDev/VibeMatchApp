@@ -57,7 +57,10 @@ const ProfileScreen = () => {
   // so a connected user never sees "Connect Spotify" flash first.
   const [spotifyResolved, setSpotifyResolved] = useState(false);
   const [resetIn, setResetIn] = useState(formatQuotaReset());
-  const [credits, setCredits] = useState(0);
+  // null means the server has not answered yet, which is not the same as zero
+  // and must never be rendered as one.
+  const [credits, setCredits] = useState<number | null>(null);
+  const [creditSource, setCreditSource] = useState<'unknown' | 'server' | 'stale'>('unknown');
   const [isPro, setIsPro] = useState(false);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -92,7 +95,7 @@ const ProfileScreen = () => {
       `App version: ${Application.nativeApplicationVersion ?? 'unknown'} (${Application.nativeBuildVersion ?? '?'})`,
       `Platform: ${Platform.OS} ${Platform.Version}`,
       `User ID: ${user?.id ?? 'guest'}`,
-      `Credits: ${credits}`,
+      `Credits: ${credits ?? 'unknown'}`,
     ].join('\n');
 
     const subject = 'TuneMatch bug report';
@@ -115,7 +118,12 @@ const ProfileScreen = () => {
   const loadUserCredits = async () => {
     try {
       await refreshCreditState();
-      const userCredits = getCreditState().balance ?? 0;
+      // Keep null as null. Collapsing it to 0 puts a confident "0" and a
+      // free-match countdown in front of somebody whose balance we simply
+      // have not read yet, which for a paying user is a lie.
+      const st = getCreditState();
+      const userCredits = st.balance;
+      setCreditSource(st.source);
       setCredits(userCredits);
       // Onboarding deliberately skips the non-silent refresh for guests (it
       // would bounce them to the splash), so AuthContext can still say
@@ -158,6 +166,18 @@ const ProfileScreen = () => {
 
   const handleRestorePurchases = async () => {
     const result = await restorePurchases();
+    // Tell an outage apart from an answer. If the SDK never configured, or the
+    // call itself failed, "No active subscription was found" reads as "we have
+    // no record of your payment", which is the worst thing to say to somebody
+    // who is being charged monthly.
+    if (!result.success) {
+      trackEvent('subscription_restore_failed', { error: result.error ?? 'unknown' });
+      Alert.alert(
+        "Couldn't Check",
+        "We couldn't reach the App Store to check your subscription. Your purchase is safe - please try again in a moment.",
+      );
+      return;
+    }
     if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
       await refreshProStatus(result.customerInfo);
       setIsPro(true);
@@ -508,7 +528,7 @@ const ProfileScreen = () => {
                       <Text style={styles.proCardCredits}>
                         Next {PRO_DAILY_LIMIT} in {resetIn}
                       </Text>
-                      {credits > 0 && (
+                      {(credits ?? 0) > 0 && (
                         <Text style={styles.proCardCredits}>
                           + {credits} bonus credit{credits === 1 ? '' : 's'}
                         </Text>
@@ -522,7 +542,7 @@ const ProfileScreen = () => {
                           <View style={styles.skeletonCredits} />
                         ) : (
                           <AnimatedCounter
-                            value={credits}
+                            value={credits ?? 0}
                             duration={800}
                             style={styles.creditNumber}
                           />
@@ -530,7 +550,7 @@ const ProfileScreen = () => {
                       </View>
                       {/* At zero the number alone is a dead end. Say when the
                           next free match lands instead. */}
-                      {!loading && credits === 0 && (
+                      {!loading && creditSource === 'server' && credits === 0 && (
                         <Text style={styles.creditCountdown}>
                           Next free match in {resetIn}
                         </Text>

@@ -677,6 +677,21 @@ const AnalyzingScreen = () => {
 
         if (response.status === 402) {
           applyScanCredits(data?.credits);
+
+          // A subscriber who has used today's matches is not a sales
+          // opportunity. The credit wall would offer them a pack as the
+          // primary action and promise a free match Pro never gets, under a
+          // "Go Pro" button they already pressed.
+          if (getCreditState().isPro) {
+            trackEvent('pro_daily_cap_hit', { from_onboarding: !!fromOnboarding });
+            Alert.alert(
+              "That's today's matches",
+              "You've used all of today's Pro matches. A fresh set unlocks at 9am.",
+              [{ text: 'OK', onPress: leaveOnBlocked }]
+            );
+            return;
+          }
+
           trackEvent('out_of_credits', {
             source: 'analyzing_402',
             credits_balance: data?.credits?.balance ?? 0,
@@ -1137,7 +1152,7 @@ const AnalyzingScreen = () => {
         credits={0}
         nextFreeAt={nextFreeAt}
         isAuthenticated={isRegistered}
-        isPro={false}
+        isPro={getCreditState().isPro}
         onClose={() => {
           setShowWall(false);
           leaveBlockedScan();

@@ -146,19 +146,23 @@ const DashboardScreen = () => {
   // Out of matches: if notifications are already allowed, make sure the
   // "your free match is ready" ping is armed for the next 09:00.
   useEffect(() => {
-    if (loading || isPro || credits > 0) return;
+    // creditSource, not the number: a null balance means we have not heard
+    // from the server, and arming a "your free match is ready" reminder for
+    // somebody who may be holding a paid pack is a notification they should
+    // never get.
+    if (loading || isPro || creditSource !== 'server' || (credits ?? 0) > 0) return;
     scheduleFreeMatchReminderIfAllowed(nextFreeAt);
-  }, [loading, isPro, credits, nextFreeAt]);
+  }, [loading, isPro, credits, creditSource, nextFreeAt]);
 
   useEffect(() => {
-    if (loading || isPro || credits > 0) return;
+    if (loading || isPro || creditSource !== 'server' || (credits ?? 0) > 0) return;
     // The countdown carries seconds, so it ticks once a second.
     const id = setInterval(() => {
       setClockTick((t) => t + 1);
       if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
     }, 1000);
     return () => clearInterval(id);
-  }, [loading, isPro, credits, nextFreeAt]);
+  }, [loading, isPro, credits, creditSource, nextFreeAt]);
 
   useFocusEffect(
     React.useCallback(() => {

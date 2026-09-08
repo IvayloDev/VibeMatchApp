@@ -4,6 +4,7 @@ import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
 import { captureLegacySnapshot } from './legacyRecovery';
+import { forgetIdentityState } from './identity';
 import {
   getSpotifyConnectionStatus,
   maybeAutoRefreshTaste,
@@ -180,6 +181,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           console.log('Token refreshed successfully');
         } else if (event === 'SIGNED_OUT') {
           console.log('User signed out');
+          // The balance on screen belongs to whoever just left. Without this
+          // you sign out of a Pro account and keep seeing its balance, and
+          // briefly its Pro badge, as a guest - and the number carries
+          // source: 'server', so the gates believe it.
+          forgetIdentityState();
           // Re-read onboarding flag from SecureStore — it may have been deleted
           // (e.g. during account deletion) while the in-memory state was still true
           SecureStore.getItemAsync(ONBOARDING_KEY)
