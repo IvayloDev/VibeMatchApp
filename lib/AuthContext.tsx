@@ -3,7 +3,6 @@ import { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
-import { mergeLocalCreditsToAccount } from './credits';
 import { grantRegisteredFreeCredits } from './utils/freeCredits';
 import {
   getSpotifyConnectionStatus,
@@ -33,6 +32,10 @@ type AuthContextType = {
   markGuestOnboardingComplete: () => Promise<void>;
   signOut: () => Promise<void>;
   clearSession: () => void;
+  /** Signed in, but as an anonymous identity: a guest with a server-side uid. */
+  isAnonymous: boolean;
+  /** Signed in with a real account. What most "is this a user" checks mean. */
+  isRegistered: boolean;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -141,28 +144,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Get initial session
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (error) {
-        console.error('Error getting session:', error);
-        // If we get an auth error during initial session retrieval, clear the session
-        if (isRefreshTokenError(error) || error.message?.includes('JWT does not exist')) {
-          console.log('Invalid session detected, clearing...');
-          clearSession();
-          // Sign out to clear stale tokens
-          supabase.auth.signOut().catch(() => {});
-          return;
-        }
+        // Log it and carry on with whatever came back. This used to clear the
+        // session and sign out, which turns a bad network moment into a lost
+        // account: getSession fails for reasons that have nothing to do with
+        // the token being invalid. Once a guest's identity IS their session,
+        // that path would also throw away their balance and their history.
+        console.error('Error getting session (continuing with what we have):', error);
       }
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
       refreshSpotifyStatus();
     }).catch((error) => {
-      console.error('Unexpected error during session retrieval:', error);
-      if (isRefreshTokenError(error) || error.message?.includes('JWT does not exist')) {
-        clearSession();
-        supabase.auth.signOut().catch(() => {});
-      } else {
-        setLoading(false);
-      }
+      // Same rule: never destroy a session because reading it threw. Land on a
+      // screen rather than a spinner, and let the next call re-resolve.
+      console.error('Unexpected error during session retrieval (continuing):', error);
+      setLoading(false);
+      setSpotifyChecking(false);
     });
 
     // Listen for auth changes
@@ -180,8 +178,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           SecureStore.getItemAsync(ONBOARDING_KEY)
             .then(val => setOnboardingComplete(val === 'true'))
             .catch(() => setOnboardingComplete(false));
-        } else if (event === 'SIGNED_IN' && session?.user) {
-          // Mark that a real account has existed on this device
+        } else if (event === 'SIGNED_IN' && session?.user && !session.user.is_anonymous) {
+          // Registered sign-in only. An anonymous mint also fires SIGNED_IN,
+          // and everything below is about a real account: stamping
+          // HAD_ACCOUNT_KEY would make a first-time guest look like a returning
+          // user to the router, and the signup grant is the server's job now.
+          //
+          // This gate has to exist before signInAnonymously appears anywhere in
+          // the bundle. auth-js awaits every onAuthStateChange callback inside
+          // _notifyAllSubscribers and signInAnonymously awaits that, so this
+          // handler runs BEFORE the mint resolves.
           SecureStore.setItemAsync(HAD_ACCOUNT_KEY, 'true').catch(() => {});
           const userId = session.user.id;
 
@@ -228,25 +234,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             }
           }
           
-          // Apple Guideline 5.1.1: Merge local credits when user signs in
-          // This enables cross-device access for credits purchased without registration
-          console.log('User signed in, checking for local credits to merge...');
-          try {
-            const { merged, creditsMerged } = await mergeLocalCreditsToAccount();
-            if (merged && creditsMerged > 0) {
-              console.log(`✅ Merged ${creditsMerged} local credits to account`);
-              // Notify user that their credits have been synced
-              Alert.alert(
-                '✨ Credits Synced!',
-                `Your ${creditsMerged} credits have been added to your account. You can now access them from any device!`,
-                [{ text: 'Great!' }]
-              );
-            }
-          } catch (error) {
-            console.error('Error merging local credits:', error);
-          }
+          // The guest-to-account merge is gone, deliberately.
+          //
+          // It read a balance out of AsyncStorage, added it to the account,
+          // and then deleted both local keys. Every part of that is wrong now:
+          // the number came from a file the device controls, and the delete
+          // ran even on the zero-merge branch, destroying the only evidence a
+          // guest pack sale ever happened. Recovery is server-side and keyed
+          // to RevenueCat's own transaction ids
+          // (supabase/functions/recover-legacy-purchases).
         }
-        
+
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
@@ -291,6 +289,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     markGuestOnboardingComplete,
     signOut,
     clearSession,
+    isAnonymous: !!user?.is_anonymous,
+    isRegistered: !!user && !user.is_anonymous,
   };
 
   return (

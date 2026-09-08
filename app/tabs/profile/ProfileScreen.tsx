@@ -338,13 +338,20 @@ const ProfileScreen = () => {
                   'tunematch_spotify_expires_at',
                   'tunematch_free_credits_granted',
                   'tunematch_guest_credits_granted',
+                  // Without this a deleted account leaves the device looking
+                  // like a returning guest, so the next cold start skips
+                  // Welcome and lands in the tabs with nothing behind it.
+                  'tunematch_guest_onboarding_complete',
                 ];
                 await Promise.allSettled(secureKeys.map(k => SecureStore.deleteItemAsync(k)));
 
                 const asyncKeys = [
-                  '@tunematch_local_credits',
                   '@tunematch/guest_spotify_taste_profile',
-                  '@tunematch_local_purchases',
+                  // '@tunematch_local_credits' and '@tunematch_local_purchases'
+                  // are NOT cleared. The balance is the server's now, and the
+                  // purchase log is a few hundred bytes that may be the only
+                  // evidence left that a guest pack sale happened. Deleting an
+                  // account must not destroy the receipt for a payment.
                 ];
                 await Promise.allSettled(asyncKeys.map(k => AsyncStorage.removeItem(k)));
 

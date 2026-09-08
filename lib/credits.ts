@@ -211,73 +211,18 @@ export async function updatePendingValidationRetry(transactionId: string): Promi
 }
 
 /**
- * Merge local credits into user account when they register/sign in
- * This enables cross-device access as mentioned in Apple's guidelines
- * NOTE: guest FREE credits are never merged - only credits the guest paid for.
+ * mergeLocalCreditsToAccount and clearLocalCredits used to live here.
+ *
+ * The merge added a device-authored number to a real account and then deleted
+ * the local keys, including on the branch where it merged nothing. That delete
+ * destroyed the only record that a guest pack sale had happened, and the
+ * number it trusted came from a file the device controls.
+ *
+ * Both are replaced by supabase/functions/recover-legacy-purchases, which
+ * grants only what RevenueCat corroborates, keyed to RevenueCat's own
+ * transaction ids, and never clears anything itself. Nothing in the app
+ * deletes @tunematch_local_purchases any more, in this release or a later one.
  */
-export async function mergeLocalCreditsToAccount(): Promise<{ merged: boolean, creditsMerged: number }> {
-  try {
-    const localCredits = await getLocalCredits();
-    const localPurchases = await getLocalPurchases();
-
-    // Only purchased credits may cross over. Derive that from the purchase log
-    // rather than subtracting the free grant from the balance: a guest who has
-    // already SPENT free credits would otherwise have real purchased credits
-    // deducted at signup (with GUEST_FREE_CREDITS=3, up to 3 destroyed).
-    // Clamped by the live balance so spent purchases aren't resurrected.
-    const purchasedEver = localPurchases.reduce((sum, p) => sum + (p.credits || 0), 0);
-    const creditsToMerge = Math.max(0, Math.min(localCredits, purchasedEver));
-
-    if (creditsToMerge === 0) {
-      // Nothing bought (or nothing left): drop the guest balance rather than
-      // carrying the free grant into the account on top of the signup credit.
-      if (localCredits > 0) {
-        await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
-        await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-        console.log(`ℹ️ Guest free credits not merged (registered users get their own signup credit)`);
-      }
-      return { merged: false, creditsMerged: 0 };
-    }
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return { merged: false, creditsMerged: 0 };
-    }
-
-    // Get current account credits
-    const accountCredits = await getUserCredits();
-    const totalCredits = accountCredits + creditsToMerge;
-
-    // Update account with merged credits (only purchased credits, not guest free credit)
-    const success = await updateUserCredits(totalCredits);
-    
-    if (success) {
-      // Clear local storage after successful merge
-      await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
-      await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-      console.log(`✅ Merged ${creditsToMerge} purchased credits to account (excluded ${localCredits - creditsToMerge} guest free credit). New total: ${totalCredits}`);
-      return { merged: true, creditsMerged: creditsToMerge };
-    }
-
-    return { merged: false, creditsMerged: 0 };
-  } catch (error) {
-    console.error('Error merging local credits:', error);
-    return { merged: false, creditsMerged: 0 };
-  }
-}
-
-/**
- * Clear local credits (after merge or logout)
- */
-export async function clearLocalCredits(): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(LOCAL_CREDITS_KEY);
-    await AsyncStorage.removeItem(LOCAL_PURCHASES_KEY);
-    console.log('🧹 Local credits cleared');
-  } catch (error) {
-    console.error('Error clearing local credits:', error);
-  }
-}
 
 // Get user's current credits (supports both authenticated and non-authenticated users)
 // Apple Guideline 5.1.1: Credits work without registration

@@ -27,8 +27,12 @@ export function isRefreshTokenError(error: any): boolean {
     message.includes('Invalid Refresh Token') ||
     message.includes('Refresh Token Not Found') ||
     message.includes('User from sub claim in JWT does not exist') ||
-    message.includes('JWT does not exist') ||
-    error.status === 401
+    message.includes('JWT does not exist')
+    // NOT `error.status === 401`. Every expired access token, every "Invalid
+    // API key", every transient auth hiccup arrives as a 401, and treating
+    // those as a dead refresh token signs the user out of an account that was
+    // never broken. Once a guest's identity IS their session, that same line
+    // would throw away their balance and their history.
   );
 }
 
@@ -40,8 +44,9 @@ export async function handleAuthError(error: any): Promise<void> {
       await supabase.auth.signOut();
     } catch (signOutError) {
       console.error('Error during forced signout:', signOutError);
-      // Clear storage manually if signOut fails
-      AsyncStorage.removeItem('supabase.auth.token');
+      // Deliberately no manual storage wipe here. 'supabase.auth.token' is not
+      // the key supabase-js v2 writes (it uses sb-<ref>-auth-token), so this
+      // only ever looked like cleanup while doing nothing.
     }
   }
 }
@@ -49,8 +54,8 @@ export async function handleAuthError(error: any): Promise<void> {
 // Global error handler for authentication errors
 supabase.auth.onAuthStateChange((event, session) => {
   if (event === 'SIGNED_OUT' && !session) {
-    // Clear any stored session data when signed out
-    AsyncStorage.removeItem('supabase.auth.token');
+    // Nothing to do: supabase-js clears its own key on sign-out, and the key
+    // this used to remove has never been the one it writes.
   }
 });
 

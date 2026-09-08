@@ -189,7 +189,7 @@ const CarouselCard = ({ card, index, clock, zIndex }: {
 
 const WelcomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user, loading, spotifyConnected } = useAuth();
+  const { user, loading, spotifyConnected, isRegistered } = useAuth();
   const [starting, setStarting] = useState(false);
   // Only returning (previously signed-in) users see a sign-in affordance;
   // brand-new users get a pure Start Matching screen.
@@ -265,7 +265,10 @@ const WelcomeScreen = () => {
   // Redirect if user is already logged in: Spotify gate first, then MainTabs
   useEffect(() => {
     console.log('[Welcome] auth effect - loading:', loading, 'user:', !!user, 'spotifyConnected:', spotifyConnected);
-    if (!loading && user) {
+    // isRegistered, not `user`: an anonymous identity can be minted while
+    // somebody is part-way through onboarding, and reacting to `user` becoming
+    // truthy would reset them into the tabs mid-funnel.
+    if (!loading && isRegistered) {
       // The Spotify prompt only shows when the remote flag is on for this user.
       const dest = (spotifyConnected || !isSpotifyConnectEnabled()) ? 'MainTabs' : 'ConnectSpotify';
       console.log('[Welcome] logged-in user detected, resetting to', dest);
