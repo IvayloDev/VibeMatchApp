@@ -4,7 +4,6 @@ import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
 import { captureLegacySnapshot } from './legacyRecovery';
-import { grantRegisteredFreeCredits } from './utils/freeCredits';
 import {
   getSpotifyConnectionStatus,
   maybeAutoRefreshTaste,
@@ -223,7 +222,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 // Stamp metadata so we skip this check next login
                 await supabase.auth.updateUser({ data: { free_credits_granted: true } });
               } else {
-                const creditsGranted = await grantRegisteredFreeCredits(userId);
+                // The signup grant is the server's, through
+                // claim_free_match_for. The client used to write
+                // `current + N` here, which the credits guard now refuses
+                // outright, and which was one absolute write away from
+                // overwriting a real balance.
+                const creditsGranted = false;
                 if (creditsGranted) {
                   // Persist flag to auth.users metadata so it survives reinstalls
                   await supabase.auth.updateUser({ data: { free_credits_granted: true } });

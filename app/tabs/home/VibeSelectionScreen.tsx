@@ -14,14 +14,14 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { getUserCredits } from '../../../lib/credits';
+import { getCreditState } from '../../../lib/creditState';
 import { trackEvent } from '../../../lib/posthog';
 import { hasProEntitlement } from '../../../lib/revenuecat';
 import { canProScanToday, PRO_DAILY_LIMIT } from '../../../lib/proQuota';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { VibeGrid } from '../../../lib/components/VibeGrid';
 import WallSheet from '../../../lib/components/WallSheet';
-import { claimDailyCreditIfDue, nextLocalMidnight } from '../../../lib/dailyCredit';
+import { nextLocalMidnight } from '../../../lib/dailyCredit';
 import { useAuth } from '../../../lib/AuthContext';
 import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 
@@ -88,31 +88,19 @@ const VibeSelectionScreen = () => {
     if (!selectedVibe) return;
     try {
       setLoading(true);
-      // Same gate order as AnalyzingScreen: pro-with-quota passes free, a pro
-      // at the daily cap falls back to credits, and only non-pros see the
-      // paywall modal. AnalyzingScreen re-checks; this is just the early exit.
-      const isPro = await hasProEntitlement();
-      const proQuotaLeft = isPro ? await canProScanToday() : false;
-      if (!proQuotaLeft) {
-        let currentCredits = await getUserCredits();
-        if (!isPro && currentCredits < 1) {
-          // Today's free match may still be unclaimed (app open across midnight).
-          const claim = await claimDailyCreditIfDue(false, !!user);
-          setNextFreeAt(claim.nextAt);
-          if (claim.granted) currentCredits = await getUserCredits();
-        }
-        if (currentCredits < 1) {
-          if (isPro) {
-            Alert.alert(
-              `That's ${PRO_DAILY_LIMIT} for today!`,
-              'You\'ve used all of today\'s matches. A fresh batch unlocks at midnight.'
-            );
-          } else {
-            trackEvent('out_of_credits', { source: 'vibe_selection', credits_balance: currentCredits });
-            setShowWall(true);
-          }
-          return;
-        }
+      // An early exit only, and only when we are sure. The server is what
+      // actually refuses a scan it cannot charge for, and it does so before
+      // spending anything, so a user whose balance we could not read still
+      // reaches their match instead of being walled on a guess.
+      //
+      // No daily claim here either: granting credits is the server's job now,
+      // and doing it on a screen transition is what used to write a 1 over a
+      // real balance.
+      const { balance, isPro, source } = getCreditState();
+      if (!isPro && source === 'server' && balance === 0) {
+        trackEvent('out_of_credits', { source: 'vibe_selection', credits_balance: 0 });
+        setShowWall(true);
+        return;
       }
       navigation.navigate('Analyzing', { image, selectedVibe });
     } catch (error) {

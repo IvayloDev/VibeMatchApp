@@ -21,15 +21,13 @@ import {
 } from '../../lib/revenuecat';
 import { getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../lib/proQuota';
 import {
-  getUserCredits,
-  getLocalCredits,
-  addLocalCredits,
-  storeLocalPurchase,
   storePendingValidation,
   getPendingValidations,
   removePendingValidation,
   updatePendingValidationRetry,
 } from '../../lib/credits';
+import { getCreditState } from '../../lib/creditState';
+import { refreshCreditState } from '../../lib/identity';
 import { validatePurchaseWithRetry } from '../../lib/supabase';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
@@ -97,7 +95,11 @@ const PaymentScreen = () => {
       }
     }
 
-    const credits = isAuthenticated ? await getUserCredits() : await getLocalCredits();
+    // One reading, from the server, for everyone. There is no local balance
+    // to fall back to any more, and the guest/account split is gone: both are
+    // Supabase users, one of them anonymous.
+    await refreshCreditState();
+    const credits = getCreditState().balance ?? 0;
     setCurrentCredits(credits);
 
     if (!paywallTracked.current) {
@@ -257,7 +259,12 @@ const PaymentScreen = () => {
         ?? CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID];
       let newBalance = currentCredits + credits;
 
-      if (isAuthenticated) {
+      // Everyone validates. There is no longer a guest branch that writes
+      // credits straight into AsyncStorage without a receipt check, a
+      // purchases row, or any record on the server that the sale happened.
+      // Every install has an identity, so every purchase can be verified
+      // against RevenueCat and granted by the server exactly once.
+      {
         const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
         if (validation.success && validation.creditsGranted) {
           newBalance = validation.newBalance ?? currentCredits + validation.creditsGranted;
@@ -273,9 +280,6 @@ const PaymentScreen = () => {
           );
           return;
         }
-      } else {
-        await addLocalCredits(credits);
-        await storeLocalPurchase(result.transactionId, result.productId, credits);
       }
 
       setCurrentCredits(newBalance);

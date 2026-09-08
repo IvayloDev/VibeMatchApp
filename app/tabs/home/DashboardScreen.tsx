@@ -9,14 +9,15 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getUserCredits } from '../../../lib/credits';
+import { getCreditState } from '../../../lib/creditState';
+import { refreshCreditState } from '../../../lib/identity';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
 import { canProScanToday, getProScansToday, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
 import { trackEvent, registerSuperProperties } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import WallSheet from '../../../lib/components/WallSheet';
-import { claimDailyCreditIfDue, nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
+import { nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
 import { registerNotificationOpenedTracking, scheduleFreeMatchReminderIfAllowed } from '../../../lib/notifications';
 import { startImagePrep } from '../../../lib/imagePrep';
 
@@ -39,7 +40,10 @@ type RootStackParamList = {
 
 const DashboardScreen = () => {
   const { user } = useAuth();
-  const [credits, setCredits] = useState(0);
+  // null means "the server has not told us yet", which is NOT zero. Nothing
+  // may gate on it until creditSource is 'server'.
+  const [credits, setCredits] = useState<number | null>(null);
+  const [creditSource, setCreditSource] = useState<'unknown' | 'server' | 'stale'>('unknown');
   const [isPro, setIsPro] = useState(false);
   const [proScansToday, setProScansToday] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -68,24 +72,24 @@ const DashboardScreen = () => {
     return run;
   };
 
-  const loadUserCreditsNow = async (options?: { claimDaily?: boolean }) => {
+  const loadUserCreditsNow = async (_options?: { claimDaily?: boolean }) => {
     try {
-      const pro = await hasProEntitlement();
+      // The balance and Pro both come from the server now, through one call.
+      // The daily claim used to happen here, on every mount and every
+      // foreground, and it wrote an absolute number: that is how a large
+      // balance got overwritten with 1 whenever a read failed first.
+      await refreshCreditState();
+      const state = getCreditState();
+      const pro = state.isPro;
       setIsPro(pro);
-      if (options?.claimDaily) {
-        // One free match a day, handed out only at a 0 balance (never to Pro).
-        const { nextAt } = await claimDailyCreditIfDue(pro, !!userRef.current);
-        setNextFreeAt(nextAt);
-      }
-      const userCredits = await getUserCredits();
-      setCredits(userCredits);
-      // Where this person stands, stamped on every later event, so any funnel
-      // can be split by Pro / balance / signed-in without each screen
-      // plumbing it through.
-      registerSuperProperties({ is_pro: pro, credits_balance: userCredits, signed_in: !!userRef.current });
+      setCredits(state.balance);
+      setCreditSource(state.source);
+      if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
+
+      registerSuperProperties({ is_pro: pro, credits_balance: state.balance, signed_in: !!userRef.current });
       if (!dashboardTracked.current) {
         dashboardTracked.current = true;
-        trackEvent('dashboard_viewed', { credits_balance: userCredits, is_pro: pro, signed_in: !!userRef.current });
+        trackEvent('dashboard_viewed', { credits_balance: state.balance, is_pro: pro, signed_in: !!userRef.current });
       }
       // Refreshed alongside credits so the badge is right after every scan.
       if (pro) setProScansToday(await getProScansToday());
@@ -159,13 +163,17 @@ const DashboardScreen = () => {
     }, [])
   );
 
-  // A free match may have unlocked since the balance was last read (the app
-  // can sit in the foreground across the 09:00 reset). True if one was just granted.
+  // Refresh rather than claim. Whether a free match is due is the server's
+  // decision, made in session-bootstrap and claim_free_match_for; asking again
+  // here is just reading the answer.
   const claimIfUnlocked = async () => {
-    const claim = await claimDailyCreditIfDue(false, !!userRef.current);
-    setNextFreeAt(claim.nextAt);
-    if (claim.granted) await loadUserCredits();
-    return claim.granted;
+    const before = getCreditState().balance;
+    await refreshCreditState();
+    const after = getCreditState();
+    setCredits(after.balance);
+    setCreditSource(after.source);
+    if (after.nextFreeAt) setNextFreeAt(after.nextFreeAt);
+    return typeof after.balance === 'number' && after.balance > (before ?? 0);
   };
 
   const openWall = (source: 'dashboard_cta' | 'dashboard_picker') => {
@@ -206,7 +214,11 @@ const DashboardScreen = () => {
     // stricter per-scan check (including the daily cap) lives in
     // AnalyzingScreen, which every scan path funnels through.
     const proCanScan = isPro && (await canProScanToday());
-    if (!proCanScan && credits < 1) {
+    // `creditSource === 'server'` is the whole point: without it, a user
+    // holding a paid pack on a bad connection was walled for credits they own,
+    // because a failed read returned 0 and this line believed it.
+    const knownEmpty = creditSource === 'server' && (credits ?? 0) < 1;
+    if (!proCanScan && knownEmpty) {
       if (isPro) {
         Alert.alert(
           `That's ${PRO_DAILY_LIMIT} for today!`,
@@ -223,7 +235,8 @@ const DashboardScreen = () => {
   };
 
   const handleButtonPress = async () => {
-    if (!isPro && credits < 1) {
+    const knownEmpty = creditSource === 'server' && (credits ?? 0) < 1;
+    if (!isPro && knownEmpty) {
       // No more paywall jump at 0: the wall says when the next free match
       // lands and offers the cheap pack first.
       if (await claimIfUnlocked()) {
@@ -236,7 +249,9 @@ const DashboardScreen = () => {
     }
   };
 
-  const outOfMatches = !loading && !isPro && credits < 1;
+  // Same rule for the copy: never say "next free match in ..." to somebody
+  // whose balance we have not actually read.
+  const outOfMatches = !loading && !isPro && creditSource === 'server' && (credits ?? 0) < 1;
 
   const handleButtonPressIn = () => {
     Animated.spring(buttonScale, {
@@ -313,7 +328,7 @@ const DashboardScreen = () => {
                       </>
                     ) : (
                       <>
-                        <Text style={styles.creditsValue}>{credits}</Text>
+                        <Text style={styles.creditsValue}>{credits ?? '\u2013'}</Text>
                         <Text style={styles.creditsText}> CREDITS</Text>
                       </>
                     )}

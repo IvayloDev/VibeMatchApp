@@ -10,7 +10,8 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getUserCredits } from '../../../lib/credits';
+import { getCreditState } from '../../../lib/creditState';
+import { refreshCreditState } from '../../../lib/identity';
 import {
   hasProEntitlement,
   subscribeToProStatus,
@@ -113,7 +114,8 @@ const ProfileScreen = () => {
 
   const loadUserCredits = async () => {
     try {
-      const userCredits = await getUserCredits();
+      await refreshCreditState();
+      const userCredits = getCreditState().balance ?? 0;
       setCredits(userCredits);
       // Onboarding deliberately skips the non-silent refresh for guests (it
       // would bounce them to the splash), so AuthContext can still say

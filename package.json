@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "version:bump": "node scripts/bump-version.js"
+    "version:bump": "node scripts/bump-version.js",
+    "check:credits": "bash scripts/check-no-client-credit-writes.sh"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

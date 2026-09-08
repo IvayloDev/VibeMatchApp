@@ -60,6 +60,42 @@ export function describeScanFailure(httpStatus: number, data: any): ScanFailure 
   const nestedCode = typeof nested?.code === 'string' ? nested.code : '';
   const nestedType = typeof nested?.type === 'string' ? nested.type : '';
 
+  // The server refused before spending anything. Callers handle these; they
+  // are here so nothing falls through to the catch-all, which apologises for
+  // a failure that did not happen and tells the user to retry forever.
+  if (httpStatus === 402 || code === 'insufficient_credits') {
+    return {
+      title: 'Out of Matches',
+      message: `You're out of matches for now. ${NOT_CHARGED}`,
+      retryable: false,
+      reason: 'insufficient_credits',
+    };
+  }
+  if (httpStatus === 409 && code === 'scan_in_flight') {
+    return {
+      title: 'Still Matching',
+      message: `This photo is already being matched. ${NOT_CHARGED}`,
+      retryable: false,
+      reason: 'scan_in_flight',
+    };
+  }
+  if (httpStatus === 409) {
+    return {
+      title: 'Already Matched',
+      message: `We've already matched this photo. ${NOT_CHARGED}`,
+      retryable: false,
+      reason: 'scan_conflict',
+    };
+  }
+  if (httpStatus === 401 || code === 'auth_required') {
+    return {
+      title: "Couldn't Start",
+      message: `We couldn't set this match up just now. ${NOT_CHARGED} Please try again in a moment.`,
+      retryable: true,
+      reason: 'auth_required',
+    };
+  }
+
   // Music search is down (bad or expired Spotify credentials server-side).
   if (code === 'SPOTIFY_AUTH' || error === 'Spotify API error') {
     return {

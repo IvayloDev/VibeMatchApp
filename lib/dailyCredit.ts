@@ -1,8 +1,4 @@
-import * as SecureStore from 'expo-secure-store';
-import { getLocalCredits, addLocalCredits, getUserCredits, updateUserCredits } from './credits';
-import { getDeviceId } from './utils/freeCredits';
 import { msUntilQuotaReset, formatQuotaReset, matchDayKey, nextResetAt } from './proQuota';
-import { trackEvent } from './posthog';
 
 /**
  * One free match a day.
@@ -19,23 +15,6 @@ import { trackEvent } from './posthog';
  * anti-farming approach as the one-time starter credits.
  */
 
-const DAILY_CREDIT_LAST_KEY_PREFIX = 'tunematch_daily_credit_last_';
-
-// SecureStore keys may only contain alphanumerics, ".", "-" and "_".
-function sanitizeKey(str: string): string {
-  return str.replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
-/** The match day, which rolls over at 09:00 local (see proQuota). */
-function localDateKey(d: Date = new Date()): string {
-  return matchDayKey(d);
-}
-
-async function storageKey(): Promise<string> {
-  const deviceId = await getDeviceId();
-  return `${DAILY_CREDIT_LAST_KEY_PREFIX}${sanitizeKey(deviceId)}`;
-}
-
 /** When the next free match becomes claimable: the next 09:00 local. */
 export function nextLocalMidnight(): Date {
   return nextResetAt();
@@ -46,89 +25,17 @@ export function formatUntil(date: Date): string {
   return formatQuotaReset(Math.max(0, date.getTime() - Date.now()));
 }
 
-export type DailyCreditResult = { granted: boolean; nextAt: Date };
-
 /**
- * Record that today's free credit is spoken for without granting anything.
- * Called when the starter credits are handed out, so a guest who burns all
- * three on day one sees "next free match in 14h" instead of a fourth match.
+ * The granting half of this module is gone.
+ *
+ * claimDailyCreditIfDue read a balance, added one, and wrote the result. It
+ * ran on every Dashboard mount and every foreground, so a failed read
+ * returning 0 became an absolute write of 1 over whatever the user actually
+ * had. The rule it implemented - one match a day, at 09:00 local, only when
+ * the balance is zero, never stacking - now lives in claim_free_match_for on
+ * the server, where the balance cannot be misread from the client.
+ *
+ * What remains here is the clock: when the next free match lands, and how to
+ * say that in words. The server returns next_free_at computed in the user's
+ * own timezone, and these format it.
  */
-export async function markDailyCreditGrantedToday(): Promise<void> {
-  try {
-    const key = await storageKey();
-    await SecureStore.setItemAsync(key, localDateKey());
-  } catch (err) {
-    console.warn('[dailyCredit] could not seed the daily marker:', err);
-  }
-}
-
-// Dashboard mount, an app foreground and the scan gate can all fire within
-// the same second. One in-flight claim serves every concurrent caller so the
-// read-then-write below cannot double-grant.
-let inFlight: Promise<DailyCreditResult> | null = null;
-
-/**
- * Grant today's free credit if it is due. Rules:
- *   - never for Pro (they have a daily quota already)
- *   - at most once per local calendar day per device
- *   - tops the balance up to 1; a balance that already has a match in hand
- *     consumes the day without granting, so free credits never accumulate
- * Never throws. `nextAt` is always the next 09:00 local, whether or not
- * anything was granted.
- */
-export async function claimDailyCreditIfDue(
-  isPro: boolean,
-  isAuthenticated: boolean
-): Promise<DailyCreditResult> {
-  if (inFlight) return inFlight;
-  inFlight = claimDailyCredit(isPro, isAuthenticated).finally(() => {
-    inFlight = null;
-  });
-  return inFlight;
-}
-
-async function claimDailyCredit(isPro: boolean, isAuthenticated: boolean): Promise<DailyCreditResult> {
-  const nextAt = nextLocalMidnight();
-  try {
-    if (isPro) return { granted: false, nextAt };
-
-    const key = await storageKey();
-    const lastGrantedOn = await SecureStore.getItemAsync(key);
-    const today = localDateKey();
-    if (lastGrantedOn === today) return { granted: false, nextAt };
-
-    const balance = isAuthenticated ? await getUserCredits() : await getLocalCredits();
-    if (balance > 0) {
-      // Already holding a match, so today's is effectively in hand. Marking
-      // the day is the whole point of the rule: spending that credit an hour
-      // from now must not hand out another one today.
-      await SecureStore.setItemAsync(key, today).catch(() => {});
-      return { granted: false, nextAt };
-    }
-
-    // Mark first, grant second (same order as the starter-credit grant) so a
-    // crash between the two costs the user one credit rather than handing out
-    // several. A failed write below restores the previous marker.
-    await SecureStore.setItemAsync(key, today);
-
-    const ok = isAuthenticated
-      ? await updateUserCredits(balance + 1)
-      : await addLocalCredits(1);
-
-    if (!ok) {
-      if (lastGrantedOn) {
-        await SecureStore.setItemAsync(key, lastGrantedOn).catch(() => {});
-      } else {
-        await SecureStore.deleteItemAsync(key).catch(() => {});
-      }
-      return { granted: false, nextAt };
-    }
-
-    trackEvent('daily_credit_claimed', { is_authenticated: isAuthenticated });
-    console.log(`[dailyCredit] granted today's free match (${isAuthenticated ? 'account' : 'guest'})`);
-    return { granted: true, nextAt };
-  } catch (err) {
-    console.warn('[dailyCredit] claim failed:', err);
-    return { granted: false, nextAt };
-  }
-}

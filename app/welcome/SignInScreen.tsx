@@ -9,7 +9,7 @@ import { LinearGradientFallback as LinearGradient } from '../../lib/components/L
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
-import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { requireIdentity } from '../../lib/identity';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
 import { trackEvent } from '../../lib/posthog';
 
@@ -305,7 +305,10 @@ const SignInScreen = () => {
           setShowGuestModal(false);
           
           // Grant free credits to guest user
-          const granted = await grantGuestFreeCredits();
+          // Starter credits are granted by the server, once per device, inside
+      // session-bootstrap. All the client does is make sure an identity
+      // exists for the server to grant them to.
+      const granted = !!(await requireIdentity('signin'));
           if (granted) {
             console.log('✅ Guest free credits granted');
           }

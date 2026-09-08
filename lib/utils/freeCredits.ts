@@ -136,91 +136,16 @@ export async function markRegisteredFreeCreditsAsGranted(userId: string): Promis
 }
 
 /**
- * Grant free credits to guest user (one-time only)
+ * The two grant functions that lived here are gone.
+ *
+ * grantGuestFreeCredits added credits to AsyncStorage and
+ * grantRegisteredFreeCredits wrote `current + N` to user_profiles. Both are
+ * now claim_device_starter and claim_free_match_for on the server, reached
+ * through session-bootstrap: the starter is rationed per DEVICE rather than
+ * per account, which matters because identities became free to create, and
+ * the client no longer names an amount at all.
+ *
+ * hasGuestFreeCreditsBeenGranted stays, purely as the local hint the server is
+ * told about, so a device that already had its starter credits under the old
+ * client does not receive them a second time on update day.
  */
-export async function grantGuestFreeCredits(): Promise<boolean> {
-  try {
-    // Check if already granted FIRST
-    const alreadyGranted = await hasGuestFreeCreditsBeenGranted();
-    if (alreadyGranted) {
-      console.log('⚠️ Guest free credits already granted for this device - skipping');
-      return false;
-    }
-    
-    // Check current credits before granting (for debugging)
-    const { getLocalCredits } = await import('../credits');
-    const currentCredits = await getLocalCredits();
-    console.log(`🔍 Current local credits before grant: ${currentCredits}`);
-    
-    // Mark as granted BEFORE adding credits to prevent race conditions
-    // This ensures we don't grant twice even if called multiple times
-    await markGuestFreeCreditsAsGranted();
-    
-    // Double-check after marking (in case of race condition)
-    const doubleCheck = await hasGuestFreeCreditsBeenGranted();
-    if (!doubleCheck) {
-      console.error('❌ Failed to mark credits as granted - aborting');
-      return false;
-    }
-    
-    // Import here to avoid circular dependencies
-    const { addLocalCredits } = await import('../credits');
-    const success = await addLocalCredits(GUEST_FREE_CREDITS);
-    
-    if (success) {
-      const newCredits = await getLocalCredits();
-      console.log(`✅ Granted ${GUEST_FREE_CREDITS} free credit(s) to guest user. New total: ${newCredits}`);
-      // The starter credits count as today's free match: the daily refill
-      // (lib/dailyCredit.ts) starts tomorrow, not the moment these run out.
-      try {
-        const { markDailyCreditGrantedToday } = await import('../dailyCredit');
-        await markDailyCreditGrantedToday();
-      } catch {}
-      return true;
-    } else {
-      // If adding credits failed, we should unmark (but this is unlikely)
-      console.error('❌ Failed to add credits but already marked as granted');
-      return false;
-    }
-  } catch (error) {
-    console.error('Error granting guest free credits:', error);
-    return false;
-  }
-}
-
-/**
- * Grant free credits to registered user (one-time only)
- */
-export async function grantRegisteredFreeCredits(userId: string): Promise<boolean> {
-  try {
-    // Check if already granted
-    const alreadyGranted = await hasRegisteredFreeCreditsBeenGranted(userId);
-    if (alreadyGranted) {
-      console.log('⚠️ Registered free credits already granted for this user');
-      return false;
-    }
-    
-    // Import here to avoid circular dependencies
-    const { getUserCredits, updateUserCredits } = await import('../credits');
-    const currentCredits = await getUserCredits();
-    const newCredits = currentCredits + REGISTERED_FREE_CREDITS;
-    const success = await updateUserCredits(newCredits);
-    
-    if (success) {
-      await markRegisteredFreeCreditsAsGranted(userId);
-      console.log(`✅ Granted ${REGISTERED_FREE_CREDITS} free credit(s) to registered user`);
-      // Same rule as the guest grant: the signup credit is today's free match.
-      try {
-        const { markDailyCreditGrantedToday } = await import('../dailyCredit');
-        await markDailyCreditGrantedToday();
-      } catch {}
-      return true;
-    }
-    
-    return false;
-  } catch (error) {
-    console.error('Error granting registered free credits:', error);
-    return false;
-  }
-}
-

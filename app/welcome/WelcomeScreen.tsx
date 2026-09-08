@@ -22,7 +22,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as SecureStore from 'expo-secure-store';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { grantGuestFreeCredits } from '../../lib/utils/freeCredits';
+import { requireIdentity } from '../../lib/identity';
 import { useAuth } from '../../lib/AuthContext';
 import { HAD_ACCOUNT_KEY } from '../../lib/AuthContext';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
@@ -300,7 +300,10 @@ const WelcomeScreen = () => {
 
     try {
       // Grant the one-time guest free credit silently
-      const granted = await grantGuestFreeCredits();
+      // Starter credits are granted by the server, once per device, inside
+      // session-bootstrap. All the client does is make sure an identity
+      // exists for the server to grant them to.
+      const granted = !!(await requireIdentity('welcome'));
       console.log('[Guest] credits granted:', granted);
 
       // Guests must connect Spotify too. Do NOT call refreshSpotifyStatus() here:

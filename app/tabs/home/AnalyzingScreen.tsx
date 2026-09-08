@@ -4,7 +4,7 @@ import { Text } from 'react-native-paper';
 import { LinearGradientFallback as LinearGradient } from '../../../lib/components/LinearGradientFallback';
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import WallSheet from '../../../lib/components/WallSheet';
-import { claimDailyCreditIfDue, nextLocalMidnight } from '../../../lib/dailyCredit';
+import { nextLocalMidnight } from '../../../lib/dailyCredit';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -12,12 +12,12 @@ import type { CompositeNavigationProp } from '@react-navigation/native';
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { requireIdentity } from '../../../lib/identity';
+import { getCreditState, applyScanCredits } from '../../../lib/creditState';
 import { supabase } from '../../../lib/supabase';
 import { Spacing, BorderRadius, Shadows } from '../../../lib/designSystem';
 import { triggerHaptic } from '../../../lib/utils/haptics';
-import { deductCredits, getUserCredits } from '../../../lib/credits';
-import { hasProEntitlement } from '../../../lib/revenuecat';
-import { getProScansToday, recordProScan, PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { describeScanFailure, noMatchFailure, networkScanFailure, imagePrepFailure } from '../../../lib/scanErrors';
 import { getPreparedImage, peekPreparedImage } from '../../../lib/imagePrep';
 import { recordSuccessfulMatch } from '../../../lib/reviewPrompt';
@@ -90,7 +90,37 @@ type AnalyzingNavigationProp = CompositeNavigationProp<
  * Only signed-in users get a signed URL here - they own their folder under RLS.
  * Guests hand the path to the server instead and it reads the object for them.
  */
+const SCAN_ID_KEY_PREFIX = '@tunematch_scan_id:';
+
+/**
+ * One scan id per photo, surviving an unmount.
+ *
+ * The server charges against this id and replays the same answer for a repeat,
+ * so it is the difference between a retry costing nothing and costing a second
+ * credit. Minting it in component state would lose it the moment the screen
+ * remounts - an Android back press, a backgrounded app, a navigation retry -
+ * and the next attempt would look like a brand new scan to the server.
+ */
+async function scanIdForImage(imageKey: string): Promise<string> {
+  const key = `${SCAN_ID_KEY_PREFIX}${imageKey}`;
+  try {
+    const existing = await AsyncStorage.getItem(key);
+    if (existing) return existing;
+    const fresh = Crypto.randomUUID().toLowerCase();
+    await AsyncStorage.setItem(key, fresh);
+    return fresh;
+  } catch {
+    // Without persistence a retry may charge twice. Still better than refusing
+    // the scan, and the server's own in-flight guard catches the common case.
+    return Crypto.randomUUID().toLowerCase();
+  }
+}
+
 function buildImagePath(userId?: string): string {
+  // Every install has a uid now, anonymous or not, so there is no guest prefix
+  // to fall back to. The legacy anonymous/<uuid>/<uuid>.jpg branch below is
+  // kept only for the case where an identity genuinely could not be minted,
+  // which is a failure path rather than a normal one.
   if (userId) return `${userId}/${Date.now()}.jpg`;
   // Lowercase explicitly: the storage INSERT policy and both edge functions match
   // this path with a strict lowercase-hex pattern, so an uppercase uuid would be
@@ -442,48 +472,28 @@ const AnalyzingScreen = () => {
         return;
       }
 
-      // Gate order: pro-with-quota scans free (counted), then credits, then
-      // stop. A pro user at the daily cap with leftover credits falls through
-      // to the credit path - balances stay usable forever.
-      const isPro = await hasProEntitlement();
-      const proScansToday = isPro ? await getProScansToday() : 0;
-      const usingProQuota = isPro && proScansToday < PRO_DAILY_LIMIT;
-      // Balance before this scan's deduction. `is_last_credit` marks the scan
-      // that leaves the user at zero - the moment the credit model stops them.
-      let creditsBefore = await getUserCredits();
+      // The gate is advisory now. The server decides whether this scan can
+      // be paid for, because it is the only party that cannot be lied to, and
+      // it refuses with 402 BEFORE spending anything on the model. Blocking
+      // here as well would mean two sources of truth, and the client's copy is
+      // the one that is wrong when a purchase landed on another device or a
+      // read failed and returned zero.
+      //
+      // What is kept is the reporting: credits_before still describes what the
+      // app believed, which is what makes the funnel readable.
+      const creditsBefore = getCreditState().balance;
+      const isPro = getCreditState().isPro;
 
-      if (!usingProQuota && !isPro && creditsBefore < 1) {
-        // Today's free match may still be unclaimed (the Dashboard claim may
-        // not have run yet, or the app sat open across midnight).
-        const { data: { session: gateSession } } = await supabase.auth.getSession();
-        const authed = !!gateSession?.user;
-        setIsAuthed(authed);
-        const claim = await claimDailyCreditIfDue(false, authed);
-        setNextFreeAt(claim.nextAt);
-        if (claim.granted) creditsBefore = await getUserCredits();
-      }
-
-      if (!usingProQuota && creditsBefore < 1) {
-        if (isPro) {
-          // A subscriber at the cap already pays - never upsell, just say
-          // when the next batch arrives.
-          trackEvent('pro_daily_cap_hit', {
-            pro_scans_today: proScansToday,
-            from_onboarding: !!fromOnboarding,
-          });
-          Alert.alert(
-            `That's ${PRO_DAILY_LIMIT} for today!`,
-            `You've used all of today's matches. A fresh ${PRO_DAILY_LIMIT} unlock in ${formatQuotaReset()}, at midnight.`,
-            [{ text: 'OK', onPress: leaveOnBlocked }]
-          );
-        } else {
-          trackEvent('out_of_credits', {
-            source: 'analyzing_gate',
-            credits_balance: creditsBefore,
-            from_onboarding: !!fromOnboarding,
-          });
-          setShowWall(true);
-        }
+      // An identity has to exist before the upload, because the object goes to
+      // this user's own folder and the charge is against this user.
+      const identity = await requireIdentity('scan');
+      if (!identity) {
+        trackEvent('scan_failed', { reason: 'no_identity', vibe: selectedVibe });
+        Alert.alert(
+          "Couldn't Start",
+          "We couldn't set this match up just now. Nothing was used and nothing was charged. Please try again in a moment.",
+          [{ text: 'OK', onPress: leaveOnBlocked }]
+        );
         return;
       }
 
@@ -491,11 +501,12 @@ const AnalyzingScreen = () => {
         vibe: selectedVibe,
         from_onboarding: !!fromOnboarding,
         signed_in: !!userId,
+        // What the CLIENT believed before the scan. Null means it had not
+        // heard from the server yet, which is different from zero and is now
+        // visible as such in the funnel.
         credits_before: creditsBefore,
-        is_last_credit: !usingProQuota && creditsBefore === 1,
+        is_last_credit: creditsBefore === 1,
         is_pro: isPro,
-        pro_scans_today: proScansToday,
-        used_pro_quota: usingProQuota,
         // How long the scan actually had to wait on the background resize.
         // Should be ~0; anything else means the prep is not keeping up.
         prep_wait_ms: prepWaitMs,
@@ -547,6 +558,10 @@ const AnalyzingScreen = () => {
           console.warn('Could not load guest history for the avoid list:', err);
         }
 
+        // One id per photo, reused by every retry of that photo, so a repeat
+        // replays the answer already paid for instead of buying a second one.
+        const scanId = await scanIdForImage(preparedUri ?? String(image));
+
         const payload = {
           imagePath: filePath,
           vibe: selectedVibe,
@@ -556,6 +571,15 @@ const AnalyzingScreen = () => {
           // Lets the server exclude what this install was already served,
           // even after the local history is gone.
           deviceId: await getDeviceId().catch(() => undefined),
+          // Contract 2 means "charge me server-side". Builds that do not send
+          // it are served under the old rules and charge themselves, which is
+          // the only safe thing to do with a client that re-reads its balance
+          // after the charge and demands its own arithmetic back.
+          contract: 2,
+          scanId,
+          // Minutes to ADD to UTC for local time; getTimezoneOffset has the
+          // opposite sign. Drives the Pro day boundary and next_free_at.
+          tzOffsetMinutes: -new Date().getTimezoneOffset(),
         };
         
         let accessToken: string | undefined;
@@ -622,6 +646,33 @@ const AnalyzingScreen = () => {
           });
         }
         setProgress(90);
+
+        // Out of credits: the wall, not an error dialog. The server refused
+        // before spending anything, so nothing was charged and there is
+        // nothing to apologise for.
+        // The same photo is already running, somewhere. Not an error, and
+        // above all not a second charge: the server refused to start a
+        // duplicate rather than paying for the model twice on one credit.
+        if (response.status === 409 && data?.code === 'scan_in_flight') {
+          trackEvent('scan_in_flight', { vibe: selectedVibe });
+          Alert.alert(
+            'Still Matching',
+            "This photo is already being matched. Give it a moment and check your Vault.",
+            [{ text: 'OK', onPress: leaveOnBlocked }]
+          );
+          return;
+        }
+
+        if (response.status === 402) {
+          applyScanCredits(data?.credits);
+          trackEvent('out_of_credits', {
+            source: 'analyzing_402',
+            credits_balance: data?.credits?.balance ?? 0,
+            from_onboarding: !!fromOnboarding,
+          });
+          setShowWall(true);
+          return;
+        }
 
         if (!response.ok || data.error || !data.songs) {
           // Not every failure is a missing match: quota exhaustion, Spotify auth
@@ -696,43 +747,22 @@ const AnalyzingScreen = () => {
           has_taste: typeof data?.has_taste === 'boolean' ? data.has_taste : undefined,
         });
 
-        if (usingProQuota) {
-          // Pro scan: count against today's quota instead of any balance.
-          // Recorded at the same point the credit path deducts, so a failed
-          // scan never consumes quota.
-          await recordProScan();
-        } else {
-          const deductionSuccess = await deductCredits(1);
-          if (!deductionSuccess) {
-            // The gate above already passed, so reaching here means the balance
-            // changed underneath us (another device, or a failed write). Don't
-            // hand over a result that wasn't paid for - the model call is already
-            // spent either way, but the user doesn't get a free match out of it.
-            console.warn('⚠️ Credit deduction failed after a successful match - withholding result');
-            trackEvent('scan_not_charged', {
-              vibe: selectedVibe,
-              credits_before: creditsBefore,
-              from_onboarding: !!fromOnboarding,
-            });
-            Alert.alert(
-              'Couldn\'t Complete',
-              'We couldn\'t confirm your credit balance, so this match wasn\'t saved. Please check your credits and try again.',
-              [{ text: 'OK', onPress: leaveOnBlocked }]
-            );
-            return;
-          }
-          console.log('✅ Credit deducted successfully');
-
-          // Hit zero on the back of a successful match - peak delight, no way
-          // to continue. This is the event that tells you whether the credit
-          // model is what's capping activation.
-          if (creditsBefore === 1) {
-            trackEvent('out_of_credits', {
-              source: 'scan_completed',
-              credits_balance: 0,
-              from_onboarding: !!fromOnboarding,
-            });
-          }
+        // No client-side charge. The server took the credit before it spent
+        // anything on the model, and refunded it on every failure path, so by
+        // the time we are here the accounting is already correct.
+        //
+        // What used to be here deducted a credit AFTER a successful match and,
+        // if that write failed, withheld the result the user had just paid
+        // for. Both halves are gone: the deduct because it is the server's
+        // job, and the withholding because there is no longer a case where we
+        // hold a match the user was charged for and refuse to show it.
+        applyScanCredits(data?.credits);
+        if (data?.credits?.balance === 0) {
+          trackEvent('out_of_credits', {
+            source: 'scan_completed',
+            credits_balance: 0,
+            from_onboarding: !!fromOnboarding,
+          });
         }
 
         if (currentUserId && filePath && songs) {

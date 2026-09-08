@@ -21,7 +21,7 @@ import {
   STARTER_PACK_PRODUCT_ID,
 } from '../revenuecat';
 import { validatePurchaseWithRetry } from '../supabase';
-import { addLocalCredits, storeLocalPurchase, storePendingValidation } from '../credits';
+import { storePendingValidation } from '../credits';
 import { scheduleFreeMatchReminder } from '../notifications';
 import { formatUntil } from '../dailyCredit';
 import { trackEvent } from '../posthog';
@@ -183,7 +183,12 @@ export default function WallSheet({
         ?? CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID];
       let newBalance = credits + granted;
 
-      if (isAuthenticated) {
+      // Everyone validates. There is no longer a guest branch that writes
+      // credits straight into AsyncStorage without a receipt check, a
+      // purchases row, or any record on the server that the sale happened.
+      // Every install has an identity, so every purchase can be verified
+      // against RevenueCat and granted by the server exactly once.
+      {
         const validation = await validatePurchaseWithRetry(result.transactionId, result.productId, 3);
         if (validation.success && validation.creditsGranted) {
           newBalance = validation.newBalance ?? credits + validation.creditsGranted;
@@ -199,9 +204,6 @@ export default function WallSheet({
           );
           return;
         }
-      } else {
-        await addLocalCredits(granted);
-        await storeLocalPurchase(result.transactionId, result.productId, granted);
       }
 
       trackEvent('purchase_completed', {
