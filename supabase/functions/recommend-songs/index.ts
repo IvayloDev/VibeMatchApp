@@ -327,15 +327,24 @@ function isSameArtist(got: string, want: string, mode: "strict" | "credit"): boo
  * only ever reads that id's own top tracks, so the identity check is the only
  * way in and popularity can no longer bridge to a different artist.
  */
-async function topTrackForArtist(
+/**
+ * The artist's top tracks, most popular first, or [] when the artist itself
+ * cannot be resolved. Returned as a list so the caller can first look for the
+ * track it actually wanted among them: with cross-script title matching that
+ * rescues a pick the search missed, which is a better answer than the most
+ * popular song by the same act.
+ */
+async function topTracksForArtist(
   artist: string,
   token: string,
-  state?: SpotifySearchState
-): Promise<any | null> {
+  state?: SpotifySearchState,
+  market = ""
+): Promise<any[]> {
   const wantArtist = (artist || "").trim();
-  if (!wantArtist || !token) return null;
+  if (!wantArtist || !token) return [];
   try {
     const params = new URLSearchParams({ type: "artist", limit: "10", q: wantArtist });
+    if (market) params.set("market", market);
     const resp = await fetchWithRetry(
       `https://api.spotify.com/v1/search?${params.toString()}`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -358,12 +367,14 @@ async function topTrackForArtist(
       return aExact - bExact || (b?.followers?.total ?? 0) - (a?.followers?.total ?? 0);
     });
     const artistId = matches[0]?.id;
-    if (!artistId) return null;
+    if (!artistId) return [];
 
-    // No market, then US. Spotify treats market as optional on this endpoint
-    // now, but an explicit market can also be what makes a thin regional
-    // catalog come back empty, so try the unscoped call first.
-    for (const suffix of ["", "?market=US"]) {
+    // The user's own market first, when the client sent one: a regional
+    // catalogue is exactly where the unscoped call hides releases. Then
+    // unscoped, then US, because an explicit market can also be what makes a
+    // thin catalogue come back empty.
+    const suffixes = market ? [`?market=${market}`, "", "?market=US"] : ["", "?market=US"];
+    for (const suffix of suffixes) {
       const topResp = await fetchWithRetry(
         `https://api.spotify.com/v1/artists/${artistId}/top-tracks${suffix}`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -374,12 +385,12 @@ async function topTrackForArtist(
       const tracks: any[] = Array.isArray(topData?.tracks) ? topData.tracks : [];
       if (tracks.length === 0) continue;
       tracks.sort((a: any, b: any) => (b?.popularity ?? 0) - (a?.popularity ?? 0));
-      return tracks[0];
+      return tracks;
     }
-    return null;
+    return [];
   } catch (err) {
-    console.warn("topTrackForArtist failed:", err);
-    return null;
+    console.warn("topTracksForArtist failed:", err);
+    return [];
   }
 }
 
@@ -409,9 +420,21 @@ function creditLine(track: any, wantArtist: string): string {
  * wrong pairing shipping through the success path.
  */
 function resolutionKind(rec: any, track: any): "exact" | "artist" {
-  const wantTitle = normalizeForMatch(stripDecor(rec?.title ?? ""));
-  const gotTitle = normalizeForMatch(track?.name ?? "");
-  if (!wantTitle || !gotTitle || wantTitle !== gotTitle) return "artist";
+  // Cross-script, like bestTrackMatch: a Cyrillic title and its Latin
+  // transliteration are the same title. Equality in any form, or containment
+  // when the shorter side is a real phrase - the two tiers bestTrackMatch
+  // treats as a title hit. Token overlap is deliberately excluded here: it is
+  // loose enough to call a different song "exact", and this function decides
+  // whether the row carries the substitution notice.
+  const wants = matchKeys(stripDecor(rec?.title ?? ""));
+  const gots = matchKeys(track?.name ?? "");
+  const titleMatches = wants.some((w) => gots.some((g) => {
+    if (!w || !g) return false;
+    if (w === g) return true;
+    const shorter = Math.min(w.split(" ").filter(Boolean).length, g.split(" ").filter(Boolean).length);
+    return shorter >= 2 && (w.includes(g) || g.includes(w));
+  }));
+  if (!titleMatches) return "artist";
   const credits: string[] = (track?.artists ?? []).map((a: any) => a?.name).filter(Boolean);
   return credits.some((n) => isSameArtist(n, rec?.artist ?? "", "credit")) ? "exact" : "artist";
 }
@@ -430,7 +453,10 @@ function resolutionKind(rec: any, track: any): "exact" | "artist" {
 function artistLevelReason(rec: any, track: any): string {
   const name = (track?.artists ?? [])[0]?.name || rec?.artist || "this artist";
   const written = typeof rec?.artist_reason === "string" ? rec.artist_reason.trim() : "";
-  const admission = `We couldn't find the track we picked for this photo, so this is ${name}'s best known one.`;
+  // Said as a choice, not a failure. "We couldn't find" three times on one
+  // photo reads as the app not working; the truth is that the pick did not
+  // resolve on Spotify and the artist's best-known track stands in for it.
+  const admission = `Our first pick isn't on Spotify, so here's ${name}'s best-known track instead.`;
   return written ? `${admission} ${written}` : admission;
 }
 
@@ -469,7 +495,14 @@ function shippedSong(rec: any, track: any) {
  * cut over a random live or karaoke upload.
  */
 function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): any | null {
-  const wantTitle = normalizeForMatch(normTitle);
+  // Every form the wanted title may be written in: as given, and transliterated
+  // to Latin. The artist comparison has folded script this way since the Billy
+  // Idol fix; the title comparison never did, so a model that wrote
+  // "Che doydesh li s men" could not match Spotify's "Ше дойдеш ли с мен",
+  // scored zero, and every Bulgarian pick fell to the artist's top track with
+  // an apology attached. Three in a row on one photo was that, not bad picks.
+  const wantTitles = matchKeys(normTitle);
+  const wantTitle = wantTitles[0];
   const wantArtist = normalizeForMatch(normArtist);
 
   let best: any = null;
@@ -481,7 +514,8 @@ function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): a
     // karaoke upload above the studio original, and returning the first exact
     // string match picked those. Scoring every candidate lets the popularity
     // tie-break below choose the canonical recording.
-    const gotTitle = normalizeForMatch(rawTitle);
+    const gotTitles = matchKeys(rawTitle);
+    const gotTitle = gotTitles[0];
     // Any credited artist may be the match - the model often names the featured
     // artist, and Spotify only puts one of them first.
     const gotArtists: string[] = (track.artists || [])
@@ -496,13 +530,18 @@ function bestTrackMatch(tracks: any[], normTitle: string, normArtist: string): a
       gotTitle.split(" ").filter(Boolean).length,
       wantTitle.split(" ").filter(Boolean).length
     );
+    // Best score over every (got form, want form) pair, so a Cyrillic title
+    // and its transliteration are the same title.
     let titleScore = 0;
-    if (gotTitle && gotTitle === wantTitle) titleScore = 40;
-    else if (
-      gotTitle && wantTitle && shorterTitleTokens >= 2 &&
-      (gotTitle.includes(wantTitle) || wantTitle.includes(gotTitle))
-    ) titleScore = 25;
-    else if (tokenOverlap(gotTitle, wantTitle) >= 0.6) titleScore = 20;
+    for (const g of gotTitles) {
+      for (const w of wantTitles) {
+        let sc = 0;
+        if (g && g === w) sc = 40;
+        else if (g && w && shorterTitleTokens >= 2 && (g.includes(w) || w.includes(g))) sc = 25;
+        else if (tokenOverlap(g, w) >= 0.6) sc = 20;
+        if (sc > titleScore) titleScore = sc;
+      }
+    }
 
     // Identity, not string containment. The old branches gave 35 for a raw
     // includes() and 30 for a half-token overlap, so "Bruno Mars" passed as
@@ -589,8 +628,10 @@ async function findTrackOnSpotify(
   artist: string, 
   searchQuery: string,
   accessToken: string,
-  state?: SpotifySearchState
+  state?: SpotifySearchState,
+  market = ""
 ): Promise<any | null> {
+  const marketParam = market ? `&market=${market}` : "";
   try {
     // Strip decorations (feat./Live/Remastered/...) so decorated titles resolve.
     title = stripDecor(title);
@@ -599,7 +640,7 @@ async function findTrackOnSpotify(
     // (AI occasionally corrupts it with JSON syntax artifacts)
     let query = `track:"${title}" artist:"${artist}"`;
     let encodedQuery = encodeURIComponent(query);
-    const primarySearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
+    const primarySearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10${marketParam}`;
     console.log("🎵 Spotify search [primary] query:", query, "| encoded q param:", encodedQuery, "| url:", primarySearchUrl);
 
     let response = await fetchWithRetry(primarySearchUrl, {
@@ -638,7 +679,7 @@ async function findTrackOnSpotify(
       // Fallback: try without quotes (fuzzy search)
       query = `${title} ${artist}`;
       encodedQuery = encodeURIComponent(query);
-      const fallbackSearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10`;
+      const fallbackSearchUrl = `https://api.spotify.com/v1/search?q=${encodedQuery}&type=track&limit=10${marketParam}`;
       console.log("🎵 Spotify search [fallback] query:", query, "| encoded q param:", encodedQuery, "| url:", fallbackSearchUrl);
 
       response = await fetchWithRetry(fallbackSearchUrl, {
@@ -998,6 +1039,11 @@ serve(async (req) => {
   // moves the Pro day boundary by twice the offset, which is the kind of bug
   // that only shows up for users in one hemisphere.
   let tzOffsetMinutes: number | undefined;
+  // ISO 3166-1 alpha-2, from the device. Spotify search without a market
+  // omits region-restricted releases, and local catalogues (the Bulgarian
+  // one, for instance) are exactly where that hides the track the model
+  // picked. Empty when the client did not send it, which changes nothing.
+  let market = "";
 
   try {
     const body = await req.json();
@@ -1013,6 +1059,9 @@ serve(async (req) => {
     if (typeof body.scanId === "string" && /^[0-9a-f-]{36}$/i.test(body.scanId)) scanId = body.scanId;
     if (Number.isInteger(body.tzOffsetMinutes) && Math.abs(body.tzOffsetMinutes) <= 14 * 60) {
       tzOffsetMinutes = body.tzOffsetMinutes;
+    }
+    if (typeof body.market === "string" && /^[A-Z]{2}$/.test(body.market)) {
+      market = body.market;
     }
     imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
@@ -1620,7 +1669,8 @@ serve(async (req) => {
       rec.artist,
       rec.search_query,
       spotifyToken,
-      spotifySearchState
+      spotifySearchState,
+      market
     );
 
     if (track) {
@@ -1632,7 +1682,22 @@ serve(async (req) => {
       // to that artist's most popular track keeps a real, correct-scene song
       // instead of failing the request. The artist is still verified, so a
       // hallucinated artist is dropped as before.
-      const fallback = await topTrackForArtist(rec.artist, spotifyToken, spotifySearchState);
+      const tops = await topTracksForArtist(rec.artist, spotifyToken, spotifySearchState, market);
+
+      // Rescue first: the wanted title may be right there in the artist's top
+      // ten, unreachable by search only because of spelling or script. Matched
+      // with the same cross-script scorer as the searches, so it ships as the
+      // real pick with its real reason, not as a substitution.
+      const rescued = tops.length
+        ? bestTrackMatch(tops, (rec.title || "").toLowerCase().trim(), (rec.artist || "").toLowerCase().trim())
+        : null;
+      if (rescued) {
+        console.log(`🩹 rescued "${rec.title}" by "${rec.artist}" from the artist's top tracks`);
+        resolvedSongs.push(shippedSong(rec, rescued));
+        continue;
+      }
+
+      const fallback = tops[0] ?? null;
       if (fallback) {
         // Print the artist we are actually shipping. The old line printed
         // rec.artist, so a swap read as "using X by Billy" and concealed that
