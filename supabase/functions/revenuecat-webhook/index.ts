@@ -84,6 +84,25 @@ async function resolveUser(admin: any, event: any): Promise<string | null> {
   return null;
 }
 
+/** Compare without leaking the answer through timing. */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * First 8 hex of a SHA-256, for telling two secrets apart in a log line without
+ * recording either. Useless for recovering the value, sufficient for answering
+ * "are these the same string".
+ */
+async function shortFingerprint(value: string): Promise<string> {
+  if (!value) return '(empty)';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).slice(0, 4).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok');
@@ -97,8 +116,26 @@ serve(async (req) => {
     console.error('🚨 REVENUECAT_WEBHOOK_AUTH is not set; refusing every event rather than trusting the caller');
     return new Response(JSON.stringify({ error: 'Not configured' }), { status: 503 });
   }
-  if ((req.headers.get('Authorization') ?? '') !== expected) {
-    console.warn('🚫 webhook rejected: bad or missing Authorization header');
+  // RevenueCat sends this field verbatim, and its own placeholder reads
+  // "e.g. Bearer Xz3aHx...", so a value pasted with the scheme in front is the
+  // normal case rather than a mistake. A paste can also pick up whitespace.
+  // Accept both shapes, compare the secret itself.
+  const presented = (req.headers.get('Authorization') ?? '').trim();
+  const offered = presented.replace(/^Bearer\s+/i, '');
+  const wanted = expected.trim().replace(/^Bearer\s+/i, '');
+
+  if (!timingSafeEqual(offered, wanted)) {
+    // Enough to tell a wrong secret from a wrong SHAPE, without putting either
+    // value in the logs. A length difference means the two sides hold
+    // different strings; equal lengths with different fingerprints means the
+    // same shape but a stale copy on one side.
+    console.warn('🚫 webhook rejected', {
+      presentedLength: offered.length,
+      expectedLength: wanted.length,
+      hadBearerPrefix: presented !== offered,
+      presentedFingerprint: await shortFingerprint(offered),
+      expectedFingerprint: await shortFingerprint(wanted),
+    });
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
   }
 
