@@ -992,6 +992,12 @@ serve(async (req) => {
   // old client-charges rules.
   let contract = 1;
   let scanId: string | undefined;
+  // Minutes to ADD to UTC to get the caller's local time: +120 for UTC+2. Note
+  // that JavaScript's getTimezoneOffset() returns the opposite sign, so the
+  // client must send `-new Date().getTimezoneOffset()`. Getting it backwards
+  // moves the Pro day boundary by twice the offset, which is the kind of bug
+  // that only shows up for users in one hemisphere.
+  let tzOffsetMinutes: number | undefined;
 
   try {
     const body = await req.json();
@@ -1005,6 +1011,9 @@ serve(async (req) => {
     // match, or withhold a match it had already paid for.
     if (Number.isInteger(body.contract)) contract = body.contract;
     if (typeof body.scanId === "string" && /^[0-9a-f-]{36}$/i.test(body.scanId)) scanId = body.scanId;
+    if (Number.isInteger(body.tzOffsetMinutes) && Math.abs(body.tzOffsetMinutes) <= 14 * 60) {
+      tzOffsetMinutes = body.tzOffsetMinutes;
+    }
     imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
     imagePath = typeof body.imagePath === "string" ? body.imagePath : undefined;
     vibe = typeof body.vibe === "string" ? body.vibe : undefined;
@@ -1256,6 +1265,10 @@ serve(async (req) => {
       p_user: userId,
       p_scan_id: scanId,
       p_request_hash: requestHash,
+      // Absent means the server falls back to a rolling 24 hours for the Pro
+      // cap, which needs no timezone and is never more generous than the
+      // 09:00-local rule it stands in for.
+      p_tz_offset_minutes: tzOffsetMinutes ?? null,
     });
 
     if (chargeError) {
