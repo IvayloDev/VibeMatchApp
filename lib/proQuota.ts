@@ -1,24 +1,20 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
 /**
  * Daily match quota for TuneMatch Pro subscribers.
  *
  * The subscription is sold as "10 song matches every day" (deliberately NOT
- * "unlimited" - a capped plan must not claim unlimited). This counter is the
- * cap. It is client-side and therefore tamperable; that is accepted for now
- * because the worst case is bounded OpenAI spend, and honest users are the
- * overwhelming majority. Server-side enforcement in recommend-songs is the
- * noted future hardening.
+ * "unlimited" - a capped plan must not claim unlimited). The cap itself is
+ * enforced on the server: charge_scan counts a Pro user's settled scans since
+ * the last 09:00 local and falls through to credits once PRO_DAILY_LIMIT is
+ * reached, and get_credit_state reports pro_used_today for the UI. Nothing on
+ * the client counts scans any more - the old AsyncStorage counter was deleted
+ * once the server number existed, because a client counter that nothing
+ * writes is a number the UI will happily display while it drifts.
  *
- * Key is scoped to the match day, which starts at 09:00 local rather than
- * midnight, so the reset lands when someone is awake to use it. The reset is
- * implicit: the key simply names a different day once 09:00 passes.
- * Yesterday's key is deleted lazily to avoid unbounded storage growth.
+ * What stays here is the limit and the reset clock: the match day starts at
+ * 09:00 local rather than midnight, so the reset lands when someone is awake
+ * to use it. These helpers say when that is so the UI can count down to it.
  */
 export const PRO_DAILY_LIMIT = 10;
-
-const KEY_PREFIX = '@tunematch_pro_scans_';
-const LAST_KEY_POINTER = '@tunematch_pro_scans_last_key';
 
 /** The hour the match day rolls over, local time. */
 export const RESET_HOUR = 9;
@@ -43,16 +39,12 @@ export function nextResetAt(from: Date = new Date()): Date {
   return at;
 }
 
-function todayKey(): string {
-  return `${KEY_PREFIX}${matchDayKey()}`;
-}
-
 /**
- * Milliseconds until the counter resets.
+ * Milliseconds until the allowance resets.
  *
- * There is no timer anywhere - the reset is implicit, because `todayKey()`
- * simply names a different key once 09:00 passes. This measures the distance
- * to that moment so the UI can say when.
+ * There is no timer anywhere - the reset is implicit on the server, which
+ * simply counts scans since the most recent 09:00. This measures the distance
+ * to the next one so the UI can say when.
  */
 export function msUntilQuotaReset(): number {
   const now = new Date();
@@ -69,45 +61,4 @@ export function formatQuotaReset(ms: number = msUntilQuotaReset()): string {
   if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m ${ss}s`;
   if (minutes > 0) return `${minutes}m ${ss}s`;
   return `${seconds}s`;
-}
-
-/** Scans a pro subscriber has used today (0 on any read error). */
-export async function getProScansToday(): Promise<number> {
-  try {
-    const key = todayKey();
-
-    // Lazily clean up the previous day's counter.
-    const lastKey = await AsyncStorage.getItem(LAST_KEY_POINTER);
-    if (lastKey && lastKey !== key) {
-      AsyncStorage.removeItem(lastKey).catch(() => {});
-    }
-    if (lastKey !== key) {
-      AsyncStorage.setItem(LAST_KEY_POINTER, key).catch(() => {});
-    }
-
-    const stored = await AsyncStorage.getItem(key);
-    const n = stored ? parseInt(stored, 10) : 0;
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Whether a pro subscriber may run another scan today. */
-export async function canProScanToday(): Promise<boolean> {
-  return (await getProScansToday()) < PRO_DAILY_LIMIT;
-}
-
-/**
- * Record one pro scan. Called at the same point the credit path deducts a
- * credit, so a failed scan is never counted.
- */
-export async function recordProScan(): Promise<void> {
-  try {
-    const key = todayKey();
-    const current = await getProScansToday();
-    await AsyncStorage.setItem(key, String(current + 1));
-  } catch {
-    // Losing one count is preferable to blocking the scan.
-  }
 }
