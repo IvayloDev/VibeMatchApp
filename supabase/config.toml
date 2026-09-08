@@ -61,3 +61,9 @@ entrypoint = "./functions/session-bootstrap/index.ts"
 enabled = true
 verify_jwt = true
 entrypoint = "./functions/recover-legacy-purchases/index.ts"
+
+# Takes the new session's JWT, and proves the old identity with its own token.
+[functions.claim-anonymous-identity]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/claim-anonymous-identity/index.ts"

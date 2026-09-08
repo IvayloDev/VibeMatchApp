@@ -128,7 +128,10 @@ export async function afterMint(uid: string): Promise<void> {
       });
     }
 
-    // 3. Legacy recovery, if this device has anything to recover.
+    // 3. Anything left over from a sign-in that replaced an anonymous identity.
+    await claimAnonymousIfPending();
+
+    // 4. Legacy recovery, if this device has anything to recover.
     await runLegacyRecovery(uid, token);
   } catch (error) {
     console.warn('[identity] afterMint did not finish:', error);
@@ -242,6 +245,82 @@ export async function refreshCreditState(): Promise<void> {
       }
     }
   } catch { /* leave whatever we had; a stale number beats a wrong zero */ }
+}
+
+const PENDING_MERGE_KEY = '@tunematch_pending_identity_merge';
+
+/**
+ * Remember the anonymous identity before a native sign-in replaces it.
+ *
+ * Apple and Google go through signInWithIdToken, which mints a NEW user and
+ * swaps the session out from under us. Once that has happened the old access
+ * token is unreachable, so it has to be captured first - and written to
+ * storage, because the OAuth sheet can background the app or the process can
+ * die between the two halves.
+ */
+export async function captureAnonymousForMerge(): Promise<void> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user?.is_anonymous || !session.access_token) return;
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    await AsyncStorage.setItem(PENDING_MERGE_KEY, JSON.stringify({
+      uid: session.user.id,
+      accessToken: session.access_token,
+      capturedAt: new Date().toISOString(),
+    }));
+    console.log('[identity] captured the anonymous identity before sign-in');
+  } catch (error) {
+    console.warn('[identity] could not capture the anonymous identity:', error);
+  }
+}
+
+/**
+ * Hand the captured identity to the server, which proves both sides and moves
+ * the balance, purchases, Vault and taste profile onto the new account.
+ *
+ * Safe to call whenever: it does nothing without a captured pair, the server
+ * refuses anything but an anonymous source, and identity_merges makes a repeat
+ * a no-op rather than a second payout.
+ */
+export async function claimAnonymousIfPending(): Promise<void> {
+  const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+  let pending: { uid?: string; accessToken?: string } | null = null;
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_MERGE_KEY);
+    if (!raw) return;
+    pending = JSON.parse(raw);
+  } catch { return; }
+  if (!pending?.accessToken) { await AsyncStorage.removeItem(PENDING_MERGE_KEY).catch(() => {}); return; }
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return;            // no destination yet, try later
+    if (session.user?.is_anonymous) return;        // still anonymous, sign-in has not landed
+    if (session.user?.id === pending.uid) {        // email signup upgraded in place
+      await AsyncStorage.removeItem(PENDING_MERGE_KEY);
+      return;
+    }
+
+    const result = await postJson('claim-anonymous-identity', session.access_token, {
+      anonymousAccessToken: pending.accessToken,
+    });
+
+    // Only stop retrying on a definite answer. A 503 or a dead network leaves
+    // the pair in place; an expired anonymous token (403) will never succeed,
+    // so keeping it would retry forever.
+    if (result && (result.merged === true || result.merged === false)) {
+      await AsyncStorage.removeItem(PENDING_MERGE_KEY);
+      if (typeof result.balance === 'number') setServerCredits({ balance: result.balance });
+      if (result.creditsMoved) {
+        console.log(`[identity] carried ${result.creditsMoved} credits onto the new account`);
+      }
+    } else if (result?.error && !result?.retryable) {
+      console.error('[identity] merge refused, dropping the pending claim:', result.error);
+      await AsyncStorage.removeItem(PENDING_MERGE_KEY);
+    }
+  } catch (error) {
+    console.warn('[identity] merge attempt failed, will retry:', error);
+  }
 }
 
 /** An identity change means the balance on screen belongs to somebody else. */

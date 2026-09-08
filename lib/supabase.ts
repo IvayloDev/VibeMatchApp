@@ -84,6 +84,15 @@ supabase.auth.onAuthStateChange((event, session) => {
 // Apple Sign-In
 export async function signInWithApple(): Promise<{ success: boolean; error?: string }> {
   try {
+    // Capture the anonymous identity BEFORE the session is replaced. This
+    // sign-in mints a new user, and once it lands the old access token is
+    // unreachable - along with the balance, purchases and Vault attached to it.
+    //
+    // Imported lazily: lib/identity.ts imports this module, and a top-level
+    // import here would close the cycle. Metro tolerates that until the order
+    // of first evaluation changes, and then something is undefined at module
+    // init for reasons nobody can see.
+    await (await import('./identity')).captureAnonymousForMerge();
     // Only available on iOS
     if (Platform.OS !== 'ios') {
       return { success: false, error: 'Apple Sign-In is only available on iOS' };
@@ -226,6 +235,15 @@ const discovery = {
 // iOS clients don't support implicit flow (id_token), so we use code exchange
 export async function signInWithGoogle(): Promise<{ success: boolean; error?: string }> {
   try {
+    // Capture the anonymous identity BEFORE the session is replaced. This
+    // sign-in mints a new user, and once it lands the old access token is
+    // unreachable - along with the balance, purchases and Vault attached to it.
+    //
+    // Imported lazily: lib/identity.ts imports this module, and a top-level
+    // import here would close the cycle. Metro tolerates that until the order
+    // of first evaluation changes, and then something is undefined at module
+    // init for reasons nobody can see.
+    await (await import('./identity')).captureAnonymousForMerge();
     // Use the app scheme as redirect URI (iOS clients allow custom schemes)
     const redirectUri = AuthSession.makeRedirectUri({
       scheme: 'com.paltech.tunematch',
