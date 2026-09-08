@@ -1,7 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import * as Application from 'expo-application';
 import { Platform } from 'react-native';
-import { DEBUG_TOOLS_ENABLED } from '../debugTools';
 
 // Secure storage keys (no @ prefix - SecureStore doesn't allow it)
 const GUEST_FREE_CREDITS_GRANTED_KEY = 'tunematch_guest_free_credits_granted';
@@ -17,20 +16,22 @@ function sanitizeKey(str: string): string {
 }
 
 /**
- * Free credit amounts.
+ * Free credit amounts. The same for everyone, on every build.
  *
- * A test build can start with a bigger balance so a whole flow can be walked
- * end to end without buying: set EXPO_PUBLIC_TEST_CREDITS on the build
- * profile. It is only honoured where the debug tools are compiled in, and the
- * production profile sets neither flag, so a store build always grants 3.
+ * Two, because onboarding ends in a scan: that first match spends one and
+ * leaves exactly one in hand, so a new user finishes onboarding holding a
+ * match they can spend on a photo they chose themselves rather than landing
+ * straight on a paywall. After that it is one per day (lib/dailyCredit.ts),
+ * granted at 09:00 local and never stacking.
+ *
+ * The EXPO_PUBLIC_TEST_CREDITS override is deliberately gone rather than left
+ * unset. A build-time flag that inflates a starting balance is the same shape
+ * as the holes closed this week, and the profile that carried it (device-test)
+ * ships to a real device, so "it is only for testing" was one edited eas.json
+ * away from being untrue.
  */
-const TEST_CREDITS = Number(process.env.EXPO_PUBLIC_TEST_CREDITS);
-
-export const GUEST_FREE_CREDITS: number =
-  DEBUG_TOOLS_ENABLED && Number.isFinite(TEST_CREDITS) && TEST_CREDITS > 0
-    ? TEST_CREDITS
-    : 3;
-export const REGISTERED_FREE_CREDITS: number = 1;
+export const GUEST_FREE_CREDITS: number = 2;
+export const REGISTERED_FREE_CREDITS: number = 2;
 
 /**
  * Get or create a unique device ID

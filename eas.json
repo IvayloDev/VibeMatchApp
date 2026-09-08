@@ -27,8 +27,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DEBUG_TOOLS": "1",
-        "EXPO_PUBLIC_TEST_CREDITS": "10"
+        "EXPO_PUBLIC_DEBUG_TOOLS": "1"
       }
     },
     "production": {
