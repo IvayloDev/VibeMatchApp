@@ -24,7 +24,7 @@ const CREDITS_PER_PRODUCT: Record<string, number> = {
  */
 type RcVerdict =
   /** RevenueCat holds this purchase. Carries its own transaction id. */
-  | { status: 'verified'; transactionId: string }
+  | { status: 'verified'; transactionId: string; altTransactionId: string | null }
   /** RevenueCat answered and has no such purchase for this user. */
   | { status: 'not_found' }
   /**
@@ -67,14 +67,17 @@ async function verifyWithRevenueCat(
   if (purchases.length === 0) return { status: 'not_found' };
 
   const exact = purchases.find((p) => p.id === transactionId || p.store_transaction_id === transactionId);
-  if (exact?.id) return { status: 'verified', transactionId: exact.id };
+  // The STORE id is primary: it is the one the webhook also sees, so both
+  // paths converge on one purchases row. RevenueCat's own id rides along as
+  // the alternate so nothing recorded under it before can be granted twice.
+  if (exact?.id) return { status: 'verified', transactionId: exact.store_transaction_id || exact.id, altTransactionId: exact.id };
 
   if (transactionId.startsWith('rc_')) {
     const cutoff = Date.now() - 15 * 60 * 1000;
     const recent = purchases
       .filter((p) => p.id && p.purchase_date && Date.parse(p.purchase_date) >= cutoff)
       .sort((a, b) => Date.parse(b.purchase_date!) - Date.parse(a.purchase_date!));
-    if (recent[0]?.id) return { status: 'verified', transactionId: recent[0].id };
+    if (recent[0]?.id) return { status: 'verified', transactionId: recent[0].store_transaction_id || recent[0].id, altTransactionId: recent[0].id };
   }
   return { status: 'not_found' };
 }
@@ -299,6 +302,7 @@ serve(async (req) => {
       p_platform: platform,
       p_credits: creditsToGrant,
       p_source: 'validate_purchase',
+      p_alt_txn: verdict.altTransactionId,
     });
 
     if (grantError) {

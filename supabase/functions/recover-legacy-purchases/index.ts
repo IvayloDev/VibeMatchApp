@@ -97,7 +97,8 @@ serve(async (req) => {
         continue;
       }
       for (const p of (entries as any[]) ?? []) {
-        const txn: string | undefined = p?.id ?? p?.store_transaction_id;
+        const txn: string | undefined = p?.store_transaction_id ?? p?.id;
+        const altTxn: string | null = p?.store_transaction_id ? (p?.id ?? null) : null;
         const platform = platformFor(p?.store);
         if (!txn || !platform) continue;
         seenTxns.add(txn);
@@ -109,6 +110,7 @@ serve(async (req) => {
           p_platform: platform,
           p_credits: credits,
           p_source: 'legacy_recovery',
+          p_alt_txn: altTxn,
         });
         if (error) throw new Error(`grant_purchase_credits: ${error.message}`);
 

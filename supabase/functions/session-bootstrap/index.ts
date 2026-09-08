@@ -132,7 +132,8 @@ serve(async (req) => {
           const credits = CREDITS_PER_PRODUCT[productId];
           if (!credits) continue;
           for (const p of (entries as any[]) ?? []) {
-            const txn = p?.id ?? p?.store_transaction_id;
+            const txn = p?.store_transaction_id ?? p?.id;
+            const altTxn = p?.store_transaction_id ? (p?.id ?? null) : null;
             const platform = platformFor(p?.store);
             if (!txn || !platform) continue;
             const { error } = await admin.rpc('grant_purchase_credits', {
@@ -142,6 +143,7 @@ serve(async (req) => {
               p_platform: platform,
               p_credits: credits,
               p_source: 'session_bootstrap',
+              p_alt_txn: altTxn,
             });
             if (error) console.error('pack reconcile failed', { txn, message: error.message });
           }
