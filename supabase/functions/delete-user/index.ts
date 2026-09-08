@@ -1,92 +1,44 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+/**
+ * TOMBSTONE. This endpoint is retired and refuses every request.
+ *
+ * Account deletion lives in `smooth-handler`, which is what the app actually
+ * calls (ProfileScreen -> "Delete Profile"). That one holds the service role,
+ * erases the user's rows and their storage folder, records the email so the
+ * free grant cannot be claimed again, and hard-deletes the auth user.
+ *
+ * This one was a broken duplicate. It built its client from the ANON key plus
+ * the caller's JWT, so `auth.admin.deleteUser` could never succeed: that call
+ * needs the service role. What it did instead was delete the caller's
+ * user_profiles and history rows under their own RLS, then fail at the last
+ * step, leaving a live account with its credits and history destroyed and no
+ * way to tell that had happened. Nothing in the app referenced it, but it was
+ * deployed and reachable by anyone signed in.
+ *
+ * Previous body is in git history. Safe to delete outright once the logs are
+ * quiet:
+ *
+ *     npx supabase functions delete delete-user
+ */
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+};
 
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { headers: corsHeaders });
   }
-
-  try {
-    // Create a Supabase client with the Auth context of the function
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: req.headers.get('Authorization')! },
-        },
-      }
-    )
-
-    // Get the user from the request
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser()
-    
-    if (userError || !user) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { 
-          status: 401, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      )
-    }
-
-    // Delete user data from all tables
-    const { error: profileError } = await supabaseClient
-      .from('user_profiles')
-      .delete()
-      .eq('user_id', user.id)
-
-    const { error: historyError } = await supabaseClient
-      .from('history')
-      .delete()
-      .eq('user_id', user.id)
-
-    // Explicitly clear Spotify data (FK CASCADE also handles this, but be explicit)
-    await supabaseClient
-      .from('spotify_connections')
-      .delete()
-      .eq('user_id', user.id)
-
-    await supabaseClient
-      .from('spotify_taste_profiles')
-      .delete()
-      .eq('user_id', user.id)
-
-    // Delete the user account using admin privileges
-    const { error: deleteError } = await supabaseClient.auth.admin.deleteUser(user.id)
-
-    if (deleteError) {
-      return new Response(
-        JSON.stringify({ error: 'Failed to delete user account' }),
-        { 
-          status: 500, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      )
-    }
-
-    return new Response(
-      JSON.stringify({ success: true, message: 'User account deleted successfully' }),
-      { 
-        status: 200, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
-    )
-
-  } catch (error) {
-    return new Response(
-      JSON.stringify({ error: 'Internal server error' }),
-      { 
-        status: 500, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
-    )
-  }
-}) 
+  console.warn('delete-user is retired; refused a request. Account deletion is smooth-handler.', {
+    ip: (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || null,
+    hasAuth: !!req.headers.get('Authorization'),
+  });
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: 'This endpoint has been retired. Account deletion is handled elsewhere in the app.',
+    }),
+    { status: 410, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+});
