@@ -52,7 +52,27 @@ const SignUpScreen = () => {
     }
     setLoading(true);
     trackEvent('registration_started', { method: 'email' });
-    const { data, error } = await supabase.auth.signUp({ email: cleanEmail, password });
+    // If this device already has an anonymous identity, UPGRADE it rather than
+    // creating a second account.
+    //
+    // signUp() mints a brand new auth.users row and replaces the session. The
+    // anonymous user - holding the balance, the purchases and the Vault - is
+    // simply abandoned, and nothing carries over: the old local merge was
+    // deleted when credits moved server-side, and claim_device_starter will
+    // not re-grant a starter because the DEVICE already claimed one. So
+    // registering used to cost a guest everything they had, including a pack
+    // they paid for.
+    //
+    // updateUser on an anonymous session attaches the email and password to
+    // the SAME uid, so the balance, purchases and history stay exactly where
+    // they are and there is nothing to merge.
+    const { data: { session: existing } } = await supabase.auth.getSession();
+    const upgradingAnonymous = !!existing?.user?.is_anonymous;
+
+    const { data, error } = upgradingAnonymous
+      ? await supabase.auth.updateUser({ email: cleanEmail, password })
+          .then((r) => ({ data: r.data?.user ? { user: r.data.user, session: existing } : null, error: r.error }))
+      : await supabase.auth.signUp({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
       trackEvent('registration_failed', { method: 'email', error: error.message });
@@ -63,6 +83,10 @@ const SignUpScreen = () => {
       trackEvent('registration_completed', {
         method: 'email',
         needs_confirmation: !data.session,
+        // Whether this kept the guest's existing identity or made a new one.
+        // If this is ever false for someone who had been using the app, they
+        // lost a balance and a Vault, and that is worth being able to count.
+        upgraded_anonymous: upgradingAnonymous,
       });
       await routeAfterAuth();
     }

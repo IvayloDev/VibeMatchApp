@@ -283,10 +283,19 @@ const OnboardingScreen: React.FC = () => {
 
       const { data: { session } } = await supabase.auth.getSession();
 
-      // Guests are routed by a device-scoped flag, since they have no Supabase
-      // user for `onboardingComplete` to hang off. Without this a guest lands
-      // back on Welcome every cold start and repeats onboarding forever.
-      if (!session?.user) {
+      // Guests are routed by a device-scoped flag, since they have no account
+      // for `onboardingComplete` to hang off. Without this a guest lands back
+      // on Welcome every cold start and repeats onboarding forever.
+      //
+      // `!session?.user` stopped meaning "guest" the moment every install
+      // started getting an anonymous Supabase uid - WelcomeScreen mints one on
+      // Start Matching, before this line ever runs - so the flag was never
+      // written and the exact bug it was added to prevent came back.
+      //
+      // Read the session here rather than AuthContext's isAnonymous: the mint
+      // may be seconds old and the context can still be catching up, while
+      // getSession() is local and current.
+      if (!session?.user || session.user.is_anonymous) {
         await markGuestOnboardingComplete();
       }
       navigation.navigate('OnboardingAnalyzing', {
