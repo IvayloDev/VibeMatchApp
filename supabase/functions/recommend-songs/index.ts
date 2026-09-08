@@ -440,6 +440,99 @@ function resolutionKind(rec: any, track: any): "exact" | "artist" {
 }
 
 /**
+ * When the model's title for an artist does not exist, let it choose from the
+ * songs that do.
+ *
+ * For niche and regional artists the model invents titles: a Bulgarian-taste
+ * scan asked for "GO", "Cliché" and "No Drama" by artists who never released
+ * them, while an English-taste scan named three real songs and resolved all
+ * three. No search fix helps with an invented title. So on a miss, the
+ * artist's real top tracks go to a cheap second call that picks the best fit
+ * for the photo and writes a reason about THAT song. The pick resolves by
+ * construction, the reason is true, and nothing needs a substitution notice.
+ *
+ * gpt-4.1-mini, a few hundred tokens, only on a miss. Returns null on any
+ * failure so the caller falls through to the plain top-track fallback.
+ */
+async function chooseFromCatalogue(
+  rec: any,
+  tops: any[],
+  vibe: string | undefined,
+  openaiKey: string
+): Promise<{ track: any; reason: string } | null> {
+  const candidates = tops.slice(0, 10).map((t: any, i: number) => ({
+    i,
+    title: t?.name ?? "",
+    album: t?.album?.name ?? "",
+    year: String(t?.album?.release_date ?? "").slice(0, 4),
+  })).filter((c: any) => c.title);
+  if (candidates.length === 0) return null;
+
+  const artistName = tops[0]?.artists?.[0]?.name || rec?.artist || "this artist";
+  // Why the model wanted this artist for this photo. artist_reason is written
+  // about the artist rather than the invented song, so it survives the swap.
+  const context = [rec?.artist_reason, rec?.reason]
+    .filter((x: any) => typeof x === "string" && x.trim())
+    .join(" ");
+
+  const body = {
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    max_tokens: 220,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "catalogue_pick",
+        strict: true,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: { index: { type: "integer" }, reason: { type: "string" } },
+          required: ["index", "reason"],
+        },
+      },
+    },
+    messages: [
+      {
+        role: "system",
+        content:
+          "You choose one real song from a numbered list to match a photo's mood, and write one or two sentences about why THIS song fits THIS photo. Describe the song and the photo; never mention a list, other songs, or that anything was substituted. Reply with the index and the reason.",
+      },
+      {
+        role: "user",
+        content:
+          `Vibe: ${vibe ?? "unspecified"}.\n` +
+          `Why ${artistName} suits this photo: ${context || "(no notes)"}\n\n` +
+          `Real songs by ${artistName}:\n` +
+          candidates.map((c: any) => `${c.i}. "${c.title}" (${c.album}${c.year ? ", " + c.year : ""})`).join("\n") +
+          `\n\nPick the best fit.`,
+      },
+    ],
+  };
+
+  try {
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      console.warn("catalogue pick failed:", resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    const parsed = JSON.parse(data?.choices?.[0]?.message?.content ?? "{}");
+    const track = tops[Number(parsed?.index)];
+    const reason = typeof parsed?.reason === "string" ? parsed.reason.trim() : "";
+    if (!track || !reason) return null;
+    return { track, reason };
+  } catch (err) {
+    console.warn("catalogue pick threw:", err);
+    return null;
+  }
+}
+
+/**
  * The line to show when the shipped track is not the one the reason was
  * written about. Never falls back to rec.reason: that text names a specific
  * song, so on a substitution it is a fabrication about a song the user is not
@@ -1703,6 +1796,23 @@ serve(async (req) => {
         continue;
       }
 
+      // The pick did not exist. Let the model choose among songs that do, and
+      // write about the one it chose, so this ships as a real pick with a
+      // true reason rather than as a substitution with a notice.
+      if (tops.length && openaiKey) {
+        const chosen = await chooseFromCatalogue(rec, tops, vibe, openaiKey);
+        if (chosen) {
+          console.log(`🎯 catalogue pick for "${rec.artist}": "${chosen.track?.name}" (asked for "${rec.title}")`);
+          resolvedSongs.push({
+            ...shippedSong(rec, chosen.track),
+            reason: chosen.reason,
+            mood_tags: rec.mood_tags ?? [],
+            match_kind: "catalogue",
+          });
+          continue;
+        }
+      }
+
       const fallback = tops[0] ?? null;
       if (fallback) {
         // Print the artist we are actually shipping. The old line printed
@@ -1820,7 +1930,8 @@ serve(async (req) => {
   const shipped = deduplicatedSongs.slice(0, 3);
   const resolution = {
     exact: shipped.filter((s: any) => s.match_kind === "exact").length,
-    artist: shipped.filter((s: any) => s.match_kind !== "exact").length,
+    catalogue: shipped.filter((s: any) => s.match_kind === "catalogue").length,
+    artist: shipped.filter((s: any) => s.match_kind === "artist").length,
     failed: failedSongs.length,
     // The picks that resolved to nothing, so a stored result says what was
     // asked for and not merely how many were lost.
