@@ -508,7 +508,7 @@ const PaymentScreen = () => {
               hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
             >
               <Text style={styles.registerLinkText}>
-                or create a free account for 1 bonus credit
+                or create a free account to keep your matches
               </Text>
             </TouchableOpacity>
           )}
