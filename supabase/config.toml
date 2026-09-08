@@ -49,3 +49,15 @@ entrypoint = "./functions/save-taste-profile/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/revenuecat-webhook/index.ts"
+
+# Takes the caller's JWT (anonymous users included), so the platform gate stays on.
+[functions.session-bootstrap]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/session-bootstrap/index.ts"
+
+# Takes the caller's JWT (anonymous users included), so the platform gate stays on.
+[functions.recover-legacy-purchases]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/recover-legacy-purchases/index.ts"
