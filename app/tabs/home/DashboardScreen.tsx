@@ -360,8 +360,14 @@ const DashboardScreen = () => {
                         <MaterialCommunityIcons name="crown" size={14} color="#FFD700" />
                         {/* Subscribers were shown only "PRO", with no way to see
                             how much of the daily allowance was left. */}
+                        {/* Past the daily cap the server spends credits instead,
+                            so a subscriber holding a pack keeps matching. That was
+                            invisible: the badge sat on 0/10 while each scan quietly
+                            took a credit. Say which meter is paying. */}
                         <Text style={styles.creditsText}>
-                          {' '}{Math.max(0, PRO_DAILY_LIMIT - proScansToday)}/{PRO_DAILY_LIMIT} TODAY
+                          {PRO_DAILY_LIMIT - proScansToday <= 0 && (credits ?? 0) > 0
+                            ? ` 0/${PRO_DAILY_LIMIT} TODAY · ${credits} CREDITS`
+                            : ` ${Math.max(0, PRO_DAILY_LIMIT - proScansToday)}/${PRO_DAILY_LIMIT} TODAY`}
                         </Text>
                       </>
                     ) : (
