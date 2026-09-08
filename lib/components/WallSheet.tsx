@@ -360,7 +360,7 @@ export default function WallSheet({
               activeOpacity={0.7}
               hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
             >
-              <Text style={styles.registerLinkText}>Create an account for 1 bonus credit</Text>
+              <Text style={styles.registerLinkText}>Create an account to keep your matches</Text>
             </TouchableOpacity>
           )}
         </Animated.View>
