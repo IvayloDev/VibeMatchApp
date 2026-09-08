@@ -18,6 +18,14 @@
 begin;
 
 alter table public.purchases add column if not exists alt_transaction_id text;
+
+-- One function, not an overload pair. Keeping a six-argument version beside a
+-- seven-argument one with defaults makes a six-named-argument call ambiguous
+-- and Postgres refuses it outright - the same trap consume_free_grant_for_self
+-- fell into earlier. Dropping the old signature here, inside the transaction
+-- that creates the new one, leaves no window: every deployed caller passes six
+-- named arguments and resolves to the new function with p_alt_txn defaulted.
+drop function if exists public.grant_purchase_credits(uuid, text, text, text, integer, text);
 create unique index if not exists purchases_alt_transaction_id_key
   on public.purchases (alt_transaction_id) where alt_transaction_id is not null;
 
@@ -86,26 +94,6 @@ $$;
 
 revoke all on function public.grant_purchase_credits(uuid, text, text, text, integer, text, text) from public, anon, authenticated;
 grant execute on function public.grant_purchase_credits(uuid, text, text, text, integer, text, text) to service_role;
-
--- The six-argument form stays callable so nothing deployed today breaks in the
--- window between this migration and the function redeploys.
-create or replace function public.grant_purchase_credits(
-  p_user     uuid,
-  p_product  text,
-  p_txn      text,
-  p_platform text,
-  p_credits  integer,
-  p_source   text
-)
-returns table (granted boolean, balance integer)
-language sql
-security definer
-set search_path = public
-as $$
-  select * from public.grant_purchase_credits(p_user, p_product, p_txn, p_platform, p_credits, p_source, null);
-$$;
-revoke all on function public.grant_purchase_credits(uuid, text, text, text, integer, text) from public, anon, authenticated;
-grant execute on function public.grant_purchase_credits(uuid, text, text, text, integer, text) to service_role;
 
 -- Proof: the same sale under its two ids grants once.
 do $$
