@@ -623,6 +623,26 @@ export async function reconcileProAfterLogin(userId: string): Promise<boolean> {
   return isPro;
 }
 
+/**
+ * Who RevenueCat currently thinks this app user is.
+ *
+ * Needed because a purchase is only recoverable if RevenueCat's app user id
+ * and our Supabase uid are the same string: validate-purchase looks the
+ * transaction up under /v1/subscribers/{uid}. Charging a card whose receipt
+ * will then fail to verify is the one outcome worth refusing a sale over, so
+ * the purchase paths assert this before starting.
+ */
+export async function getCurrentAppUserId(): Promise<string | null> {
+  try {
+    if (Purchases && typeof Purchases.getAppUserID === 'function') {
+      return await Purchases.getAppUserID();
+    }
+  } catch (error) {
+    console.warn('[RevenueCat] could not read the app user id:', error);
+  }
+  return currentAppUserId;
+}
+
 export async function identifyUser(userId: string): Promise<CustomerInfo | null> {
   if (!isRevenueCatAvailable() || !isConfigured) {
     console.warn('[RevenueCat] Not configured, skipping user identification');

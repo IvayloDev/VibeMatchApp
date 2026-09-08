@@ -3,6 +3,7 @@ import { Session, User } from '@supabase/supabase-js';
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { supabase, isRefreshTokenError, signOutFromGoogle } from './supabase';
+import { captureLegacySnapshot } from './legacyRecovery';
 import { grantRegisteredFreeCredits } from './utils/freeCredits';
 import {
   getSpotifyConnectionStatus,
@@ -141,6 +142,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    // Before anything else, and before the network: preserve whatever this
+    // device believes it bought. For a guest who paid for a pack under the old
+    // client, @tunematch_local_purchases is the only evidence the sale ever
+    // happened, and it must survive being killed one second from now.
+    // Read-only, idempotent, and it deletes nothing.
+    captureLegacySnapshot().catch(() => {});
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (error) {
