@@ -278,79 +278,54 @@ serve(async (req) => {
       }
     }
 
-    // Record the purchase in the database
-    const { error: purchaseError } = await adminClient
-      .from('purchases')
-      .insert({
-        user_id: user.id,
-        product_id: productId,
-        transaction_id: verifiedTransactionId,
-        platform: platform,
-        credits_granted: creditsToGrant,
-        validation_data: {
-          validated_by: 'revenuecat_api',
-          validated_at: new Date().toISOString(),
-          base_credits: baseCredits,
-          launch_offer_bonus: 0,
-        },
-      });
+    // One call, one transaction: the purchases row and the balance move
+    // together or not at all.
+    //
+    // This replaces an insert, then a read, then an upsert, then a hand-rolled
+    // delete of the row if the upsert failed. That compensation existed only
+    // because the writes were separate, and it had a nasty failure of its own:
+    // if the rollback delete also failed, the dedupe row survived, every retry
+    // returned alreadyProcessed, and a customer who had been charged was locked
+    // out of their credits permanently.
+    //
+    // It is also the same function the RevenueCat webhook calls. The same
+    // purchase legitimately arrives from both, and keying on the UNIQUE
+    // transaction id means whichever lands first grants and the other is a
+    // no-op, rather than the two racing to double-grant.
+    const { data: grantRows, error: grantError } = await adminClient.rpc('grant_purchase_credits', {
+      p_user: user.id,
+      p_product: productId,
+      p_txn: verifiedTransactionId,
+      p_platform: platform,
+      p_credits: creditsToGrant,
+      p_source: 'validate_purchase',
+    });
 
-    if (purchaseError) {
-      console.error('Error recording purchase:', purchaseError);
+    if (grantError) {
+      console.error('❌ grant_purchase_credits failed:', grantError.message);
       return new Response(
-        JSON.stringify({ success: false, error: 'Failed to record purchase' }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
+        JSON.stringify({ success: false, retryable: true, error: 'Could not grant the purchase yet' }),
+        { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Get current user credits
-    const { data: profile } = await adminClient
-      .from('user_profiles')
-      .select('credits')
-      .eq('user_id', user.id)
-      .single();
+    const grant = Array.isArray(grantRows) ? grantRows[0] : grantRows;
+    const newCredits = typeof grant?.balance === 'number' ? grant.balance : null;
 
-    const currentCredits = profile?.credits || 0;
-    const newCredits = currentCredits + creditsToGrant;
-
-    // Update user credits
-    const { error: updateError } = await adminClient
-      .from('user_profiles')
-      .upsert({
-        user_id: user.id,
-        credits: newCredits,
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'user_id',
+    if (grant?.granted === false) {
+      // Already granted, by an earlier call or by the webhook. Report the real
+      // balance rather than pretending this call moved it.
+      console.log('ℹ️ purchase already granted, returning current balance', {
+        userId: user.id, transactionId: verifiedTransactionId,
       });
-
-    if (updateError) {
-      console.error('Error updating credits:', updateError);
-      // Take the dedup row back out. The purchase row is inserted BEFORE the
-      // grant, so leaving it behind makes every retry return alreadyProcessed at
-      // the top of this function, and the client deletes its pending-validation
-      // record on that reply. A customer who was charged would be permanently
-      // locked out of the credits they paid for.
-      const { error: rollbackError } = await adminClient
-        .from('purchases')
-        .delete()
-        .eq('transaction_id', verifiedTransactionId);
-      if (rollbackError) {
-        console.error(
-          '🚨 Could not roll back the purchase row, this transaction is now stuck:',
-          rollbackError.message,
-          { transactionId: verifiedTransactionId, userId: user.id }
-        );
-      }
       return new Response(
-        JSON.stringify({ success: false, error: 'Failed to grant credits' }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
+        JSON.stringify({
+          success: true,
+          alreadyProcessed: true,
+          creditsGranted: creditsToGrant,
+          newBalance: newCredits,
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
