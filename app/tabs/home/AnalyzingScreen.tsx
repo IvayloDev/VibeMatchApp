@@ -296,7 +296,14 @@ const AnalyzingScreen = () => {
       }
       return () => {
         if (parent) {
-          parent.setOptions({ tabBarStyle: { display: 'flex' } });
+          // undefined, NOT { display: 'flex' }. A per-screen tabBarStyle
+          // replaces the navigator's style object wholesale rather than
+          // merging into it, so restoring with { display: 'flex' } left the
+          // Home tab's bar with no absolute position, no transparent
+          // background and no 90pt height - the stock React Navigation bar.
+          // Vault and Profile carry no override, which is why only Discover
+          // looked wrong after a scan. undefined falls back to screenOptions.
+          parent.setOptions({ tabBarStyle: undefined });
         }
       };
     }, [navigation])
