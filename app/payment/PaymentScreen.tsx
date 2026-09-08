@@ -53,8 +53,11 @@ type ScreenState = 'loading' | 'entitled' | 'paywall' | 'error';
  */
 const PaymentScreen = () => {
   const navigation = useNavigation();
-  const { user } = useAuth();
-  const isAuthenticated = !!user;
+  const { user, isRegistered } = useAuth();
+  // A signed-in ACCOUNT, not merely an identity. Every install has a Supabase
+  // user now, anonymous unless they sign up, so `!!user` would tell a guest
+  // they already have an account and hide the register prompt.
+  const isAuthenticated = isRegistered;
 
   const [screenState, setScreenState] = useState<ScreenState>('loading');
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);

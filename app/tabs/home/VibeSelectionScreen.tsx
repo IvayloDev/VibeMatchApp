@@ -50,7 +50,7 @@ const VibeSelectionScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { image } = (route.params || {}) as RouteParams;
-  const { user } = useAuth();
+  const { user, isRegistered } = useAuth();
 
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -211,7 +211,7 @@ const VibeSelectionScreen = () => {
         source="vibe_selection"
         credits={0}
         nextFreeAt={nextFreeAt}
-        isAuthenticated={!!user}
+        isAuthenticated={isRegistered}
         isPro={false}
         onClose={() => setShowWall(false)}
         onBoughtPack={() => {

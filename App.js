@@ -70,7 +70,14 @@ function AppContent() {
     // the app. Returning them to Welcome sent them through the whole flow again
     // on every cold start - and since onboarding only exits by completing a
     // scan, a guest out of credits could never get past it.
-    if (!user) return guestOnboardingCompleteRef.current ? 'MainTabs' : 'Welcome';
+    // An anonymous identity is a GUEST, not a signed-in user. Asking `!user`
+    // stopped meaning "guest" the moment every install got a Supabase uid, and
+    // routing an anonymous user down the registered path sends someone
+    // part-way through onboarding to ConnectSpotify or MainTabs underneath
+    // whatever screen they were on.
+    if (!user || user.is_anonymous) {
+      return guestOnboardingCompleteRef.current ? 'MainTabs' : 'Welcome';
+    }
     // The Spotify prompt is behind a remote flag (off for the public: the
     // Spotify app is in Development mode, so listening data never loads for
     // anyone but allowlisted testers). Registered users are only routed to it
@@ -154,7 +161,11 @@ function AppContent() {
   // by OnboardingScreen itself to avoid resetting nav mid-flow.
   React.useEffect(() => {
     if (loading || spotifyChecking || onboardingChecking || !navigationRef.current) return;
-    if (!user) return; // guest flow is driven from WelcomeScreen
+    // Guests, anonymous identity or not, are driven from WelcomeScreen. This
+    // effect exists to route a REGISTERED user after sign-in; letting it fire
+    // for an anonymous mint resets navigation mid-onboarding, which is exactly
+    // what happens when a lazy mint lands while somebody is picking a photo.
+    if (!user || user.is_anonymous) return;
     const target = getTarget();
     navigationRef.current.reset({
       index: 0,

@@ -39,7 +39,7 @@ type RootStackParamList = {
 };
 
 const DashboardScreen = () => {
-  const { user } = useAuth();
+  const { user, isRegistered } = useAuth();
   // null means "the server has not told us yet", which is NOT zero. Nothing
   // may gate on it until creditSource is 'server'.
   const [credits, setCredits] = useState<number | null>(null);
@@ -527,7 +527,7 @@ const DashboardScreen = () => {
         source={wallSource}
         credits={credits}
         nextFreeAt={nextFreeAt}
-        isAuthenticated={!!user}
+        isAuthenticated={isRegistered}
         isPro={isPro}
         onClose={() => setShowWall(false)}
         onBoughtPack={(newBalance) => {
