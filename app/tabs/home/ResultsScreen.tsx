@@ -149,16 +149,8 @@ const ResultsScreen = () => {
   // `navigate('History', { screen: 'History' })` within this same stack, so
   // the screen does not reliably unmount, and an unmount-only cleanup left
   // the History list with no tab bar and no way out.
-  useFocusEffect(
-    useCallback(() => {
-      if (!fromOnboarding) return;
-      const tabNavigation = navigation.getParent();
-      tabNavigation?.setOptions({ tabBarStyle: { display: 'none' } });
-      return () => {
-        tabNavigation?.setOptions({ tabBarStyle: undefined });
-      };
-    }, [fromOnboarding, navigation])
-  );
+  // Hidden for the onboarding result by MainTabs (it reads fromOnboarding off
+  // this route's params). No setOptions here for the reason given there.
 
   useEffect(() => {
     Animated.timing(enter, { toValue: 1, duration: 400, useNativeDriver: true }).start();

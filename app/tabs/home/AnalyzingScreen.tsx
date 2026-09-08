@@ -288,26 +288,10 @@ const AnalyzingScreen = () => {
   const cardOpacity = useRef(new Animated.Value(0)).current;
   const cardTranslate = useRef(new Animated.Value(24)).current;
 
-  useFocusEffect(
-    React.useCallback(() => {
-      const parent = navigation.getParent();
-      if (parent) {
-        parent.setOptions({ tabBarStyle: { display: 'none' } });
-      }
-      return () => {
-        if (parent) {
-          // undefined, NOT { display: 'flex' }. A per-screen tabBarStyle
-          // replaces the navigator's style object wholesale rather than
-          // merging into it, so restoring with { display: 'flex' } left the
-          // Home tab's bar with no absolute position, no transparent
-          // background and no 90pt height - the stock React Navigation bar.
-          // Vault and Profile carry no override, which is why only Discover
-          // looked wrong after a scan. undefined falls back to screenOptions.
-          parent.setOptions({ tabBarStyle: undefined });
-        }
-      };
-    }, [navigation])
-  );
+  // The tab bar is hidden here by MainTabs, keyed on the focused route. This
+  // screen used to hide it with parent.setOptions and restore it on blur, and
+  // every possible restore value stripped the navigator's style - see the note
+  // in MainTabs. Nothing here touches the bar now.
 
   // Back from the paywall the wall sent them to: re-run the gate. A new Pro
   // or a pack bought there scans right away; otherwise the wall returns.
