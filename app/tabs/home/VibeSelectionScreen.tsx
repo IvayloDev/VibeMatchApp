@@ -55,7 +55,14 @@ const VibeSelectionScreen = () => {
   const [selectedVibe, setSelectedVibe] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showWall, setShowWall] = useState(false);
-  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  // Seeded from the server's answer when we already have one. This used to be
+  // a client guess that nothing ever updated: the two setNextFreeAt calls that
+  // kept it current went with claimDailyCreditIfDue, and only the reader was
+  // left. The wall's countdown and the reminder it schedules both read this,
+  // so a stale value here mis-times the notification the user asked for.
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(
+    () => getCreditState().nextFreeAt ?? nextLocalMidnight()
+  );
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
   // The route param is the raw picked file, so the push could start on the

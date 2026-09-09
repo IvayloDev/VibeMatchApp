@@ -10,7 +10,7 @@ import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFa
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
 import { getCreditState, subscribeToCredits, proRemaining } from '../../../lib/creditState';
-import { refreshCreditState, requireIdentity } from '../../../lib/identity';
+import { bootstrapSession, refreshCreditState, requireIdentity } from '../../../lib/identity';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
 import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
 import { useAuth } from '../../../lib/AuthContext';
@@ -82,12 +82,29 @@ const DashboardScreen = () => {
     return run;
   };
 
-  const loadUserCreditsNow = async (_options?: { claimDaily?: boolean }) => {
+  const loadUserCreditsNow = async (options?: { claimDaily?: boolean }) => {
     try {
       // The balance and Pro both come from the server now, through one call.
       // The daily claim used to happen here, on every mount and every
       // foreground, and it wrote an absolute number: that is how a large
       // balance got overwritten with 1 whenever a read failed first.
+      //
+      // It still must happen on a foreground, though. claim_free_match_for is
+      // only ever called by session-bootstrap, and the client runs that once
+      // per app PROCESS. So a user who tapped the 09:00 "your free match is
+      // ready" notification onto a warm app got a refresh and nothing else:
+      // the reminder promised a match the app then refused to hand over, and
+      // only a cold start fixed it. Asking for the claim now actually asks.
+      //
+      // Only when there is something to claim. A Pro user has no daily match,
+      // and neither does anyone already holding credits, so bootstrapping
+      // them would spend a round trip and a RevenueCat reconcile for nothing.
+      if (options?.claimDaily) {
+        const before = getCreditState();
+        if (!before.isPro && (before.balance ?? 0) <= 0) {
+          await bootstrapSession();
+        }
+      }
       await refreshCreditState();
       const state = getCreditState();
       const pro = state.isPro;
@@ -237,7 +254,12 @@ const DashboardScreen = () => {
   const openWall = (source: 'dashboard_cta' | 'dashboard_picker') => {
     trackEvent('out_of_credits', { source, credits_balance: credits });
     setWallSource(source);
-    setNextFreeAt(nextLocalMidnight());
+    // Whatever the server last told us, not a fresh client guess. Overwriting
+    // here put the local next-midnight into the wall's countdown and into the
+    // reminder the wall schedules, so both disagreed with the balance the
+    // same screen was showing.
+    const state = getCreditState();
+    if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
     setShowWall(true);
   };
 

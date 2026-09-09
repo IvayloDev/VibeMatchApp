@@ -284,7 +284,14 @@ const AnalyzingScreen = () => {
   const [matchSong, setMatchSong] = useState<any>(null);
   // Out-of-matches wall + what it needs to know.
   const [showWall, setShowWall] = useState(false);
-  const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  // Seeded from the server's answer when we already have one. This used to be
+  // a client guess that nothing ever updated: the two setNextFreeAt calls that
+  // kept it current went with claimDailyCreditIfDue, and only the reader was
+  // left. The wall's countdown and the reminder it schedules both read this,
+  // so a stale value here mis-times the notification the user asked for.
+  const [nextFreeAt, setNextFreeAt] = useState<Date>(
+    () => getCreditState().nextFreeAt ?? nextLocalMidnight()
+  );
   // The wall's register upsell asks "has an account", which the route param
   // never answered correctly in either direction: it was seeded from a
   // possibly-stale userId, and every guest now has one. Ask AuthContext.
@@ -704,6 +711,12 @@ const AnalyzingScreen = () => {
             credits_balance: data?.credits?.balance ?? 0,
             from_onboarding: !!fromOnboarding,
           });
+          // Take the server's unlock time before showing the wall. The state
+          // seeded at mount predates the scan, and this is the one screen
+          // where the wall appears long after mounting, so without this the
+          // countdown and the reminder are timed off a stale answer.
+          const fresh = getCreditState().nextFreeAt;
+          if (fresh) setNextFreeAt(fresh);
           setShowWall(true);
           return;
         }
