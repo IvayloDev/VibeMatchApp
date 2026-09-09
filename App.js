@@ -125,7 +125,13 @@ function AppContent() {
           // still being charged.
           await reconcileProAfterLogin(user.id);
           prevUserIdRef.current = user.id;
-          posthogIdentify(user.id, { email: user.email });
+          // The uid, and only the uid. Sending the email made PostHog hold
+          // Contact Info against a person, which the published privacy policy
+          // says the app does not collect and which the App Store label would
+          // have to declare as linked to the user and used for analytics. The
+          // uid is the same key RevenueCat and Supabase use, so every funnel
+          // still joins up.
+          posthogIdentify(user.id);
         } else if (!user?.id && prevUserIdRef.current) {
           // User logged out - reset RevenueCat and PostHog
           await logOutUser();
@@ -171,6 +177,9 @@ function AppContent() {
     if (isPro) void bootstrapSession();
   }), []);
 
+  // The last destination this effect reset to, as `<uid>:<target>`.
+  const lastResetRef = React.useRef(null);
+
   // Navigate based on auth + Spotify connection state.
   // onboardingComplete intentionally excluded from deps — changes to it are handled
   // by OnboardingScreen itself to avoid resetting nav mid-flow.
@@ -180,8 +189,28 @@ function AppContent() {
     // effect exists to route a REGISTERED user after sign-in; letting it fire
     // for an anonymous mint resets navigation mid-onboarding, which is exactly
     // what happens when a lazy mint lands while somebody is picking a photo.
-    if (!user || user.is_anonymous) return;
+    if (!user || user.is_anonymous) {
+      // Signed out, or back to a guest: forget where we last sent them, so the
+      // next registered session is routed even if it lands on the same screen.
+      lastResetRef.current = null;
+      return;
+    }
     const target = getTarget();
+    // Reset only when the destination actually changed for this user.
+    //
+    // The effect itself stays as it is - it is the only thing that routes a
+    // registered user after sign-in, and it has to keep firing on the real
+    // transitions (guest -> account, ConnectSpotify -> MainTabs once Spotify
+    // connects). What it must not do is fire again for the SAME destination:
+    // reset() rebuilds the stack from scratch, so re-running it with an
+    // unchanged target throws away wherever the user had navigated to. Every
+    // resume produced one of those, because startAutoRefresh refreshes a due
+    // token, TOKEN_REFRESHED lands a new session, and `user` and getTarget were
+    // recreated - so a user reading a match in the Vault came back to Discover.
+    // Keyed by uid as well as target so switching accounts still routes.
+    const key = `${user.id}:${target}`;
+    if (lastResetRef.current === key) return;
+    lastResetRef.current = key;
     navigationRef.current.reset({
       index: 0,
       routes: [{ name: target }],

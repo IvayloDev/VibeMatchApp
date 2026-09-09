@@ -38,10 +38,14 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   CREDITS_PER_PRODUCT,
+  backfillAltTransactionId,
   corsHeaders,
   fetchSubscriber,
+  findPurchaseByEitherId,
+  isSandboxPurchase,
   json,
   platformFor,
+  purchaseIds,
 } from '../_shared/products.ts';
 
 serve(async (req) => {
@@ -97,20 +101,33 @@ serve(async (req) => {
         continue;
       }
       for (const p of (entries as any[]) ?? []) {
-        const txn: string | undefined = p?.store_transaction_id ?? p?.id;
-        const altTxn: string | null = p?.store_transaction_id ? (p?.id ?? null) : null;
+        // Sandbox sales are recovered like any other. See validate-purchase:
+        // refusing them breaks App Review and TestFlight, and this function is
+        // one of the paths a tester's purchase arrives back through.
+        if (isSandboxPurchase(p)) {
+          console.warn('🧪 sandbox purchase recovered', { userId: user.id, productId });
+        }
+        const ids = purchaseIds(p);
         const platform = platformFor(p?.store);
-        if (!txn || !platform) continue;
-        seenTxns.add(txn);
+        if (!ids.primary || !platform) continue;
+        // Both ids count as "seen", or a device that recorded the sale under
+        // the id we did not choose as primary is reported as a shortfall.
+        seenTxns.add(ids.primary);
+        if (ids.alternate) seenTxns.add(ids.alternate);
+
+        // Repair the row this sale may already be on. Legacy rows are exactly
+        // the ones missing their second id, and legacy buyers are exactly who
+        // calls this function.
+        await backfillAltTransactionId(admin, ids, { userId: user.id, productId, source: 'legacy_recovery' });
 
         const { data, error } = await admin.rpc('grant_purchase_credits', {
           p_user: user.id,
           p_product: productId,
-          p_txn: txn,
+          p_txn: ids.primary,
           p_platform: platform,
           p_credits: credits,
           p_source: 'legacy_recovery',
-          p_alt_txn: altTxn,
+          p_alt_txn: ids.alternate,
         });
         if (error) throw new Error(`grant_purchase_credits: ${error.message}`);
 
@@ -120,12 +137,11 @@ serve(async (req) => {
           continue;
         }
 
-        // Already granted. To whom?
-        const { data: existing } = await admin
-          .from('purchases')
-          .select('user_id')
-          .eq('transaction_id', txn)
-          .maybeSingle();
+        // Already granted. To whom? Under EITHER id and in either column: the
+        // grant refuses duplicates on all four combinations, so a lookup that
+        // only knew about transaction_id would call a row it could not see
+        // somebody else's, or nobody's.
+        const existing = await findPurchaseByEitherId(admin, [ids.primary, ids.alternate], 'user_id');
         if (existing?.user_id && existing.user_id !== user.id) {
           // The receipt is attached to this identity but the credits went to a
           // different account. Real money, two accounts, and no safe automatic
@@ -133,7 +149,8 @@ serve(async (req) => {
           // on a stranger's device. Flagged for a human.
           orphaned += 1;
           console.error('legacy_orphan_purchase', {
-            transactionId: txn, productId, creditedTo: existing.user_id, claimedBy: user.id,
+            transactionId: ids.primary, altTransactionId: ids.alternate,
+            productId, creditedTo: existing.user_id, claimedBy: user.id,
           });
         }
       }

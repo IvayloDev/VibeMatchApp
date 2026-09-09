@@ -6,8 +6,23 @@ import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../designSys
 import { LinearGradientFallback as LinearGradient } from './LinearGradientFallback';
 import { BlurViewFallback as BlurView } from './BlurViewFallback';
 import { ModernButton } from './ModernButton';
-import { GUEST_FREE_CREDITS, REGISTERED_FREE_CREDITS } from '../utils/freeCredits';
+import { GUEST_FREE_CREDITS } from '../utils/freeCredits';
 
+/**
+ * The choice at the end of onboarding: start now, or make an account first.
+ *
+ * The starter credits are NOT the difference between the two. The server
+ * grants them with claim_device_starter, rationed per DEVICE, because
+ * identities became free to create - so making an account grants nothing
+ * extra, and REGISTERED_FREE_CREDITS is no longer a promise this screen can
+ * make. It was advertised here as "Create Account: Get 2 free credits", which
+ * is the fourth place that same false promise has been found (WallSheet, the
+ * Payment screen and the Dashboard banner were the first three).
+ *
+ * What an account actually buys is durability: matches and balance survive a
+ * reinstall and a second device. That is the honest pitch, so it is the one
+ * this modal makes.
+ */
 interface GuestCreditsModalProps {
   visible: boolean;
   onContinue: () => void;
@@ -52,45 +67,48 @@ export const GuestCreditsModal: React.FC<GuestCreditsModalProps> = ({
                 </View>
 
                 {/* Title */}
-                <Text style={styles.title}>Free Credits Available!</Text>
+                <Text style={styles.title}>
+                  {GUEST_FREE_CREDITS} free credit{GUEST_FREE_CREDITS === 1 ? '' : 's'} to start
+                </Text>
 
                 {/* Guest Info */}
                 <View style={styles.infoCard}>
                   <View style={styles.infoRow}>
-                    <MaterialCommunityIcons 
-                      name="account-outline" 
-                      size={20} 
-                      color={Colors.textSecondary} 
+                    <MaterialCommunityIcons
+                      name="account-outline"
+                      size={20}
+                      color={Colors.textSecondary}
                     />
                     <Text style={styles.infoText}>
-                      <Text style={styles.highlight}>Continue as Guest:</Text> Get {GUEST_FREE_CREDITS} free credit{GUEST_FREE_CREDITS === 1 ? '' : 's'}
+                      <Text style={styles.highlight}>Continue as Guest:</Text> start matching now, no sign-up
                     </Text>
                   </View>
                 </View>
 
-                {/* Registered Info */}
+                {/* Registered Info. The pitch is what an account keeps, not a
+                    grant: the credits are the same either way. */}
                 <View style={styles.infoCard}>
                   <View style={styles.infoRow}>
-                    <MaterialCommunityIcons 
-                      name="account-check" 
-                      size={20} 
-                      color={Colors.accent.green} 
+                    <MaterialCommunityIcons
+                      name="account-check"
+                      size={20}
+                      color={Colors.accent.green}
                     />
                     <Text style={styles.infoText}>
-                      <Text style={styles.highlight}>Create Account:</Text> Get {REGISTERED_FREE_CREDITS} free credit{REGISTERED_FREE_CREDITS === 1 ? '' : 's'}
+                      <Text style={styles.highlight}>Create Account:</Text> same credits, and your matches follow you to a new phone
                     </Text>
                   </View>
                 </View>
 
                 {/* Note */}
                 <View style={styles.noteContainer}>
-                  <MaterialCommunityIcons 
-                    name="information" 
-                    size={16} 
-                    color={Colors.accent.yellow} 
+                  <MaterialCommunityIcons
+                    name="information"
+                    size={16}
+                    color={Colors.accent.yellow}
                   />
                   <Text style={styles.noteText}>
-                    Free credits are one-time only per device/account
+                    The free credits are one time per device, account or not
                   </Text>
                 </View>
 

@@ -29,6 +29,13 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
  * resume is a user staring at a balance the app cannot read.
  *
  * Called once from App.js. Safe to call again: the SDK tolerates it.
+ *
+ * startAutoRefresh also runs a refresh tick immediately, so a resume with a due
+ * token emits TOKEN_REFRESHED. That is wanted - the token SHOULD be refreshed.
+ * What must not follow from it is the user being thrown back to the root, and
+ * that is handled where it belongs: AuthContext keeps the same `user` object
+ * when nothing about the user changed, and App.js only reset()s navigation when
+ * the destination actually changes.
  */
 export function bindAuthRefreshToAppState(): () => void {
   const apply = (state: AppStateStatus) => {
@@ -120,11 +127,11 @@ export async function signInWithApple(): Promise<{ success: boolean; error?: str
       ],
     });
 
-    console.log('Apple credential received:', {
-      user: credential.user,
-      email: credential.email,
-      fullName: credential.fullName,
-    });
+    // The credential is deliberately never logged. React Native keeps console
+    // calls in a Release build, so anything printed here ships to the device
+    // log of every customer - and this object is their Apple user id, their
+    // email and their real name. Same rule for every log in this file: name
+    // the step, never the value.
 
     // Sign in with Supabase using Apple ID token
     // For native iOS apps, the bundle identifier (com.paltech.tunematch) 
@@ -144,7 +151,7 @@ export async function signInWithApple(): Promise<{ success: boolean; error?: str
       return { success: false, error: error.message };
     }
 
-    console.log('Apple sign-in successful:', data.user?.email);
+    console.log('Apple sign-in successful');
     return { success: true };
   } catch (error: any) {
     console.error('Apple sign-in error:', error);
@@ -287,7 +294,6 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
     authUrl.searchParams.set('code_challenge_method', 'S256');
     
     console.log('Opening Google OAuth URL...');
-    console.log('Auth URL:', authUrl.toString());
     
     // Open the auth session - this handles the redirect back to the app
     const result = await WebBrowser.openAuthSessionAsync(
@@ -302,11 +308,11 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
     }
     
     if (result.type !== 'success' || !('url' in result) || !result.url) {
-      console.log('OAuth result:', result);
+      // The type, not the object: on the success branch `result` holds the
+      // callback URL, and that URL holds the live authorization code.
+      console.log('OAuth returned no callback URL, type:', result.type);
       return { success: false, error: 'Google sign-in failed. Please try again.' };
     }
-    
-    console.log('OAuth callback URL:', result.url);
     
     // Extract the authorization code from the URL
     const urlObj = new URL(result.url);
@@ -320,8 +326,9 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
     }
     
     if (!code) {
-      console.error('No authorization code in response');
-      console.error('Full URL:', result.url);
+      // The URL stays out of the log: on the path where it is interesting it
+      // is exactly where the authorization code lives.
+      console.error('No authorization code in the Google callback');
       return { success: false, error: 'No authorization code received from Google' };
     }
     
@@ -336,8 +343,6 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
       `grant_type=${encodeURIComponent('authorization_code')}`,
       `code_verifier=${encodeURIComponent(codeVerifier)}`,
     ].join('&');
-    
-    console.log('Token exchange request body:', formData.replace(/code_verifier=[^&]+/, 'code_verifier=***'));
     
     const tokenResponse = await fetch(discovery.tokenEndpoint, {
       method: 'POST',
@@ -357,7 +362,8 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
     const idToken = tokenData.id_token;
     
     if (!idToken) {
-      console.error('No ID token in token response:', tokenData);
+      // tokenData is not logged: it carries Google's access_token.
+      console.error('No ID token in the Google token response');
       return { success: false, error: 'No ID token received from Google' };
     }
     
@@ -374,7 +380,7 @@ export async function signInWithGoogle(): Promise<{ success: boolean; error?: st
       return { success: false, error: supabaseError.message };
     }
     
-    console.log('✅ Google sign-in successful:', data.user?.email);
+    console.log('✅ Google sign-in successful');
     return { success: true };
     
   } catch (error: any) {

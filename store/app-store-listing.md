@@ -90,3 +90,30 @@ Fixed: the daily count for Pro members sat at 10 of 10 no matter how many
 matches you ran.
 
 New: two matches when you start, and a free one every day at 9am.
+
+## Privacy - do this BEFORE the next submission
+
+The privacy policy published at
+https://ivaylodev.github.io/vibematch-privacy-policy/ is wrong. It is dated March
+2025, still branded VibeMatch, and it tells reviewers and users that the app
+collects only an email address and a provider id, uses no analytics or tracking
+identifiers, and never stores photos. The app uploads and keeps photos, sends
+their contents to OpenAI, runs PostHog analytics, keeps a device identifier that
+survives reinstall, and logs IP addresses. That is a listing that does not match
+the binary, which is an App Store review risk on its own and a real problem for
+users regardless of review.
+
+Two files here fix it:
+
+- `store/privacy-policy.md` - the replacement policy, accurate as of 2026-09-09.
+  Fill in the `[PLACEHOLDER: ...]` entries (legal entity, registered address,
+  supervisory authority, retention windows) and publish it at the URL the app
+  links to.
+- `store/app-store-privacy-label.md` - the App Privacy questionnaire answers
+  implied by that policy, row by row. The current label in App Store Connect was
+  filled in against the old text and understates collection.
+
+**Order of operations.** The policy has to be live at
+https://ivaylodev.github.io/vibematch-privacy-policy/, and the App Privacy
+answers updated in App Store Connect, BEFORE the next build is submitted. The app
+links to that URL from Profile, so a reviewer reads whatever is at it on the day.

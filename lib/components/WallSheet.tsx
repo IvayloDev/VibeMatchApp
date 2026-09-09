@@ -22,6 +22,7 @@ import {
 } from '../revenuecat';
 import { validatePurchaseWithRetry } from '../supabase';
 import { storePendingValidation } from '../credits';
+import { getCreditState, subscribeToCredits, type CreditState } from '../creditState';
 import { bootstrapSession } from '../identity';
 import { scheduleFreeMatchReminder } from '../notifications';
 import { formatUntil } from '../dailyCredit';
@@ -58,13 +59,42 @@ type PackState = 'loading' | 'ready' | 'unavailable';
 type ReminderState = 'idle' | 'working' | 'set' | 'blocked';
 
 /**
- * The out-of-matches wall. Replaces the jump straight into the full-screen
- * subscription paywall at 0 credits, which nobody converted from. Leads with
- * the fact that a free match is coming, then the cheap pack, then Pro.
+ * The free daily allowance, as the server last reported it.
  *
- * The pack purchase happens right here (same grant flow as the Payment
- * screen's starter pack): signed-in users are validated server-side, guests
- * get local credits per Apple 5.1.1.
+ * A user who never pays gets a fixed number of free matches from the daily
+ * grant, for life. Once they are spent the server names no next_free_at and
+ * reports the allowance as exhausted - and then this sheet has nothing to
+ * count down to and nothing to remind anybody about, so both must go.
+ *
+ * Read off the credit state rather than taken as a prop: three screens open
+ * this sheet, and the server's answer is the one thing all three agree on.
+ * `used` is null until the server has actually said, and null is not zero.
+ * `hasNextFree` is kept separately from `exhausted` because they are only the
+ * same answer once the server has spoken - before that both are unknown, and
+ * an unknown must not be sold as either.
+ */
+type FreeView = { used: number | null; limit: number; exhausted: boolean; hasNextFree: boolean };
+
+const readFreeView = (s: CreditState): FreeView => ({
+  used: s.freeDailyUsed,
+  limit: s.freeDailyLimit,
+  exhausted: s.freeExhausted,
+  hasNextFree: s.nextFreeAt !== null,
+});
+
+/**
+ * The out-of-matches wall. Replaces the jump straight into the full-screen
+ * subscription paywall at 0 credits, which nobody converted from.
+ *
+ * What it leads with depends on whether a free match is still coming. While
+ * the daily allowance has matches left it leads with the wait, then the cheap
+ * pack, then Pro. Once the lifetime free matches are spent there is no wait to
+ * lead with, so the pack and Pro are the whole sheet and the reminder row is
+ * gone - there is nothing left to remind anybody about.
+ *
+ * The pack purchase happens right here, the same grant flow as the Payment
+ * screen's starter pack: every buyer is validated server-side, guests
+ * included, because every install has an identity to validate against.
  */
 export default function WallSheet({
   visible,
@@ -83,6 +113,7 @@ export default function WallSheet({
   const [packState, setPackState] = useState<PackState>('loading');
   const [buying, setBuying] = useState(false);
   const [reminder, setReminder] = useState<ReminderState>('idle');
+  const [free, setFree] = useState<FreeView>(() => readFreeView(getCreditState()));
   const translateY = useRef(new Animated.Value(320)).current;
   const shownAt = useRef<number>(Date.now());
 
@@ -106,6 +137,10 @@ export default function WallSheet({
       credits,
       next_free_in_min: Math.max(0, Math.round((nextFreeAt.getTime() - Date.now()) / 60000)),
       is_authenticated: isAuthenticated,
+      // Which wall this was. The two convert very differently: one can be
+      // waited out for free, the other cannot. Read live rather than from
+      // `free`, which is still the previous render's value at this point.
+      free_exhausted: readFreeView(getCreditState()).exhausted,
     });
 
     let cancelled = false;
@@ -126,6 +161,14 @@ export default function WallSheet({
     };
     // Re-run only when the sheet opens; the other props are read at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Follow the server's reading while the sheet is up. subscribeToCredits
+  // fires immediately, so opening the sheet is itself a refresh - and a pack
+  // bought from here changes the answer under the user's finger.
+  useEffect(() => {
+    if (!visible) return;
+    return subscribeToCredits((s) => setFree(readFreeView(s)));
   }, [visible]);
 
   const handleBuyPack = async () => {
@@ -194,8 +237,11 @@ export default function WallSheet({
         if (validation.success && validation.creditsGranted) {
           newBalance = validation.newBalance ?? credits + validation.creditsGranted;
         } else {
-          // Charged but not yet granted - queue it; the Pro screen retries
-          // queued validations the next time it opens. Say so plainly.
+          // Charged but not yet granted - queue it; the Pro screen drains the
+          // queue the next time it opens, for anyone with an identity rather
+          // than only for people with an account. That gate is what made this
+          // promise false for guests: their queued validation was written and
+          // then never retried by anything. Say what will happen, plainly.
           await storePendingValidation(result.transactionId, result.productId, granted);
           triggerHaptic('warning');
           Alert.alert(
@@ -259,6 +305,11 @@ export default function WallSheet({
 
   const packCredits = CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID];
 
+  // A free match is genuinely on its way: the server named a next_free_at and
+  // the lifetime allowance still has something in it. Everything that promises
+  // one - the countdown, the reminder - hangs off this and nothing else.
+  const freeMatchComing = free.hasNextFree && !free.exhausted;
+
   const reminderLabel = {
     idle: 'Remind me when it unlocks',
     working: 'Setting reminder...',
@@ -284,9 +335,27 @@ export default function WallSheet({
         >
           <View style={styles.grabber} />
 
-          <Text style={styles.title}>Out of matches for today</Text>
+          {/* Three different situations, and only one of them ends in a free
+              match tonight. Saying "unlocks in 6h" to somebody whose free
+              matches are gone for good is the app promising something it will
+              refuse to hand over, and "for today" implies a reset that is not
+              coming either. So the cap gets its own copy, and the case where
+              the server has not answered gets no promise at all. */}
+          <Text style={styles.title}>
+            {free.exhausted
+              ? 'That was your last free match'
+              : freeMatchComing
+                ? 'Out of matches for today'
+                : 'Out of matches'}
+          </Text>
           <Text style={styles.subtitle}>
-            Your free match unlocks in {formatUntil(nextFreeAt)}
+            {free.exhausted
+              ? free.used !== null && free.limit > 0
+                ? `You've had all ${free.limit} free matches. Here is how to keep going.`
+                : 'Your free matches are used up. Here is how to keep going.'
+              : freeMatchComing
+                ? `Your free match unlocks in ${formatUntil(nextFreeAt)}`
+                : 'Pick up a pack, or go Pro for 10 matches a day.'}
           </Text>
 
           {/* Primary: the cheap pack. Hidden until the store can quote a price. */}
@@ -336,22 +405,28 @@ export default function WallSheet({
             </TouchableOpacity>
           )}
 
-          {/* Reminder for the free match. */}
-          <TouchableOpacity
-            activeOpacity={0.7}
-            onPress={handleRemind}
-            disabled={reminder !== 'idle'}
-            style={styles.reminderRow}
-          >
-            <MaterialCommunityIcons
-              name={reminder === 'set' ? 'bell-check' : reminder === 'blocked' ? 'bell-off-outline' : 'bell-outline'}
-              size={18}
-              color={reminder === 'set' ? '#2dd4bf' : C.dim}
-            />
-            <Text style={[styles.reminderText, reminder === 'set' && styles.reminderTextSet]}>
-              {reminderLabel}
-            </Text>
-          </TouchableOpacity>
+          {/* Reminder for the free match - only when one is actually coming.
+              Past the lifetime cap there is nothing to be reminded about, and
+              offering it would schedule a 09:00 notification for a match that
+              never lands. Before the server has named a next_free_at we do
+              not know either way, so we do not offer it then. */}
+          {freeMatchComing && (
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={handleRemind}
+              disabled={reminder !== 'idle'}
+              style={styles.reminderRow}
+            >
+              <MaterialCommunityIcons
+                name={reminder === 'set' ? 'bell-check' : reminder === 'blocked' ? 'bell-off-outline' : 'bell-outline'}
+                size={18}
+                color={reminder === 'set' ? '#2dd4bf' : C.dim}
+              />
+              <Text style={[styles.reminderText, reminder === 'set' && styles.reminderTextSet]}>
+                {reminderLabel}
+              </Text>
+            </TouchableOpacity>
+          )}
 
           {!isAuthenticated && (
             <TouchableOpacity

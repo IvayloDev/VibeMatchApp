@@ -242,7 +242,7 @@ const TastePickerScreen: React.FC = () => {
   const route = useRoute<RouteProp<RootStackParamList, 'TastePicker'>>();
   const returnTo = route.params?.returnTo;
   const source = returnTo === 'back' ? 'profile' : 'onboarding';
-  const { user, onboardingComplete } = useAuth();
+  const { isRegistered, onboardingComplete } = useAuth();
   const insets = useSafeAreaInsets();
 
   const [query, setQuery] = useState('');
@@ -523,11 +523,17 @@ const TastePickerScreen: React.FC = () => {
     }
     // Guests always go through onboarding: onboardingComplete belongs to
     // registered sessions and must not short-circuit the guest path.
+    //
+    // isRegistered, not `user`: every install gets an anonymous Supabase uid
+    // now, so `user` is truthy for a guest as well, and a guest on a device
+    // carrying that leftover flag was dropped straight into the tabs - past the
+    // one screen that writes the GUEST onboarding flag, so every cold start
+    // afterwards sent them back to Welcome.
     navigation.reset({
       index: 0,
-      routes: [{ name: user && onboardingComplete ? 'MainTabs' : 'Onboarding' }],
+      routes: [{ name: isRegistered && onboardingComplete ? 'MainTabs' : 'Onboarding' }],
     });
-  }, [navigation, returnTo, user, onboardingComplete]);
+  }, [navigation, returnTo, isRegistered, onboardingComplete]);
 
   const handleSkip = () => {
     if (saving) return;

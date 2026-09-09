@@ -10,7 +10,7 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getCreditState } from '../../../lib/creditState';
+import { getCreditState, type CreditState } from '../../../lib/creditState';
 import { refreshCreditState } from '../../../lib/identity';
 import {
   hasProEntitlement,
@@ -47,10 +47,38 @@ type RootStackParamList = {
   MainTabs: undefined;
 };
 
+/**
+ * The free daily allowance, as the server last reported it.
+ *
+ * A user who never pays gets a fixed number of free matches from the daily
+ * grant, for life. Once they are spent the server names no next_free_at, and
+ * this card must stop saying "Next free match in ..." - a countdown to a match
+ * that will never be granted is the app lying to a user once a second.
+ *
+ * `used` is null until the server has actually said, and null is not zero:
+ * same rule as the balance right above it on this card. `hasNextFree` is kept
+ * separately from `exhausted` because they are only the same answer once the
+ * server has spoken - before that both are simply unknown.
+ */
+type FreeAllowance = { used: number | null; limit: number; exhausted: boolean; hasNextFree: boolean };
+
+const readFreeAllowance = (s: CreditState): FreeAllowance => ({
+  used: s.freeDailyUsed,
+  limit: s.freeDailyLimit,
+  exhausted: s.freeExhausted,
+  hasNextFree: s.nextFreeAt !== null,
+});
+
+const UNKNOWN_ALLOWANCE: FreeAllowance = { used: null, limit: 0, exhausted: false, hasNextFree: false };
+
 const ProfileScreen = () => {
   const { user, signOut, spotifyConnected, spotifyChecking, refreshSpotifyStatus, isRegistered } = useAuth();
   const [connectingSpotify, setConnectingSpotify] = useState(false);
-  const [proScansToday, setProScansToday] = useState(0);
+  // null means "the server has not said how many Pro matches went today".
+  // `?? 0` put a confident "10 of 10 matches left today" in front of an
+  // offline subscriber, which is the frozen-counter bug in a new place.
+  const [proScansToday, setProScansToday] = useState<number | null>(null);
+  const [freeAllowance, setFreeAllowance] = useState<FreeAllowance>(UNKNOWN_ALLOWANCE);
   const [proPlan, setProPlan] = useState<ProPlanSummary | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // Gates the Spotify card until this screen has confirmed the status itself,
@@ -125,6 +153,7 @@ const ProfileScreen = () => {
       const userCredits = st.balance;
       setCreditSource(st.source);
       setCredits(userCredits);
+      setFreeAllowance(readFreeAllowance(st));
       // Onboarding deliberately skips the non-silent refresh for guests (it
       // would bounce them to the splash), so AuthContext can still say
       // "not connected" for someone who just linked Spotify. Re-read silently.
@@ -135,7 +164,7 @@ const ProfileScreen = () => {
       const pro = await hasProEntitlement();
       setIsPro(pro);
       if (pro) {
-        setProScansToday(getCreditState().proUsedToday ?? 0);
+        setProScansToday(getCreditState().proUsedToday);
         setProPlan(await getProPlanSummary());
       } else {
         setProPlan(null);
@@ -513,9 +542,14 @@ const ProfileScreen = () => {
                       <Text style={styles.creditBalanceLabel}>TuneMatch Pro</Text>
                       {/* The plan line alone left subscribers with no idea how
                           much of today's allowance was still available. */}
-                      <Text style={styles.proCardText}>
-                        {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
-                      </Text>
+                      {/* Only once the server has counted today. Hiding the
+                          line is honest; "10 of 10 left" on an offline read
+                          is not. */}
+                      {proScansToday !== null && (
+                        <Text style={styles.proCardText}>
+                          {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+                        </Text>
+                      )}
                       {/* Both plans grant the same entitlement, so naming the
                           plan is the only way a switch is visible at all. */}
                       {proPlan && (
@@ -548,12 +582,24 @@ const ProfileScreen = () => {
                           />
                         )}
                       </View>
-                      {/* At zero the number alone is a dead end. Say when the
-                          next free match lands instead. */}
+                      {/* At zero the number alone is a dead end. Say what
+                          happens next - but only what is actually true. Once
+                          the lifetime free matches are spent no daily one is
+                          coming, and the Go Pro button directly below is the
+                          way on. Before the server has named a next_free_at
+                          we know neither, so we say neither. */}
                       {!loading && creditSource === 'server' && credits === 0 && (
-                        <Text style={styles.creditCountdown}>
-                          Next free match in {resetIn}
-                        </Text>
+                        freeAllowance.exhausted ? (
+                          <Text style={styles.creditCountdown}>
+                            {freeAllowance.used !== null && freeAllowance.limit > 0
+                              ? `That's all ${freeAllowance.limit} free matches - Pro is 10 a day`
+                              : 'Free matches used up - Pro is 10 a day'}
+                          </Text>
+                        ) : freeAllowance.hasNextFree ? (
+                          <Text style={styles.creditCountdown}>
+                            Next free match in {resetIn}
+                          </Text>
+                        ) : null
                       )}
                     </>
                   )}

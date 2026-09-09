@@ -31,7 +31,12 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
+# ".env*.local" alone did NOT cover a plain ".env", which is the file Expo loads
+# first and the one a service-role key or provider secret is most likely to land in.
+# Ignore every .env variant and allow back only a committed, value-free template.
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo

@@ -18,7 +18,12 @@
 //
 // Guests call this during onboarding, so it cannot require a JWT
 // (verify_jwt = false in supabase/config.toml). Query length and result count
-// are capped so the open endpoint cannot be used to hammer Spotify's quota.
+// are capped, and BOTH modes are metered per caller address in edge_call_log.
+// An open endpoint spending a quota shared by every user of the app needs a
+// ceiling on every path into it, not only on the expensive one: the plain `q`
+// path used to run straight to the app token with no metering at all, so one
+// script could exhaust the client-credentials quota and break artist search
+// and match resolution for everybody at once.
 
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -42,18 +47,24 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 10;
 const MAX_QUERY_LENGTH = 100;
 
-// Per-IP ceiling on suggest, counted over the last hour in edge_call_log.
+// Per-IP ceilings, counted per mode over the last hour in edge_call_log.
 //
 // The cost being defended is not tokens (gpt-4.1-mini at this prompt size is
 // cents an hour even under sustained abuse) but the app's SHARED Spotify
-// quota: suggest runs paged catalog searches, and one script hammering it
-// degrades matching for every user of the app at once.
+// quota: both modes spend it, and one script hammering either degrades
+// matching for every user of the app at once.
 //
 // Set high on purpose. Carrier-grade NAT puts many real phones behind one
 // address, and a genuine taste-picker session is about ten calls including
 // refreshes, so this has room for a dozen simultaneous strangers on the same
 // mobile network while still stopping a script dead.
 const SUGGEST_CALLS_PER_IP_PER_HOUR = 120;
+// Search gets a wider ceiling than suggest because a session spends far more
+// of them: the picker's search box fires one per debounced keystroke, where
+// suggestions are a handful per session. It is still only ten calls a minute
+// from one address, two orders of magnitude below what it takes to make a
+// dent in the client-credentials quota.
+const SEARCH_CALLS_PER_IP_PER_HOUR = 600;
 // Treat the app token as expired this long before Spotify does, so a request
 // never goes out with a token that dies in flight.
 const TOKEN_EXPIRY_MARGIN_MS = 60 * 1000;
@@ -243,39 +254,121 @@ Name 12 other artists they would probably love: contemporaries, influences, labe
   return out;
 }
 
+type Mode = "search" | "suggest";
+
+const CEILING: Record<Mode, number> = {
+  search: SEARCH_CALLS_PER_IP_PER_HOUR,
+  suggest: SUGGEST_CALLS_PER_IP_PER_HOUR,
+};
+
 /**
- * Count and record one metered call. Returns true when the caller is over the
- * ceiling. Fails OPEN: if the ledger cannot be read, a real user must not be
- * blocked because our own bookkeeping is down.
+ * The caller's address, preferring a hop the caller cannot write.
+ *
+ * The LEFTMOST x-forwarded-for entry is whatever the client put there, so
+ * keying the meter on it let anyone reset their own counter by inventing a
+ * fresh address on every request - the ceiling counted a different bucket each
+ * time and never filled. cf-connecting-ip and x-real-ip are set by the edge in
+ * front of this function and overwritten on every hop, so they cannot be
+ * forged from outside. The rightmost x-forwarded-for entry is the last resort:
+ * it is the one appended by the nearest proxy rather than by the client.
  */
-async function overSuggestLimit(ip: string | null): Promise<boolean> {
+function callerIp(req: Request): string | null {
+  const direct = (req.headers.get("cf-connecting-ip") ?? req.headers.get("x-real-ip") ?? "").trim();
+  if (direct) return direct;
+  const hops = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+  return hops.length ? hops[hops.length - 1] : null;
+}
+
+/**
+ * True when the caller holds a user token this project issued, anonymous
+ * identities included.
+ *
+ * Only consulted once the ledger read has already failed, so the normal path
+ * never pays for the round trip. The service-role client is reused as the
+ * apikey and the caller's bearer is validated against it, which keeps this to
+ * one round trip and no second set of credentials.
+ *
+ * Note that the app itself currently sends the ANON KEY as the bearer for this
+ * function (lib/taste.ts), which is not a user token: those callers count as
+ * unidentified here, deliberately.
+ */
+async function hasUserToken(req: Request, sb: any): Promise<boolean> {
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return false;
+  try {
+    const { data: { user } } = await sb.auth.getUser(token);
+    return !!user;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Count and record one metered call. Returns true when the caller must be
+ * refused.
+ *
+ * Fails CLOSED for a caller with no identity. Every branch in here used to
+ * return false - a missing address, an unread count, a thrown client - so a
+ * caller who stripped the address header, or who simply arrived while the
+ * ledger was unhappy, got an unmetered line to the app's shared Spotify quota.
+ * "The ledger did not answer" is not evidence that this caller has spent
+ * nothing. A caller who can prove an identity still fails open, because they
+ * are meterable by other means and must not lose onboarding to our own
+ * bookkeeping being down.
+ */
+async function overCallLimit(req: Request, mode: Mode, ip: string | null): Promise<boolean> {
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
   const url = Deno.env.get("SUPABASE_URL") ?? "";
-  if (!serviceKey || !url || !ip) return false;
+  // No credentials means no meter and no way to check an identity either, so
+  // there is no safe way to let anyone through. This is a deploy-time mistake
+  // that shows up immediately, not a runtime condition to ride out.
+  if (!serviceKey || !url) {
+    console.error("🚫 spotify-search meter not configured, refusing");
+    return true;
+  }
+  const sb = createClient(url, serviceKey);
+
+  const refuseUnlessIdentified = async (why: string): Promise<boolean> => {
+    if (await hasUserToken(req, sb)) {
+      console.warn(`spotify-search meter unavailable (${why}), allowing identified caller`);
+      return false;
+    }
+    console.warn(`🚫 spotify-search meter unavailable (${why}), refusing unidentified caller`);
+    return true;
+  };
+
+  if (!ip) return refuseUnlessIdentified("no caller address");
+
   try {
-    const sb = createClient(url, serviceKey);
     const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const { count } = await sb
+    // Counted per mode, so the two ceilings are independent: search is chatty
+    // and cheap, suggest is sparse and expensive, and sizing one bucket for
+    // both would either strangle the picker or leave suggest wide open.
+    const { count, error } = await sb
       .from("edge_call_log")
       .select("id", { count: "exact", head: true })
       .eq("fn", "spotify-search")
+      .eq("mode", mode)
       .eq("ip", ip)
       .gt("created_at", since);
-    if ((count ?? 0) >= SUGGEST_CALLS_PER_IP_PER_HOUR) {
-      console.warn(`🚫 suggest ceiling hit for ip=${ip} count=${count}`);
+    if (error) return refuseUnlessIdentified(`count failed: ${error.message}`);
+    if ((count ?? 0) >= CEILING[mode]) {
+      console.warn(`🚫 ${mode} ceiling hit for ip=${ip} count=${count}`);
       return true;
     }
     // Fire and forget: the count above is what gates, and waiting on the write
-    // would put a round trip in front of every suggestion.
+    // would put a round trip in front of every search.
     sb.from("edge_call_log")
-      .insert({ fn: "spotify-search", mode: "suggest", ip })
-      .then(({ error }) => {
-        if (error) console.warn("edge_call_log insert failed:", error.message);
+      .insert({ fn: "spotify-search", mode, ip })
+      .then(({ error: insertError }) => {
+        if (insertError) console.warn("edge_call_log insert failed:", insertError.message);
       });
     return false;
   } catch (err) {
-    console.warn("suggest ceiling check failed, allowing:", err);
-    return false;
+    return refuseUnlessIdentified(`ledger threw: ${err}`);
   }
 }
 
@@ -296,10 +389,7 @@ serve(async (req) => {
 
   // Suggestion mode: no free-text query, the picks are the input.
   if (body?.suggest && typeof body.suggest === "object") {
-    const clientIp = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim()
-      || req.headers.get("cf-connecting-ip")
-      || null;
-    if (await overSuggestLimit(clientIp)) {
+    if (await overCallLimit(req, "suggest", callerIp(req))) {
       return json({
         error: "Too many suggestion requests",
         code: "rate_limited",
@@ -336,14 +426,26 @@ serve(async (req) => {
       }
       return json({ artists: [], basis: "none" });
     } catch (err: any) {
+      // Logged in full, reported flat: err.message here is our own internal
+      // detail (missing credentials, a Spotify token URL, a PostgREST message
+      // naming a table) and the client only ever renders it verbatim.
       console.error("spotify-search suggest error:", err);
-      return json({ error: err?.message ?? "Suggestions failed" }, 502);
+      return json({ error: "Suggestions are unavailable right now" }, 502);
     }
   }
 
   const q = typeof body?.q === "string" ? body.q.trim().slice(0, MAX_QUERY_LENGTH) : "";
   if (!q) {
     return json({ error: "Missing query" }, 400);
+  }
+
+  // Metered after the query check so a blank request, which reaches neither
+  // Spotify nor the app token, does not spend a real user's budget.
+  if (await overCallLimit(req, "search", callerIp(req))) {
+    return json({
+      error: "Too many searches, try again in a moment",
+      code: "rate_limited",
+    }, 429);
   }
 
   const rawLimit = Number(body?.limit);
@@ -376,8 +478,10 @@ serve(async (req) => {
     }
 
     if (!resp.ok) {
+      // The upstream status and body go to the log, not to the caller: they
+      // describe our credentials and our app registration, not the user's query.
       console.error("Spotify search failed:", resp.status, await resp.text());
-      return json({ error: `Spotify search failed (${resp.status})` }, 502);
+      return json({ error: "Artist search is unavailable right now" }, 502);
     }
 
     const data = await resp.json();
@@ -389,6 +493,6 @@ serve(async (req) => {
     return json({ artists });
   } catch (err: any) {
     console.error("spotify-search error:", err);
-    return json({ error: err?.message ?? "Spotify search failed" }, 502);
+    return json({ error: "Artist search is unavailable right now" }, 502);
   }
 });

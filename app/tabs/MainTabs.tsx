@@ -32,15 +32,43 @@ const TAB_BAR_STYLE = {
 };
 
 /**
+ * Params of the focused nested route, read from the navigator's own state.
+ *
+ * NOT from `route.state`. useRouteCache hands the routes back untouched only
+ * when NODE_ENV is production; otherwise it strips `state` off every route
+ * object and moves the child state onto a private symbol. That is exactly why
+ * getFocusedRouteNameFromRoute keeps answering under Metro while `route.state`
+ * is undefined, and it is why the fromOnboarding lookup below used to hide the
+ * bar in release builds and never in development - one bug with two behaviours,
+ * which is how it survived. The navigator state has the same shape in both.
+ */
+function focusedRouteParams(route: any, navigation: any): any {
+  const nested = navigation?.getState?.()?.routes?.find((r: any) => r.key === route?.key)?.state;
+  if (nested?.routes?.length) {
+    // React Navigation's own default for a partial state with no index: the
+    // first route for a tab/drawer, the LAST for a stack. The `?? 0` this
+    // replaces would have pointed at Dashboard while Results was on screen.
+    const index =
+      nested.index ??
+      (typeof nested.type === 'string' && nested.type !== 'stack' ? 0 : nested.routes.length - 1);
+    return nested.routes[index]?.params;
+  }
+  // Before the nested navigator has state of its own, the destination still
+  // travels as { screen, params } on this route - which is precisely how the
+  // last step of onboarding hands the first match to Results.
+  const params = route?.params as { screen?: string; params?: any } | undefined;
+  return typeof params?.screen === 'string' ? params.params : undefined;
+}
+
+/**
  * Which nested screens run without the bar: the scan itself, and a Results
  * view reached from onboarding, whose only way forward is its own footer.
  */
-function tabBarHiddenFor(route: any): boolean {
+function tabBarHiddenFor(route: any, navigation: any): boolean {
   const focused = getFocusedRouteNameFromRoute(route);
   if (focused === 'Analyzing') return true;
   if (focused === 'Results') {
-    const nested = route?.state?.routes?.[route.state.index ?? 0];
-    return nested?.params?.fromOnboarding === true;
+    return focusedRouteParams(route, navigation)?.fromOnboarding === true;
   }
   return false;
 }
@@ -101,7 +129,7 @@ const MainTabs = () => {
   return (
     <Tab.Navigator
       initialRouteName="Home"
-      screenOptions={({ route }) => ({
+      screenOptions={({ route, navigation }) => ({
           headerShown: false,
           // The navigator decides when the bar is hidden, from the focused
           // nested route. Screens used to call parent.setOptions({tabBarStyle})
@@ -113,7 +141,7 @@ const MainTabs = () => {
           // tabPress reset recreated the route and snapped it back, which is
           // the "bar changes when I tap Discover" symptom. With the decision
           // here there is no restore step, so nothing can leak.
-          tabBarStyle: tabBarHiddenFor(route) ? { display: 'none' } : TAB_BAR_STYLE,
+          tabBarStyle: tabBarHiddenFor(route, navigation) ? { display: 'none' } : TAB_BAR_STYLE,
           tabBarBackground: () => (
             <View style={{ 
               flex: 1, 

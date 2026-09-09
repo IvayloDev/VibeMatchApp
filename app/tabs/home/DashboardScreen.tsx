@@ -9,7 +9,7 @@ import { LinearGradientFallback as LinearGradient } from '../../../lib/component
 import { BlurViewFallback as BlurView } from '../../../lib/components/BlurViewFallback';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Animatable from 'react-native-animatable';
-import { getCreditState, subscribeToCredits, proRemaining } from '../../../lib/creditState';
+import { getCreditState, subscribeToCredits, proRemaining, type CreditState } from '../../../lib/creditState';
 import { bootstrapSession, refreshCreditState, requireIdentity } from '../../../lib/identity';
 import { hasProEntitlement, subscribeToProStatus } from '../../../lib/revenuecat';
 import { PRO_DAILY_LIMIT, formatQuotaReset } from '../../../lib/proQuota';
@@ -42,6 +42,35 @@ type RootStackParamList = {
   SignUp: undefined;
 };
 
+/**
+ * The free daily allowance, as the server last reported it.
+ *
+ * A user who never pays gets a fixed number of free matches from the daily
+ * grant for the life of the install. Once they are spent the server stops
+ * setting next_free_at, creditState reports `freeExhausted`, and every surface
+ * that promises "your next free match" has to stop promising it.
+ *
+ * `used` is null until the server has actually said, and null is not zero: an
+ * offline read must not be turned into a countdown or into a cap notice. Same
+ * rule as the balance itself, for the same reason. `hasNextFree` is kept
+ * separately from `exhausted` because they are only the same answer once the
+ * server has spoken - before that both are simply unknown.
+ */
+type FreeAllowance = { used: number | null; limit: number; exhausted: boolean; hasNextFree: boolean };
+
+const readFreeAllowance = (s: CreditState): FreeAllowance => ({
+  used: s.freeDailyUsed,
+  limit: s.freeDailyLimit,
+  exhausted: s.freeExhausted,
+  hasNextFree: s.nextFreeAt !== null,
+});
+
+const UNKNOWN_ALLOWANCE: FreeAllowance = { used: null, limit: 0, exhausted: false, hasNextFree: false };
+
+// Never re-ask for the credit state more than twice a minute from the ticker.
+// See the countdown effect for the loop this floor exists to stop.
+const RECLAIM_MIN_INTERVAL_MS = 30_000;
+
 const DashboardScreen = () => {
   const { user, isRegistered } = useAuth();
   // null means "the server has not told us yet", which is NOT zero. Nothing
@@ -49,7 +78,12 @@ const DashboardScreen = () => {
   const [credits, setCredits] = useState<number | null>(null);
   const [creditSource, setCreditSource] = useState<'unknown' | 'server' | 'stale'>('unknown');
   const [isPro, setIsPro] = useState(false);
-  const [proScansToday, setProScansToday] = useState(0);
+  // null means "the server has not told us how many Pro matches went today".
+  // `?? 0` here is what put "10 of 10 matches left today" in front of an
+  // offline subscriber, which is the frozen-counter bug wearing a new hat.
+  const [proScansToday, setProScansToday] = useState<number | null>(null);
+  // What the server last said about the free daily allowance. Starts unknown.
+  const [freeAllowance, setFreeAllowance] = useState<FreeAllowance>(UNKNOWN_ALLOWANCE);
   const [loading, setLoading] = useState(true);
   // Out-of-matches wall (replaces the old jump straight into the paywall).
   const [showWall, setShowWall] = useState(false);
@@ -61,6 +95,15 @@ const DashboardScreen = () => {
   const adoptNextFreeAt = (next: Date) =>
     setNextFreeAt((prev) => (prev.getTime() === next.getTime() ? prev : next));
   const nextFreeAtMs = nextFreeAt.getTime();
+  // One place that takes a server reading and updates everything derived from
+  // it. `nextFreeAt` is only ever moved forward, never cleared - so when the
+  // server stops naming one, the stale Date would otherwise keep driving a
+  // countdown and a "your free match is ready" notification for a match that
+  // is never coming. `hasNextFree` is what says whether it is real.
+  const adoptFreeState = (state: CreditState) => {
+    if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
+    setFreeAllowance(readFreeAllowance(state));
+  };
   // Ticks once a minute so the "next free match in" countdown stays honest.
   const [, setClockTick] = useState(0);
   // The AppState listener below outlives any single render.
@@ -68,6 +111,9 @@ const DashboardScreen = () => {
   userRef.current = user;
   // dashboard_viewed fires once per session; loads happen on every foreground.
   const dashboardTracked = useRef(false);
+  // When the once-a-second ticker last asked the server for a fresh state.
+  // A ref, not state: writing it must not itself cause a render.
+  const lastReclaimAt = useRef(0);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -111,7 +157,7 @@ const DashboardScreen = () => {
       setIsPro(pro);
       setCredits(state.balance);
       setCreditSource(state.source);
-      if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
+      adoptFreeState(state);
 
       // signed_in must keep meaning "has an account". Deriving it from the
       // identity would make every install report as signed in, and every
@@ -122,8 +168,9 @@ const DashboardScreen = () => {
         trackEvent('dashboard_viewed', { credits_balance: state.balance, is_pro: pro, signed_in: isRegistered });
       }
       // Refreshed alongside credits so the badge is right after every scan.
-      // From the server, not the local counter that no longer increments.
-      setProScansToday(state.proUsedToday ?? 0);
+      // From the server, not the local counter that no longer increments, and
+      // kept null when the server did not say rather than collapsed to 0.
+      setProScansToday(state.proUsedToday);
     } catch (error) {
       console.error('Error loading credits:', error);
     } finally {
@@ -179,7 +226,11 @@ const DashboardScreen = () => {
     // somebody who may be holding a paid pack is a notification they should
     // never get.
     if (loading || creditSource !== 'server') return;
-    if (isPro || (credits ?? 0) > 0) {
+    // Past the lifetime cap there is no next free match, so a reminder would
+    // wake the user at 09:00 to tell them about something that will not
+    // happen. Same for a server that never named a next_free_at: the Date in
+    // state is then a client-side guess at local 09:00, not a promise.
+    if (isPro || (credits ?? 0) > 0 || freeAllowance.exhausted || !freeAllowance.hasNextFree) {
       // A balance means no daily top-up tomorrow, so no "free match is
       // ready". This also sweeps any stray copies an older build left
       // pending on the device.
@@ -189,18 +240,39 @@ const DashboardScreen = () => {
     scheduleFreeMatchReminderIfAllowed(nextFreeAt);
     // nextFreeAtMs, not nextFreeAt: identity of the Date is not a change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, isPro, credits, creditSource, nextFreeAtMs]);
+  }, [loading, isPro, credits, creditSource, nextFreeAtMs, freeAllowance.exhausted, freeAllowance.hasNextFree]);
 
   useEffect(() => {
     if (loading || isPro || creditSource !== 'server' || (credits ?? 0) > 0) return;
-    // The countdown carries seconds, so it ticks once a second.
+    // Nothing to count down to: the lifetime free matches are spent, or the
+    // server never named a next_free_at. Running the ticker would burn a
+    // render a second to animate a number that means nothing.
+    if (freeAllowance.exhausted || !freeAllowance.hasNextFree) return;
+    // The countdown carries seconds, so the LABEL ticks once a second.
+    //
+    // The reload must not. Once now passed nextFreeAt every tick called the
+    // loader, and that self-limits only because the server normally moves
+    // next_free_at to tomorrow. get_credit_state answers with now() for an
+    // identity that has no daily grant row - which is any identity whose
+    // bootstrap never succeeded - so the target never moved, and the screen
+    // sat at one RPC and one re-render per second, forever, under a banner
+    // reading "Next free match in 0s". Ask at most once every 30 seconds.
     const id = setInterval(() => {
-      setClockTick((t) => t + 1);
-      if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
+      const now = Date.now();
+      if (now < nextFreeAt.getTime()) {
+        // Only while the label can still change. Past the target formatUntil
+        // is pinned at zero, so every further tick re-rendered the screen to
+        // redraw the same string.
+        setClockTick((t) => t + 1);
+        return;
+      }
+      if (now - lastReclaimAt.current < RECLAIM_MIN_INTERVAL_MS) return;
+      lastReclaimAt.current = now;
+      loadUserCredits({ claimDaily: true });
     }, 1000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, isPro, credits, creditSource, nextFreeAtMs]);
+  }, [loading, isPro, credits, creditSource, nextFreeAtMs, freeAllowance.exhausted, freeAllowance.hasNextFree]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -217,7 +289,7 @@ const DashboardScreen = () => {
     const after = getCreditState();
     setCredits(after.balance);
     setCreditSource(after.source);
-    if (after.nextFreeAt) adoptNextFreeAt(after.nextFreeAt);
+    adoptFreeState(after);
     return typeof after.balance === 'number' && after.balance > (before ?? 0);
   };
 
@@ -238,8 +310,8 @@ const DashboardScreen = () => {
       setCredits(state.balance);
       setCreditSource(state.source);
       setIsPro(state.isPro);
-      setProScansToday(state.proUsedToday ?? 0);
-      if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
+      setProScansToday(state.proUsedToday);
+      adoptFreeState(state);
     });
 
     const task = InteractionManager.runAfterInteractions(() => {
@@ -258,8 +330,7 @@ const DashboardScreen = () => {
     // here put the local next-midnight into the wall's countdown and into the
     // reminder the wall schedules, so both disagreed with the balance the
     // same screen was showing.
-    const state = getCreditState();
-    if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
+    adoptFreeState(getCreditState());
     setShowWall(true);
   };
 
@@ -332,6 +403,15 @@ const DashboardScreen = () => {
   // Same rule for the copy: never say "next free match in ..." to somebody
   // whose balance we have not actually read.
   const outOfMatches = !loading && !isPro && creditSource === 'server' && (credits ?? 0) < 1;
+  // ...and never say it once the lifetime free matches are gone, or before
+  // the server has named a next one. Those are three different situations and
+  // the copy has to tell them apart, because promising a daily match the app
+  // then refuses to hand over is worse than saying nothing.
+  const freeMatchComing = outOfMatches && freeAllowance.hasNextFree && !freeAllowance.exhausted;
+  // The limit is only named when the server actually reported the allowance.
+  const freeCapLine = freeAllowance.used !== null && freeAllowance.limit > 0
+    ? `That's all ${freeAllowance.limit} free matches.`
+    : 'Your free matches are used up.';
 
   const handleButtonPressIn = () => {
     Animated.spring(buttonScale, {
@@ -406,10 +486,17 @@ const DashboardScreen = () => {
                             so a subscriber holding a pack keeps matching. That was
                             invisible: the badge sat on 0/10 while each scan quietly
                             took a credit. Say which meter is paying. */}
+                        {/* null is not zero. `proUsedToday ?? 0` rendered a
+                            confident "10/10 TODAY" at an offline subscriber who
+                            may have used every one of them - the same class of
+                            lie as the counter that froze at 10/10 last week.
+                            Until the server says, the badge says only PRO. */}
                         <Text style={styles.creditsText}>
-                          {PRO_DAILY_LIMIT - proScansToday <= 0 && (credits ?? 0) > 0
-                            ? ` 0/${PRO_DAILY_LIMIT} TODAY · ${credits} CREDITS`
-                            : ` ${Math.max(0, PRO_DAILY_LIMIT - proScansToday)}/${PRO_DAILY_LIMIT} TODAY`}
+                          {proScansToday === null
+                            ? ' PRO'
+                            : PRO_DAILY_LIMIT - proScansToday <= 0 && (credits ?? 0) > 0
+                              ? ` 0/${PRO_DAILY_LIMIT} TODAY · ${credits} CREDITS`
+                              : ` ${Math.max(0, PRO_DAILY_LIMIT - proScansToday)}/${PRO_DAILY_LIMIT} TODAY`}
                         </Text>
                       </>
                     ) : (
@@ -453,12 +540,17 @@ const DashboardScreen = () => {
                 }}
                 activeOpacity={0.85}
               >
-                <MaterialCommunityIcons name={outOfMatches ? 'clock-outline' : 'crown'} size={20} color="#FFFFFF" />
+                {/* A clock only when there is genuinely something to wait
+                    for. Past the cap the banner is the way forward, not a
+                    timer, and it already opens the paywall. */}
+                <MaterialCommunityIcons name={freeMatchComing ? 'clock-outline' : 'crown'} size={20} color="#FFFFFF" />
                 <View style={styles.guestRegisterTextWrap}>
                   <Text style={styles.guestRegisterTitle}>
-                    {outOfMatches
+                    {freeMatchComing
                       ? `Next free match in ${formatUntil(nextFreeAt)}`
-                      : 'Go Pro - 10 matches a day'}
+                      : outOfMatches
+                        ? 'Out of matches - go Pro'
+                        : 'Go Pro - 10 matches a day'}
                   </Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-right" size={22} color="#FFFFFF" />
@@ -518,9 +610,11 @@ const DashboardScreen = () => {
                 {/* Card Text */}
                 <Text style={styles.uploadTitle}>Upload Your Vibe</Text>
                 <Text style={styles.uploadDescription}>
-                  {outOfMatches
+                  {freeMatchComing
                     ? `Next free match in ${formatUntil(nextFreeAt)}`
-                    : 'Select a photo from your gallery to let AI analyze the mood'}
+                    : outOfMatches
+                      ? `${freeCapLine} Grab a pack or go Pro to keep matching.`
+                      : 'Select a photo from your gallery to let AI analyze the mood'}
                 </Text>
 
                 {/* CTA Button */}

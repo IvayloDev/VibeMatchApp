@@ -7,18 +7,21 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "channel": "development",
       "env": {
         "EXPO_PUBLIC_DEBUG_TOOLS": "1"
       }
     },
     "preview": {
       "distribution": "internal",
+      "channel": "preview",
       "android": {
         "buildType": "app-bundle"
       }
     },
     "device-test": {
       "distribution": "internal",
+      "channel": "preview",
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
@@ -32,21 +35,23 @@
     },
     "production": {
       "autoIncrement": true,
+      "channel": "production",
       "android": {
         "buildType": "app-bundle"
       }
     },
     "preview-testflight": {
       "autoIncrement": true,
+      "channel": "preview-testflight",
       "ios": {
         "simulator": false,
         "buildConfiguration": "Release"
       },
-      "distribution": "store",
-      "channel": "preview"
+      "distribution": "store"
     },
     "preview-apk": {
       "distribution": "internal",
+      "channel": "preview",
       "android": {
         "buildType": "apk"
       }

@@ -47,13 +47,21 @@ function bytesToBase64(bytes: Uint8Array): string {
  * scheme is deliberately NOT accepted - a 13-digit timestamp is guessable, and
  * accepting it would turn this function into an enumeration oracle.
  */
-// Per-day call ceilings, checked against recommendation_log. Pro is 10 a day
-// and the largest pack ever sold was 120 credits; nobody real gets near these.
-const DAILY_CALLS_PER_IDENTITY = 60;
-const DAILY_CALLS_PER_IP = 200;
-
 const GUEST_IMAGE_PATH =
   /^anonymous\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/;
+
+// Per-day ATTEMPT ceilings, counted in edge_call_log. Pro is 10 matches a day
+// and the largest pack ever sold was 120 credits, so nobody real gets near
+// these: they are not a product rule, they are the wall a script runs into.
+const DAILY_CALLS_PER_IDENTITY = 60;
+const DAILY_CALLS_PER_IP = 200;
+// What this function writes as edge_call_log.fn, so its rows can be told apart
+// from spotify-search's in the same table.
+const METER_FN = "recommend-songs";
+
+// The highest contract this server implements. 1 = the client charges itself,
+// 2 = the server charges through charge_scan.
+const MAX_KNOWN_CONTRACT = 2;
 
 /**
  * Decide whether a caller may have this object read on their behalf.
@@ -66,7 +74,21 @@ const GUEST_IMAGE_PATH =
  */
 function isOwnStorageUrl(url: string): boolean {
   const base = (Deno.env.get('SUPABASE_URL') ?? '').replace(/\/$/, '');
-  return !!base && url.startsWith(`${base}/storage/v1/object/`);
+  if (!base) return false;
+  try {
+    const target = new URL(url);
+    // Parse first, then compare, because the comment above promises a property
+    // the old startsWith could not deliver. `${base}/storage/v1/object/../../..`
+    // passes a raw prefix test, and fetch() then normalizes the dot segments
+    // away and requests something else entirely on the same host: /rest/v1,
+    // /auth/v1, anything the project serves. Comparing the parsed origin and
+    // the already-normalized pathname is the check the comment describes.
+    return target.origin === new URL(base).origin
+      && target.pathname.startsWith('/storage/v1/object/');
+  } catch {
+    // Not a URL at all.
+    return false;
+  }
 }
 
 function isAllowedImagePath(path: string, userId?: string): boolean {
@@ -928,6 +950,124 @@ type TasteProfile = {
 
 const isManualTaste = (profile: TasteProfile | null | undefined) => profile?.source === "manual";
 
+// Caps on the caller-supplied text that ends up inside an OpenAI prompt.
+//
+// avoidTracks and avoidArtists are joined into the SYSTEM prompt, and every
+// name in an inline taste profile is interpolated into the user prompt. None
+// of it was bounded, so the request body WAS the prompt: an attacker could put
+// a hundred kilobytes of their own instructions above our rules and bill the
+// tokens to us. Both dimensions have to be capped, because ten thousand short
+// strings cost the same as one enormous one.
+const MAX_AVOID_ITEMS = 60;
+const MAX_AVOID_LENGTH = 120;
+const MAX_TASTE_ITEMS = 40;
+const MAX_TASTE_NAME_LENGTH = 120;
+const MAX_TASTE_GENRE_LENGTH = 40;
+
+/**
+ * Flatten one caller-supplied string so it can sit inside a prompt.
+ *
+ * Control characters and line breaks are replaced, not merely trimmed: a
+ * newline inside an "avoid" entry closes our bullet list and lets whatever
+ * follows read as the next system instruction. Truncation happens last, so
+ * padding the front cannot buy extra room past the cap.
+ */
+function cleanPromptString(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+/** The same treatment for a list, plus a count cap and de-duplication. */
+function cleanPromptList(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value) {
+    const item = cleanPromptString(raw, maxLength);
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function cleanTasteTracks(value: unknown): Array<{ name: string; artist: string }> {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ name: string; artist: string }> = [];
+  for (const raw of value) {
+    const name = cleanPromptString((raw as any)?.name, MAX_TASTE_NAME_LENGTH);
+    const artist = cleanPromptString((raw as any)?.artist, MAX_TASTE_NAME_LENGTH);
+    // buildTasteBlock prints the pair as one line, so half an entry is noise.
+    if (!name || !artist) continue;
+    const key = `${name}|${artist}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, artist });
+    if (out.length >= MAX_TASTE_ITEMS) break;
+  }
+  return out;
+}
+
+function cleanTasteArtists(value: unknown): Array<{ name: string; genres?: string[] }> {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ name: string; genres?: string[] }> = [];
+  for (const raw of value) {
+    const name = cleanPromptString((raw as any)?.name, MAX_TASTE_NAME_LENGTH);
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    out.push({ name, genres: cleanPromptList((raw as any)?.genres, 5, MAX_TASTE_GENRE_LENGTH) });
+    if (out.length >= MAX_TASTE_ITEMS) break;
+  }
+  return out;
+}
+
+/**
+ * Rebuild an inline taste profile field by field instead of trusting one.
+ *
+ * The body version used to be accepted on `typeof === "object"` alone and
+ * handed straight to buildTasteBlock, which interpolates every name and artist
+ * into the user prompt. Copying only the fields we understand, at lengths we
+ * chose, is the only version of this that cannot be turned into a prompt of
+ * the caller's own.
+ *
+ * Guests are why this path exists at all: they have no row in
+ * spotify_taste_profiles, so their profile has to travel in the request. The
+ * profile loaded from the database further down is written by our own
+ * functions and needs no scrub.
+ */
+function cleanTasteProfile(value: unknown): TasteProfile | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const profile: TasteProfile = {
+    top_artists: cleanTasteArtists(raw.top_artists),
+    top_tracks: cleanTasteTracks(raw.top_tracks),
+    recently_played: cleanTasteTracks(raw.recently_played),
+    saved_tracks: cleanTasteTracks(raw.saved_tracks),
+    // Chosen decades ride in here as "era:1980s"; the cap is wide enough.
+    top_genres: cleanPromptList(raw.top_genres, MAX_TASTE_ITEMS, MAX_TASTE_GENRE_LENGTH),
+    // Only the two values isManualTaste and the prompt builders know about. An
+    // unknown source string would otherwise reach nothing, but pinning it here
+    // keeps the profile shape closed.
+    source: raw.source === "manual" ? "manual" : "spotify",
+  };
+  const entries = (profile.top_artists?.length ?? 0)
+    + (profile.top_tracks?.length ?? 0)
+    + (profile.recently_played?.length ?? 0)
+    + (profile.saved_tracks?.length ?? 0)
+    + (profile.top_genres?.length ?? 0);
+  // Nothing survived the scrub, so there is no profile - and saying so lets
+  // the DB lookup below run for a signed-in user instead of being skipped by
+  // an empty object.
+  return entries > 0 ? profile : null;
+}
+
 /**
  * Format a compact taste-profile block for the LLM prompt.
  * Order matters: lead with high-intent signals (saved + top artists), end with
@@ -1083,6 +1223,10 @@ serve(async (req) => {
 
   // 0) Try to get user from Authorization header (if present)
   let userId: string | undefined;
+  // Anonymous sign-in shipped with 1.3.0, the first build that speaks contract
+  // 2, so this flag is also a version signal. The contract gate below is the
+  // one place that matters.
+  let isAnonymous = false;
   const authHeader = req.headers.get('Authorization');
   
   if (authHeader) {
@@ -1102,7 +1246,8 @@ serve(async (req) => {
       const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
       if (!userError && user) {
         userId = user.id;
-        console.log("✅ Authenticated user:", userId);
+        isAnonymous = user.is_anonymous === true;
+        console.log("✅ Authenticated user:", userId, isAnonymous ? "(anonymous)" : "(registered)");
       } else {
         console.log("ℹ️ No user from auth header (guest user)");
       }
@@ -1150,11 +1295,19 @@ serve(async (req) => {
       deviceId = body.deviceId;
     }
     debugUsage = body.debug === true;
-    // The contract marker. No build in the field sends it, which is exactly
-    // how the server knows not to charge them: an old client still deducts
-    // client-side, and charging it as well would take two credits for one
-    // match, or withhold a match it had already paid for.
-    if (Number.isInteger(body.contract)) contract = body.contract;
+    // The contract marker. A build that does not send it charges itself
+    // client-side, and charging it here as well would take two credits for one
+    // match, or withhold a match it had already paid for. Who is allowed to
+    // claim that is decided by the contract gate below, not here.
+    //
+    // Clamped to the contracts this server actually understands. client_contract
+    // keeps the highest number it is ever told and the gate reads it back, so
+    // one caller sending contract 99 would otherwise write a number nothing can
+    // interpret into the record that decides whether they get charged. A future
+    // contract 3 belongs here, deliberately, next to the code that honours it.
+    if (Number.isInteger(body.contract)) {
+      contract = Math.min(Math.max(body.contract, 1), MAX_KNOWN_CONTRACT);
+    }
     if (typeof body.scanId === "string" && /^[0-9a-f-]{36}$/i.test(body.scanId)) scanId = body.scanId;
     if (Number.isInteger(body.tzOffsetMinutes) && Math.abs(body.tzOffsetMinutes) <= 14 * 60) {
       tzOffsetMinutes = body.tzOffsetMinutes;
@@ -1168,12 +1321,15 @@ serve(async (req) => {
     // The user id comes from the verified JWT only. It used to fall back to
     // body.userId, which let any caller name another user and have that
     // person's history and taste profile shape the picks.
-    avoidTracks = body.avoidTracks || [];
-    avoidArtists = body.avoidArtists || [];
-    // Guest taste profile may be passed inline from the client
-    if (body.tasteProfile && typeof body.tasteProfile === "object") {
-      tasteProfile = body.tasteProfile as TasteProfile;
-    }
+
+    // Both lists are joined into the SYSTEM prompt, so they are scrubbed and
+    // capped here rather than trusted. Unbounded, they are a free channel for
+    // the caller to write our instructions and spend our tokens.
+    avoidTracks = cleanPromptList(body.avoidTracks, MAX_AVOID_ITEMS, MAX_AVOID_LENGTH);
+    avoidArtists = cleanPromptList(body.avoidArtists, MAX_AVOID_ITEMS, MAX_AVOID_LENGTH);
+    // Guest taste profile may be passed inline from the client. Rebuilt field
+    // by field, because every string in it lands in the user prompt.
+    tasteProfile = cleanTasteProfile(body.tasteProfile);
 
     console.log("📥 Body:", {
       imageUrl: imageUrl ? `${imageUrl.substring(0, 50)}...` : 'N/A',
@@ -1213,6 +1369,215 @@ serve(async (req) => {
     return jsonResponse({
       error: "Bad request JSON"
     }, 400);
+  }
+
+  // The service-role client. Built here rather than further down because both
+  // gates below need it and both have to run before this function does any
+  // work on the caller's behalf.
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? '';
+  const logClient = serviceKey ? createClient(Deno.env.get('SUPABASE_URL') ?? '', serviceKey) : null;
+
+  // Who this call is metered against.
+  //
+  // cf-connecting-ip is written by the edge in front of us and the caller
+  // cannot forge it, so it wins. x-forwarded-for is a caller-supplied list
+  // that our proxy appends to, which makes its LEFTMOST hop pure attacker
+  // input - and that is the hop the old order preferred, so a script could
+  // mint a fresh identity per request with one header and never meet a
+  // ceiling. Within that header only the rightmost hop, the one added closest
+  // to us, is worth reading.
+  const forwardedFor = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+  const clientIp = req.headers.get("cf-connecting-ip")
+    ?? forwardedFor[forwardedFor.length - 1]
+    ?? null;
+
+  // 1b) The contract gate.
+  //
+  // `contract` decides whether the server charges for this match, and the
+  // CALLER sends it. Contract 1 exists only for builds shipped before the
+  // server charged anything: those deduct client-side, so charging them too
+  // would take two credits for one match. That escape hatch has to stay open
+  // for genuinely old builds and shut for everyone else, or "contract" is
+  // simply an opt-out from paying that anyone can take by deleting a field.
+  //
+  // Two things prove a caller is not an old build:
+  //   - an anonymous identity, which only exists from 1.3.0, the same build
+  //     that sends contract 2. An anonymous caller claiming contract 1 is
+  //     lying about what it is.
+  //   - a registered user whose client has already been seen speaking
+  //     contract 2. note_client_contract has been recording that in
+  //     public.client_contract all along and nothing ever read it back. A
+  //     real client never downgrades; a downgrade is someone editing the body.
+  if (contract < 2) {
+    const refuseContract = () => jsonResponse({
+      error: "Unsupported client",
+      code: "contract_required",
+      message: "Please update the app to keep matching.",
+    }, 400);
+
+    if (isAnonymous) {
+      console.warn("🚫 anonymous caller sent contract", contract);
+      return refuseContract();
+    }
+
+    // There is deliberately NO client_contract arm here.
+    //
+    // The obvious next step is to also refuse a contract-1 request from anyone
+    // whose client_contract row already says 2. It was written that way, and it
+    // locks real customers out. client_contract is keyed on the ACCOUNT and
+    // max_contract only ever climbs, so one person with an updated iPhone and
+    // an iPad still on the App Store build is recorded at 2 by the phone and
+    // then refused on the iPad, with paid credits in their balance and no way
+    // to spend them. A staged rollout, a second device, a restored older build
+    // and a device left behind on an older iOS all produce that same shape.
+    //
+    // It would not have caught the attacker it was aimed at either: the row is
+    // only written when a caller VOLUNTEERS contract 2, so a client that never
+    // sends it is never recorded and so never refused.
+    //
+    // So the gate is the anonymous check above and nothing else. That one is
+    // airtight in the direction that matters, because an anonymous identity
+    // cannot predate the build that mints them, and it covers the guest path
+    // where the free matches actually live. Registered legacy clients keep the
+    // uncharged path until pre-1.3.0 builds age out, which is the same
+    // condition that gates revoking UPDATE on user_profiles.
+  }
+
+  // Record the contract now, not after a successful charge. The write used to
+  // sit at the end of the charge block, so the adoption table only ever
+  // learned about users who had credits to spend: a contract-2 caller who was
+  // out of credits, or whose match failed, was never recorded, and the gate
+  // directly above reads exactly that table. Recorded late, such a user could
+  // claim contract 1 forever.
+  if (contract >= 2 && userId && logClient) {
+    const { error: noteError } = await logClient.rpc('note_client_contract', {
+      p_user: userId,
+      p_contract: contract,
+    });
+    if (noteError) console.warn("⚠️ note_client_contract failed:", noteError.message);
+  }
+
+  // 1c) The daily attempt ceiling.
+  //
+  // Credits are only charged for contract-2 callers, so without this the anon
+  // key in the app binary is an unmetered OpenAI account for everybody else.
+  //
+  // Counted in edge_call_log and counted BEFORE the work. The old check
+  // counted recommendation_log rows, which are written on the single
+  // full-success path, so every request that failed after the model call was a
+  // free, uncounted model call - and the caller decides whether a request
+  // fails: an image that resolves to nothing, a taste profile no song can
+  // match. Attempts are what costs money, so attempts are what is counted.
+  //
+  // edge_call_log has no identity column (fn, mode, ip), so the subject key
+  // goes in `ip` behind a prefix that cannot collide with an address, and
+  // `mode` says what kind of subject it is. The index is on (fn, ip,
+  // created_at), which is exactly how these are read.
+  const meterSubjects: Array<{ kind: string; key: string; limit: number }> = [];
+  if (userId) meterSubjects.push({ kind: 'user', key: `user:${userId}`, limit: DAILY_CALLS_PER_IDENTITY });
+  if (deviceId) meterSubjects.push({ kind: 'device', key: `device:${deviceId}`, limit: DAILY_CALLS_PER_IDENTITY });
+  if (clientIp) meterSubjects.push({ kind: 'ip', key: clientIp, limit: DAILY_CALLS_PER_IP });
+
+  // Fail CLOSED for the callers we cannot bill, OPEN for the ones we can.
+  //
+  // A registered, non-anonymous user is far more often a paying customer than
+  // an attacker, and refusing one because our own ledger is unreadable turns
+  // our outage into their outage. Everyone else - no JWT, or an anonymous one,
+  // which is where the free matches live - is refused, because for them an
+  // unreadable ledger IS the attack. The old block wrapped the whole check in
+  // a catch that continued on any failure, which is not a metering check; it
+  // is a comment about one.
+  // Anyone the server can name gets the benefit of the doubt. Only a caller
+  // with no identity at all is refused when our own ledger is unreadable.
+  //
+  // This deliberately includes anonymous identities. Every guest on 1.3.0 is
+  // anonymous, guests buy packs and subscribe straight from the wall, and
+  // excluding them turned a blip in our own ledger into a 503 for most of the
+  // paying user base. An anonymous caller is already refused a free match by
+  // the contract gate above, so the meter is not the thing holding that line.
+  const meterFailsOpen = !!userId;
+  const meterUnavailable = (why: string): Response | null => {
+    if (meterFailsOpen) {
+      console.error("🚨 attempt meter unavailable, letting a registered user through:", why);
+      return null;
+    }
+    console.error("🚫 attempt meter unavailable, refusing:", why);
+    return jsonResponse({
+      error: "Matching is busy",
+      code: "meter_unavailable",
+      message: "Matching is busy right now. Please try again in a moment.",
+    }, 503);
+  };
+
+  if (!logClient) {
+    const refusal = meterUnavailable("no service role key");
+    if (refusal) return refusal;
+  } else if (meterSubjects.length === 0) {
+    // No user, no device id and no IP: there is nothing to count against, so
+    // this caller cannot be metered at all.
+    const refusal = meterUnavailable("no subject to meter");
+    if (refusal) return refusal;
+  } else {
+    try {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const counted = await Promise.all(
+        meterSubjects.map(async (subject) => {
+          const { count, error } = await logClient
+            .from('edge_call_log')
+            .select('id', { count: 'exact', head: true })
+            .eq('fn', METER_FN)
+            .eq('ip', subject.key)
+            .gt('created_at', since);
+          return { subject, calls: count ?? 0, error: error?.message ?? null };
+        })
+      );
+
+      // The old code destructured `count` and dropped `error`, so a read that
+      // never happened came back as zero calls and waved the request through.
+      const unreadable = counted.find((row) => row.error);
+      if (unreadable) {
+        const refusal = meterUnavailable(`count failed: ${unreadable.error}`);
+        if (refusal) return refusal;
+      }
+
+      const over = counted.find((row) => row.calls >= row.subject.limit);
+      if (over) {
+        console.warn("🚫 Daily attempt ceiling hit", {
+          kind: over.subject.kind,
+          calls: over.calls,
+          limit: over.subject.limit,
+          userId: userId ?? null,
+          ip: clientIp,
+        });
+        return jsonResponse({
+          error: "Daily limit reached",
+          code: "rate_limited",
+          message: "That's a lot of matches for one day. Try again tomorrow."
+        }, 429);
+      }
+
+      // Written before the work and awaited on purpose. A fire-and-forget insert
+      // can be dropped when the isolate returns first, and an attempt that is
+      // not written is an attempt that is not counted - which is the failure
+      // this whole block exists to fix.
+      const { error: writeError } = await logClient
+        .from('edge_call_log')
+        .insert(meterSubjects.map((s) => ({ fn: METER_FN, mode: s.kind, ip: s.key })));
+      if (writeError) {
+        const refusal = meterUnavailable(`insert failed: ${writeError.message}`);
+        if (refusal) return refusal;
+      }
+    } catch (err) {
+      // A throw here is the client failing rather than the query returning an
+      // error, but it means the same thing: no ledger. It goes through the same
+      // door, because the old version's catch-and-continue is exactly what made
+      // this check decorative.
+      const refusal = meterUnavailable(`ledger unreachable: ${err}`);
+      if (refusal) return refusal;
+    }
   }
 
   // 2) Get user history for deduplication (if userId provided)
@@ -1304,8 +1669,6 @@ serve(async (req) => {
   //     everyone: the model's reflex picks that every sunset used to get;
   //   - what this device (or user) has been served recently, so guests are
   //     covered even when their local history was wiped.
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? '';
-  const logClient = serviceKey ? createClient(Deno.env.get('SUPABASE_URL') ?? '', serviceKey) : null;
   if (logClient) {
     try {
       const [{ data: popular }, { data: served }] = await Promise.all([
@@ -1331,54 +1694,19 @@ serve(async (req) => {
     }
   }
 
-  // 2c) Abuse ceiling. Credits and the Pro quota are enforced on the client,
-  // so without this the anon key in the app binary is an unmetered OpenAI
-  // account. recommendation_log already records every shipped track per
-  // device/user and (from this version) per IP; three rows per call.
-  // The limits are far above any legitimate day, so a real user never meets
-  // them; they exist so a script cannot run for hours.
-  const clientIp = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim()
-    || req.headers.get("cf-connecting-ip")
-    || null;
-  if (logClient) {
-    try {
-      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const countSince = async (column: string, value: string) => {
-        const { count } = await logClient
-          .from('recommendation_log')
-          .select('id', { count: 'exact', head: true })
-          .eq(column, value)
-          .gt('created_at', since);
-        return Math.ceil((count ?? 0) / 3);
-      };
-      const [byUser, byDevice, byIp] = await Promise.all([
-        userId ? countSince('user_id', userId) : Promise.resolve(0),
-        deviceId ? countSince('device_id', deviceId) : Promise.resolve(0),
-        clientIp ? countSince('ip', clientIp) : Promise.resolve(0),
-      ]);
-      const identityCalls = Math.max(byUser, byDevice);
-      if (identityCalls >= DAILY_CALLS_PER_IDENTITY || byIp >= DAILY_CALLS_PER_IP) {
-        console.warn("🚫 Daily ceiling hit", { userId: userId ?? null, deviceId: deviceId ?? null, ip: clientIp, identityCalls, byIp });
-        return jsonResponse({
-          error: "Daily limit reached",
-          code: "rate_limited",
-          message: "That's a lot of matches for one day. Try again tomorrow."
-        }, 429);
-      }
-    } catch (err) {
-      console.warn("⚠️ Ceiling check failed, continuing:", err);
-    }
-  }
-
-  // 2b) The charge.
+  // 2c) The charge.
   //
-  // Only for callers that asked to be charged. A request without contract 2 is
-  // served exactly as before and pays for itself on the client, because the
-  // shipped build re-reads its balance AFTER any server charge would land,
-  // computes old-1 from that, writes it, and then demands a later read equal
-  // exactly its own arithmetic. Charging such a client either takes two credits
-  // or makes it withhold a match the user already paid for. There is no version
-  // of charging an old build that is not worse than not charging it.
+  // Only for callers that asked to be charged, and asking is a claim the gate
+  // in 1b has already tested: unchecked, this whole block is opt-in and the
+  // way out is deleting one field.
+  //
+  // A request that gets through with contract 1 pays for itself on the client,
+  // because that build re-reads its balance AFTER any server charge would
+  // land, computes old-1 from that, writes it, and then demands a later read
+  // equal to its own arithmetic. Charging such a client either takes two
+  // credits or makes it withhold a match the user already paid for. There is
+  // no version of charging an old build that is not worse than not charging
+  // it.
   //
   // Placed before the image is fetched and long before OpenAI, so a caller with
   // no balance costs nothing, and so a replay short-circuits before any work.
@@ -1470,10 +1798,6 @@ serve(async (req) => {
     }
 
     heldScanId = scanId;
-    logClient.rpc('note_client_contract', { p_user: userId, p_contract: contract })
-      .then(({ error }: any) => {
-        if (error) console.warn("⚠️ note_client_contract failed:", error.message);
-      });
   }
 
   /**
@@ -1657,8 +1981,12 @@ serve(async (req) => {
     };
     
     console.log("📤 Request headers:", {
+      // Presence and length only. This used to print the first 20 characters
+      // of the header, which is "Bearer " plus 13 live characters of the
+      // OpenAI key, into a log anyone with dashboard access can read. The line
+      // above already does it the right way.
       hasAuthorization: !!headers["Authorization"],
-      authorizationPrefix: headers["Authorization"]?.substring(0, 20) + "...",
+      authorizationLength: headers["Authorization"].length,
       contentType: headers["Content-Type"]
     });
     
@@ -1742,20 +2070,20 @@ serve(async (req) => {
   // 8) Resolve tracks via Spotify
   const spotifyToken = await getSpotifyToken();
   if (!spotifyToken) {
-    console.warn("⚠️ No Spotify token, returning OpenAI recommendations without Spotify URLs");
-    return await respond({
-      songs: openaiData.recommendations.map((rec: any) => ({
-        title: rec.title,
-        artist: rec.artist,
-        reason: rec.reason,
-        mood_tags: rec.mood_tags,
-        language: "en",
-        spotify_url: null,
-        album_cover: null,
-        preview_url: null
-      })),
-      has_taste: hasTaste
-    }, 200);
+    // No app token means no spotify_url, no artwork and no preview on any card.
+    // This used to ship the model's picks anyway through respond(), which
+    // REFUNDS - and the client counts three or more songs as a delivered
+    // match. So the user got the match and the credit back, and could match
+    // the same photo again for free for as long as our Spotify credentials
+    // were down.
+    //
+    // Refusing is the honest settlement of the two: the failure is ours, the
+    // user keeps their credit, and songs nobody can play are not the product.
+    // It is also the same answer this function already gives when Spotify auth
+    // fails a few lines later, and the client has a retryable message for that
+    // exact code (scanErrors 'spotify_unavailable').
+    console.error("❌ No Spotify app token; refusing rather than shipping unplayable songs");
+    return await refundThen(spotifyAuthErrorResponse());
   }
 
   const resolvedSongs: any[] = [];

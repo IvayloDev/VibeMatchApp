@@ -21,7 +21,7 @@
 import { supabase } from './supabase';
 import { getDeviceId } from './deviceId';
 import { identifyUser, getCurrentAppUserId } from './revenuecat';
-import { setServerCredits, resetCreditState } from './creditState';
+import { setServerCredits, resetCreditState, markCreditsStale } from './creditState';
 import {
   captureLegacySnapshot,
   markRecovered,
@@ -32,6 +32,20 @@ import {
 
 let mintInFlight: Promise<string | null> | null = null;
 let bootstrappedFor: string | null = null;
+
+/**
+ * The bootstrap currently on the wire.
+ *
+ * bootstrapSession is not a once-per-launch call any more: the Dashboard fires
+ * it on foreground whenever the user is at zero and not Pro, the RevenueCat
+ * listener fires it on every customer-info change, and the wall and payment
+ * screens fire it after a purchase. A single resume can raise several at once,
+ * and each one is the heaviest request the app makes - a RevenueCat subscriber
+ * lookup, a pack reconcile and a free-match claim. The server steps are all
+ * idempotent, so this is not protecting the balance; it is stopping four
+ * copies of that request leaving the device on one foreground.
+ */
+let bootstrapInFlight: Promise<void> | null = null;
 
 /** Minutes to ADD to UTC to reach local time, which is the opposite sign to getTimezoneOffset. */
 function tzOffsetMinutes(): number {
@@ -115,20 +129,11 @@ export async function afterMint(uid: string): Promise<void> {
     const token = session?.access_token;
     if (!token) return;
 
-    const bootstrap = await postJson('session-bootstrap', token, {
+    applyBootstrapState(await postJson('session-bootstrap', token, {
       deviceId: await getDeviceId(),
       starterMarkerPresent: await starterMarkerPresent(),
       tzOffsetMinutes: tzOffsetMinutes(),
-    });
-    if (bootstrap?.balance !== undefined) {
-      setServerCredits({
-        balance: bootstrap.balance,
-        isPro: bootstrap.is_pro,
-        nextFreeAt: bootstrap.next_free_at,
-        proUsedToday: bootstrap.pro_used_today,
-        proDailyLimit: bootstrap.pro_daily_limit,
-      });
-    }
+    }));
 
     // 3. Anything left over from a sign-in that replaced an anonymous identity.
     await claimAnonymousIfPending();
@@ -141,6 +146,33 @@ export async function afterMint(uid: string): Promise<void> {
     // the next launch or the next requireIdentity picks up where this stopped.
     bootstrappedFor = null;
   }
+}
+
+/**
+ * Write a session-bootstrap response into the credit record.
+ *
+ * Two callers hand-copied this block, and the second one is the reason it is a
+ * function now: when a field is added to the response, a copy that misses it
+ * gives a user bootstrapped at mint time a different picture from the same
+ * user bootstrapped on foreground.
+ *
+ * Fields are passed through exactly as they arrive, undefined included.
+ * setServerCredits reads undefined as "not reported, keep what you have" and
+ * null as "the server says empty", and the difference matters here: an app
+ * talking to a function that predates free_daily_used must not be told the
+ * user's free matches are over just because the key is missing.
+ */
+function applyBootstrapState(result: any | null): void {
+  if (!result || result.balance === undefined) return;
+  setServerCredits({
+    balance: result.balance,
+    isPro: result.is_pro,
+    nextFreeAt: result.next_free_at,
+    proUsedToday: result.pro_used_today,
+    proDailyLimit: result.pro_daily_limit,
+    freeDailyUsed: result.free_daily_used,
+    freeDailyLimit: result.free_daily_limit,
+  });
 }
 
 async function runLegacyRecovery(uid: string, token: string): Promise<void> {
@@ -195,43 +227,70 @@ async function postJson(fn: string, token: string, body: unknown): Promise<any |
  * than whenever the webhook happens to arrive, and it self-heals if the
  * webhook never does.
  */
-export async function bootstrapSession(): Promise<void> {
+export function bootstrapSession(): Promise<void> {
+  // Registered synchronously, before the first await, because that is the only
+  // way the dedupe actually holds: the callers that pile up arrive in the same
+  // tick, and if the session lookup came first they would all get past this
+  // line before any of them had registered anything.
+  if (bootstrapInFlight) return bootstrapInFlight;
+
+  const flight = runBootstrap().finally(() => {
+    if (bootstrapInFlight === flight) bootstrapInFlight = null;
+  });
+  bootstrapInFlight = flight;
+  return flight;
+}
+
+async function runBootstrap(): Promise<void> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
+    // No identity yet, so nothing to bootstrap. This returns at the first
+    // await, which deregisters the flight almost immediately - anybody who
+    // joins inside that window is in the same tick, looking at the same empty
+    // session, and would have made the same no-op call. And when an identity
+    // does appear, it appears through mint, which runs afterMint's own
+    // bootstrap rather than joining this one.
     if (!token) return;
-    const result = await postJson('session-bootstrap', token, {
+
+    applyBootstrapState(await postJson('session-bootstrap', token, {
       deviceId: await getDeviceId(),
       starterMarkerPresent: await starterMarkerPresent(),
       tzOffsetMinutes: tzOffsetMinutes(),
-    });
-    if (result?.balance !== undefined) {
-      setServerCredits({
-        balance: result.balance,
-        isPro: result.is_pro,
-        nextFreeAt: result.next_free_at,
-        proUsedToday: result.pro_used_today,
-        proDailyLimit: result.pro_daily_limit,
-      });
-    }
+    }));
   } catch (error) {
     console.warn('[identity] bootstrapSession failed:', error);
   }
 }
 
-/** Refresh the balance from the server for whoever is currently signed in. */
+/**
+ * Refresh the balance from the server for whoever is currently signed in.
+ *
+ * Failures stay swallowed: whatever we already hold is shown, because a stale
+ * number beats a wrong zero. What they must not do is stay dressed as a fresh
+ * server reading. Every failure path marks the record stale, so a screen can
+ * tell "the server says 3 of 10" from "we have no idea" and draw a dash for
+ * the second one. Without that, `proUsedToday ?? 0` on an offline Pro user
+ * reads out as "10 of 10 matches left today" and the next scan is refused by a
+ * server the UI just contradicted.
+ */
 export async function refreshCreditState(): Promise<void> {
   try {
     const { data, error } = await supabase.rpc('get_credit_state');
-    if (error) return;
+    if (error) { markCreditsStale(); return; }
     const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return;
+    if (!row) { markCreditsStale(); return; }
     setServerCredits({
       balance: row.balance,
       isPro: row.is_pro,
+      // NULL once the lifetime free allowance is spent, which is the signal the
+      // wall reads. Passed through untouched so the client never substitutes a
+      // guessed "tomorrow at 09:00" for the server saying there is no next one.
       nextFreeAt: row.next_free_at,
       proUsedToday: row.pro_used_today,
       proDailyLimit: row.pro_daily_limit,
+      freeDailyUsed: row.free_daily_used,
+      freeDailyLimit: row.free_daily_limit,
     });
 
     // The client's RevenueCat SDK knows about a subscription the moment it is
@@ -250,7 +309,11 @@ export async function refreshCreditState(): Promise<void> {
         await bootstrapSession();
       }
     }
-  } catch { /* leave whatever we had; a stale number beats a wrong zero */ }
+  } catch {
+    // Leave whatever we had; a stale number beats a wrong zero. Marked, not
+    // silent, so nothing downstream mistakes it for a live answer.
+    markCreditsStale();
+  }
 }
 
 const PENDING_MERGE_KEY = '@tunematch_pending_identity_merge';

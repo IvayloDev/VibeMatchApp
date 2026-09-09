@@ -53,6 +53,38 @@ type AuthProviderProps = {
   children: React.ReactNode;
 };
 
+/**
+ * Do these two User objects describe the same person, as far as this app is
+ * concerned?
+ *
+ * supabase-js hands back a brand new User object on every TOKEN_REFRESHED, and
+ * a refresh tick runs on every foreground (bindAuthRefreshToAppState calls
+ * startAutoRefresh, which refreshes immediately when the token is due). Storing
+ * that object verbatim changed `user`'s identity without anything about the
+ * user changing, which re-created App.js's getTarget callback and made its
+ * routing effect reset() navigation - so opening a match in the Vault,
+ * backgrounding the app and coming back dropped the user on Discover.
+ *
+ * Compared field by field rather than by id alone, because the uid staying the
+ * same does NOT mean nothing changed: email signup upgrades an anonymous user
+ * IN PLACE (updateUser keeps the uid and flips is_anonymous), and Profile
+ * renders the name, avatar and email off this object. Every field any screen
+ * reads off the context user has to be listed here, or it will render stale
+ * until the next cold start.
+ */
+function sameUserIdentity(a: User | null, b: User | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id &&
+    !!a.is_anonymous === !!b.is_anonymous &&
+    a.email === b.email &&
+    a.user_metadata?.full_name === b.user_metadata?.full_name &&
+    a.user_metadata?.avatar_url === b.user_metadata?.avatar_url &&
+    a.user_metadata?.picture === b.user_metadata?.picture
+  );
+}
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -62,6 +94,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [guestOnboardingComplete, setGuestOnboardingComplete] = useState(false);
   const [onboardingChecking, setOnboardingChecking] = useState(true);
+
+  /**
+   * The only way `user` is set from a session. Keeps the previous object when
+   * nothing a screen can see has changed, so `user` is a stable dependency for
+   * effects downstream - App.js's routing effect above all. See
+   * sameUserIdentity above for why the previous object is safe to keep.
+   */
+  const applyUser = useCallback((next: User | null) => {
+    setUser(prev => (sameUserIdentity(prev, next) ? prev : next));
+  }, []);
 
   const clearSession = () => {
     setSession(null);
@@ -160,7 +202,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         console.error('Error getting session (continuing with what we have):', error);
       }
       setSession(session);
-      setUser(session?.user ?? null);
+      applyUser(session?.user ?? null);
       setLoading(false);
       refreshSpotifyStatus();
     }).catch((error) => {
@@ -264,7 +306,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
 
         setSession(session);
-        setUser(session?.user ?? null);
+        applyUser(session?.user ?? null);
         setLoading(false);
         // Silent: by this point the app has booted, and re-gating would tear
         // down navigation under whatever screen the user is on.

@@ -22,17 +22,21 @@
  * the two the same when deciding to drop its only local evidence.
  *
  * POST { deviceId?, starterMarkerPresent?, tzOffsetMinutes? } with the user's JWT
- *   -> 200 { balance, is_pro, next_free_at, granted, definite }
+ *   -> 200 { balance, is_pro, next_free_at, pro_used_today, pro_daily_limit,
+ *            free_daily_used, free_daily_limit, granted, definite }
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   CREDITS_PER_PRODUCT,
   PRO_ENTITLEMENT_ID,
+  backfillAltTransactionId,
   corsHeaders,
   fetchSubscriber,
+  isSandboxPurchase,
   json,
   platformFor,
+  purchaseIds,
 } from '../_shared/products.ts';
 
 serve(async (req) => {
@@ -111,6 +115,20 @@ serve(async (req) => {
         const sub = look.subscriber;
 
         // 4a. Pro. Backfills anyone who subscribed before the webhook existed.
+        //
+        // Authoritative in BOTH directions. This used to be an `if (ent)` with
+        // no else, so RevenueCat saying "this user has no pro entitlement" was
+        // read as "no news" and an active row survived forever - and an active
+        // row means free scans, which is the direction a mistake must never
+        // fall. The webhook can write a wrong row (a payload we misread, an
+        // event we mishandled); this is the only thing that takes one back.
+        //
+        // Only ever on a lookup that SUCCEEDED. A failed lookup and a
+        // subscriber who owns nothing are indistinguishable from here, and
+        // clearing Pro on an outage would cancel a paying customer. The
+        // remaining race - a receipt mid-transfer, whose entitlement has not
+        // landed on this id yet - costs at most one launch, because the next
+        // bootstrap or the next webhook writes it back.
         const ent = sub?.entitlements?.[PRO_ENTITLEMENT_ID];
         if (ent) {
           const expires = ent.expires_date ? new Date(ent.expires_date) : null;
@@ -122,6 +140,27 @@ serve(async (req) => {
             p_expires: expires ? expires.toISOString() : null,
             p_source: 'session_bootstrap',
           });
+        } else {
+          // Read before writing, so the common case (a free user, every
+          // launch) stays a single indexed select instead of an upsert that
+          // rewrites the same row forever.
+          const { data: existing } = await admin
+            .from('entitlements')
+            .select('status, product_id, source')
+            .eq('user_id', user.id)
+            .maybeSingle();
+          if (existing?.status === 'active') {
+            console.warn('clearing an active entitlement RevenueCat does not corroborate', {
+              userId: user.id, product: existing.product_id, wroteBy: existing.source,
+            });
+            await admin.rpc('apply_entitlement', {
+              p_user: user.id,
+              p_product: existing.product_id ?? null,
+              p_status: 'expired',
+              p_expires: null,
+              p_source: 'session_bootstrap_corrected',
+            });
+          }
         }
 
         // 4b. Credit packs RevenueCat knows about and we have no row for. This
@@ -132,20 +171,35 @@ serve(async (req) => {
           const credits = CREDITS_PER_PRODUCT[productId];
           if (!credits) continue;
           for (const p of (entries as any[]) ?? []) {
-            const txn = p?.store_transaction_id ?? p?.id;
-            const altTxn = p?.store_transaction_id ? (p?.id ?? null) : null;
+            // Sandbox sales are granted here too. See the long note in
+            // validate-purchase: Apple's reviewer and every TestFlight tester
+            // buy in sandbox, and bootstrap is the safety net that recovers a
+            // purchase whose validation call failed. Skipping them here would
+            // mean a reviewer who bought, got nothing, and relaunched still
+            // gets nothing, which is the same rejection by a slower route.
+            if (isSandboxPurchase(p)) {
+              console.warn('🧪 sandbox purchase granted during bootstrap', { userId: user.id, productId });
+            }
+            const ids = purchaseIds(p);
             const platform = platformFor(p?.store);
-            if (!txn || !platform) continue;
+            if (!ids.primary || !platform) continue;
+
+            // Give any row this sale is already on its missing second id
+            // before asking for the grant, so a row written under RevenueCat's
+            // internal id before alt_transaction_id existed is matchable by
+            // the store id the webhook will arrive with.
+            await backfillAltTransactionId(admin, ids, { userId: user.id, productId, source: 'session_bootstrap' });
+
             const { error } = await admin.rpc('grant_purchase_credits', {
               p_user: user.id,
               p_product: productId,
-              p_txn: txn,
+              p_txn: ids.primary,
               p_platform: platform,
               p_credits: credits,
               p_source: 'session_bootstrap',
-              p_alt_txn: altTxn,
+              p_alt_txn: ids.alternate,
             });
-            if (error) console.error('pack reconcile failed', { txn, message: error.message });
+            if (error) console.error('pack reconcile failed', { txn: ids.primary, message: error.message });
           }
         }
       } else {
@@ -161,9 +215,17 @@ serve(async (req) => {
     return json({
       balance: state?.balance ?? 0,
       is_pro: state?.is_pro ?? false,
+      // NULL means the free daily allowance is spent for good, not "unknown".
+      // The client reads it with freeExhausted and stops promising a match
+      // tomorrow that will never arrive.
       next_free_at: state?.next_free_at ?? null,
       pro_used_today: state?.pro_used_today ?? null,
       pro_daily_limit: state?.pro_daily_limit ?? 10,
+      // Passed through as null when get_credit_state has not reported them, so
+      // an app talking to a database that predates the lifetime cap renders a
+      // dash rather than "0 of 30 used".
+      free_daily_used: state?.free_daily_used ?? null,
+      free_daily_limit: state?.free_daily_limit ?? 30,
       granted,
       definite,
     });

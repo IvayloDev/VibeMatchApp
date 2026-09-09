@@ -27,10 +27,23 @@ if (!enabled) {
   console.log('[PostHog] Disabled - no API key set in lib/posthog.ts');
 }
 
-// Tie events to the Supabase user id so RevenueCat, Supabase and PostHog
-// all share the same identifier.
-export function identifyUser(userId: string, properties?: Record<string, any>) {
-  posthog?.identify(userId, properties);
+/**
+ * Tie events to the Supabase user id so RevenueCat, Supabase and PostHog all
+ * share the same identifier.
+ *
+ * The uid and nothing else, deliberately. This used to be called with
+ * { email: user.email }, which lands in PostHog as a person property: the
+ * published privacy policy says the app collects no analytics or tracking
+ * identifiers, and an email attached to an analytics profile is Contact Info
+ * that the App Store label would have to declare as linked to the user and used
+ * for analytics. There is no `properties` argument any more so a call site
+ * cannot quietly put one back; the uid alone keeps every funnel joined up.
+ *
+ * Cohort dimensions go through registerSuperProperties below, which is for
+ * values that describe the session, never the person.
+ */
+export function identifyUser(userId: string) {
+  posthog?.identify(userId);
 }
 
 export function resetUser() {
@@ -62,6 +75,10 @@ export function trackError(error: unknown, properties?: Record<string, any>) {
  *
  * Deliberately not `$set`: person properties don't stick for anonymous guests,
  * which is most of the pre-registration funnel.
+ *
+ * Nothing that identifies a person goes in here - no email, name, photo or
+ * free text. Same reason as identifyUser above: it would put Contact Info in
+ * analytics, which the privacy policy says the app does not collect.
  */
 export function registerSuperProperties(properties: Record<string, any>) {
   posthog?.register(properties);

@@ -5,6 +5,7 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { EventSubscription } from 'expo-modules-core';
 import { trackEvent } from './posthog';
+import { getCreditState } from './creditState';
 
 /**
  * Local notifications (no backend / push tokens / cron).
@@ -19,7 +20,12 @@ import { trackEvent } from './posthog';
  *   2. The FREE-MATCH reminder - a single notification, set from the
  *      out-of-matches wall, that fires when tomorrow's free match unlocks.
  *      Re-arming the ladder must NOT cancel it, which is why every scheduled
- *      identifier is tracked here instead of using cancelAll.
+ *      identifier is tracked here instead of using cancelAll. It is never armed
+ *      for someone whose lifetime free allowance is spent - see
+ *      scheduleFreeMatchNow.
+ *
+ * Both are serialised through their own promise queue, because both have more
+ * than one caller and both can be called twice within the same millisecond.
  */
 
 // Only records an explicit denial that the OS will not let us re-ask about.
@@ -69,6 +75,11 @@ const REMINDERS: { offsetDays: number; title: string; body: string }[] = [
     body: 'That sunset deserves a soundtrack. Open TuneMatch.',
   },
 ];
+
+// One fixed identifier per rung, for the same reason the free-match reminder
+// has one: the OS REPLACES a pending request that reuses an identifier, so a
+// second pass can only ever overwrite these four, never add four more.
+const LADDER_IDENTIFIERS = REMINDERS.map((_, i) => `tunematch-ladder-${i}`);
 
 function androidTriggerExtras() {
   return Platform.OS === 'android' ? { channelId: ANDROID_CHANNEL_ID } : {};
@@ -150,12 +161,30 @@ export async function ensureNotificationPermission(source: string = 'post_match'
   }
 }
 
+// Serialised for the same reason the free-match path is, and against a nastier
+// race. This runs from App.js on every AppState 'active' AND from
+// AnalyzingScreen immediately after requesting permission - and on iOS,
+// dismissing the permission alert is itself an inactive-to-active transition,
+// so the two fire milliseconds apart. Both read the tracked id list before
+// either wrote it, both saw it empty, both took the cancelAll branch and both
+// scheduled a full ladder: eight pending reminders with four tracked ids, and
+// the four untracked ones leaking again on the next pass. The queue keeps the
+// read-cancel-schedule-store sequence from interleaving; the fixed identifiers
+// above are what make a lost race harmless.
+let ladderQueue: Promise<unknown> = Promise.resolve();
+
 /**
  * Cancel the ladder's own reminders and re-arm the full gentle ladder from
  * "now". Leaves the free-match reminder alone. No-op if permission isn't
  * granted. Never throws.
  */
 export async function rescheduleEngagementReminders(): Promise<void> {
+  const run = ladderQueue.then(() => rescheduleEngagementRemindersNow());
+  ladderQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function rescheduleEngagementRemindersNow(): Promise<void> {
   try {
     if (!Device.isDevice) return;
 
@@ -171,7 +200,9 @@ export async function rescheduleEngagementReminders(): Promise<void> {
       // pending except reminders an older build scheduled, so clear them all.
       await Notifications.cancelAllScheduledNotificationsAsync();
     } else {
-      await cancelIds(previousIds);
+      // The ids an older build minted, plus every fixed rung - so shortening
+      // the ladder cannot leave an orphan rung pending forever.
+      await cancelIds([...new Set([...previousIds, ...LADDER_IDENTIFIERS])]);
     }
 
     // DEV-only fast mode: interpret offsetDays as *seconds* (x15) so the
@@ -182,10 +213,12 @@ export async function rescheduleEngagementReminders(): Promise<void> {
     const now = Date.now();
     const ids: string[] = [];
     let firstAt: Date | null = null;
-    for (const r of REMINDERS) {
+    for (let i = 0; i < REMINDERS.length; i++) {
+      const r = REMINDERS[i];
       const date = new Date(now + r.offsetDays * unitMs);
       if (!firstAt) firstAt = date;
       const id = await Notifications.scheduleNotificationAsync({
+        identifier: LADDER_IDENTIFIERS[i],
         content: { title: r.title, body: r.body },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -310,6 +343,24 @@ function minuteKey(d: Date): string {
 async function scheduleFreeMatchNow(at: Date, { ask }: { ask: boolean }): Promise<boolean> {
   try {
     if (!Device.isDevice) return false;
+
+    // Nobody who has spent the lifetime free allowance gets "your free match is
+    // ready". The server stops granting the daily match and returns
+    // next_free_at NULL for them, so the banner would promise something that is
+    // never coming again - the worst possible version of this notification, and
+    // the one most likely to be reported as the app lying. `freeExhausted` is
+    // false until the server has actually said so, so an unread state still
+    // behaves exactly as before.
+    //
+    // Cancelling rather than just returning matters: the allowance runs out
+    // while a reminder armed yesterday is still pending, and every balance
+    // refresh comes back through here, which makes this the sweep as well.
+    // Ahead of the permission ask on purpose - a sheet asking to enable a
+    // notification we would then refuse to schedule is worse than no sheet.
+    if (getCreditState().freeExhausted) {
+      await clearFreeMatchReminders();
+      return false;
+    }
 
     if (ask) {
       const granted = await ensureNotificationPermission('wall_sheet');

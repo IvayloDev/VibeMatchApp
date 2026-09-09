@@ -26,20 +26,26 @@ const SPOTIFY_GREEN = '#1DB954';
 
 const ConnectSpotifyScreen: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { refreshSpotifyStatus, onboardingComplete, user } = useAuth();
+  const { refreshSpotifyStatus, onboardingComplete, user, isRegistered } = useAuth();
   const [loading, setLoading] = useState(false);
 
   // Where the flow goes after a real Spotify connection (a taste profile now
-  // exists). Guests (no auth user) must always go through onboarding regardless
-  // of any onboardingComplete flag left over from a prior registered session.
+  // exists). Guests must always go through onboarding regardless of any
+  // onboardingComplete flag left over from a prior registered session.
+  //
+  // isRegistered, not `user`: every install gets an anonymous Supabase uid now,
+  // so `user` is truthy for a guest too and this check sent a guest whose
+  // device still carried the old flag straight to the tabs - skipping the only
+  // screen that writes the GUEST onboarding flag. The next cold start routed
+  // them back to Welcome, and so did the one after that, forever.
   const nextTarget = (): 'MainTabs' | 'Onboarding' =>
-    (user && onboardingComplete) ? 'MainTabs' : 'Onboarding';
+    (isRegistered && onboardingComplete) ? 'MainTabs' : 'Onboarding';
 
   // Without Spotify the app still needs a taste, so skipping lands on the
   // in-app picker, which continues to Onboarding by itself. Registered users
   // who already finished onboarding go straight back into the app.
   const skipTarget = (): 'MainTabs' | 'TastePicker' =>
-    (user && onboardingComplete) ? 'MainTabs' : 'TastePicker';
+    (isRegistered && onboardingComplete) ? 'MainTabs' : 'TastePicker';
 
   React.useEffect(() => {
     trackEvent('spotify_connect_shown');
@@ -88,7 +94,7 @@ const ConnectSpotifyScreen: React.FC = () => {
         await refreshSpotifyStatus({ silent: true });
       }
       const target = nextTarget();
-      console.log('[ConnectSpotify] user:', !!user, 'onboardingComplete:', onboardingComplete, '→', target);
+      console.log('[ConnectSpotify] registered:', isRegistered, 'onboardingComplete:', onboardingComplete, '->', target);
       navigation.reset({ index: 0, routes: [{ name: target }] });
     } catch (err: any) {
       trackEvent('spotify_connect_failed', { error: err?.message ?? 'exception', reason: 'screen_exception' });

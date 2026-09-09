@@ -128,6 +128,26 @@ async function scanIdForImage(imageKey: string): Promise<string> {
   }
 }
 
+/**
+ * Drop a scan id once nothing can be replayed with it.
+ *
+ * The key is derived from the prepared-image uri, and the prep writes a fresh
+ * cache file for every pick, so no two scans ever shared one: the store grew by
+ * a row per scan and nothing removed any of them, for the life of the install.
+ *
+ * Only called where a retry has nothing to claim - the answer was delivered, or
+ * the server refused or failed the scan and refunded it. NOT after a network
+ * error or a 409: there the server may be holding a result this id has already
+ * paid for, and forgetting the id is how the same photo gets charged twice.
+ */
+async function forgetScanId(imageKey: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(`${SCAN_ID_KEY_PREFIX}${imageKey}`);
+  } catch {
+    // A leftover key costs a few bytes. Nothing here is worth failing a scan.
+  }
+}
+
 function buildImagePath(userId?: string): string {
   // Every install has a uid now, anonymous or not, so there is no guest prefix
   // to fall back to. The legacy anonymous/<uuid>/<uuid>.jpg branch below is
@@ -513,7 +533,17 @@ const AnalyzingScreen = () => {
       trackEvent('scan_started', {
         vibe: selectedVibe,
         from_onboarding: !!fromOnboarding,
-        signed_in: !!userId,
+        // Whether this person has an ACCOUNT, which is what every other event
+        // means by signed_in. The route param answered a different question -
+        // "which entry point sent me here" - and answered it backwards for both
+        // groups: false for a registered user opening Discover the normal way
+        // (nothing puts userId on that route) and true for an anonymous guest
+        // arriving from onboarding, which passes one. It flatly contradicted
+        // dashboard_viewed.signed_in. The wall's register upsell a few lines up
+        // was moved to useAuth for exactly this reason; this call site was
+        // missed. Deliberately NOT in the effect's deps below: re-running that
+        // effect re-runs the scan.
+        signed_in: isRegistered,
         // What the CLIENT believed before the scan. Null means it had not
         // heard from the server yet, which is different from zero and is now
         // visible as such in the funnel.
@@ -581,7 +611,8 @@ const AnalyzingScreen = () => {
 
         // One id per photo, reused by every retry of that photo, so a repeat
         // replays the answer already paid for instead of buying a second one.
-        const scanId = await scanIdForImage(preparedUri ?? String(image));
+        const scanKey = preparedUri ?? String(image);
+        const scanId = await scanIdForImage(scanKey);
 
         const payload = {
           imagePath: filePath,
@@ -680,6 +711,9 @@ const AnalyzingScreen = () => {
         // above all not a second charge: the server refused to start a
         // duplicate rather than paying for the model twice on one credit.
         if (response.status === 409 && data?.code === 'scan_in_flight') {
+          // The scan id stays on disk on purpose: the run that is already going
+          // owns it, and retrying this photo must replay the answer that run
+          // paid for rather than buy a second one.
           trackEvent('scan_in_flight', { vibe: selectedVibe });
           Alert.alert(
             'Still Matching',
@@ -691,6 +725,9 @@ const AnalyzingScreen = () => {
 
         if (response.status === 402) {
           applyScanCredits(data?.credits);
+          // Refused before anything was spent, so there is no answer to replay
+          // and a retry (after a pack, or tomorrow) is free to start fresh.
+          await forgetScanId(scanKey);
 
           // A subscriber who has used today's matches is not a sales
           // opportunity. The credit wall would offer them a pack as the
@@ -733,6 +770,9 @@ const AnalyzingScreen = () => {
             vibe: selectedVibe,
             duration_ms: Date.now() - scanStartTime,
           });
+          // The server answered and failed the scan, refunding it. Nothing is
+          // held against this id.
+          await forgetScanId(scanKey);
           setProgress(100);
           Animated.timing(progressAnim, {
             toValue: 100,
@@ -763,6 +803,7 @@ const AnalyzingScreen = () => {
             vibe: selectedVibe,
             duration_ms: Date.now() - scanStartTime,
           });
+          await forgetScanId(scanKey);
           setProgress(100);
           Animated.timing(progressAnim, {
             toValue: 100,
@@ -804,6 +845,9 @@ const AnalyzingScreen = () => {
         // job, and the withholding because there is no longer a case where we
         // hold a match the user was charged for and refuse to show it.
         applyScanCredits(data?.credits);
+        // The match is in hand and about to be shown and stored, so there is
+        // nothing left for this id to replay.
+        await forgetScanId(scanKey);
         // The response carries the balance but not the Pro count; one read
         // brings the "N of 10 today" on the next screen up to date.
         refreshCreditState().catch(() => {});

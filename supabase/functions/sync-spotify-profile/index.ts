@@ -6,6 +6,19 @@
 // Guest users: client sends access_token + refresh_token inline; server returns the
 // derived profile for the client to cache locally.
 //
+// EVERY CALLER NEEDS A JWT, THE INLINE-TOKEN ONES INCLUDED
+//
+// The inline-token branch used to take a refresh token from an unauthenticated
+// request body, redeem it with the app's own client secret and return the
+// resulting listening history. A refresh token for a confidential client is
+// inert without that secret, so this endpoint was the missing half: anyone
+// holding a leaked token could read that person's top artists, saved tracks and
+// recent plays. Every install now holds an identity (anonymous ones included),
+// so requiring a user token costs nothing that ships. It is not proof that the
+// caller owns the token - guest tokens live on the device and the server has no
+// record of which device holds which - so the branch is metered per address as
+// well, because an anonymous identity is free to mint.
+//
 // If every Spotify call answers 403 (the app is in Development mode and the account is not
 // on its allowlist) the function responds 403 { error: "spotify_not_allowlisted",
 // code: "spotify_not_allowlisted", spotify_status_summary: { path: status } } and saves nothing.
@@ -26,6 +39,73 @@ const json = (body: unknown, status = 200) =>
   });
 
 const SPOTIFY_API = "https://api.spotify.com/v1";
+
+// Per-address ceiling on the inline-token branch, counted over the last hour in
+// edge_call_log. A real device syncs on connect and then once a day, so this is
+// far above any honest usage and still caps how many stolen tokens one attacker
+// can pump through in an hour.
+const BODY_TOKEN_SYNCS_PER_IP_PER_HOUR = 60;
+
+/**
+ * The caller's address, preferring a hop the caller cannot write.
+ *
+ * The leftmost x-forwarded-for entry is client-supplied, so metering on it lets
+ * an attacker reset their own counter every request. cf-connecting-ip and
+ * x-real-ip are written by the edge in front of this function; the rightmost
+ * forwarded hop is the fallback because it is the one the nearest proxy added.
+ */
+function callerIp(req: Request): string | null {
+  const direct = (req.headers.get("cf-connecting-ip") ?? req.headers.get("x-real-ip") ?? "").trim();
+  if (direct) return direct;
+  const hops = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+  return hops.length ? hops[hops.length - 1] : null;
+}
+
+/**
+ * Count and record one inline-token sync. Returns true when the caller must be
+ * refused.
+ *
+ * Refuses outright when there is no address to count against - stripping the
+ * header is an attacker's move, not something a phone does. Allows when the
+ * ledger itself cannot be read: every caller that reaches here has already
+ * proved an identity, and a database hiccup must not silently stop a real
+ * user's listening data from reaching their matches.
+ */
+async function overBodyTokenLimit(sb: any, ip: string | null): Promise<boolean> {
+  if (!ip) {
+    console.warn("🚫 inline-token sync with no caller address, refusing");
+    return true;
+  }
+  try {
+    const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { count, error } = await sb
+      .from("edge_call_log")
+      .select("id", { count: "exact", head: true })
+      .eq("fn", "sync-spotify-profile")
+      .eq("mode", "body-tokens")
+      .eq("ip", ip)
+      .gt("created_at", since);
+    if (error) {
+      console.warn("⚠️ inline-token meter unreadable, allowing:", error.message);
+      return false;
+    }
+    if ((count ?? 0) >= BODY_TOKEN_SYNCS_PER_IP_PER_HOUR) {
+      console.warn(`🚫 inline-token sync ceiling hit for ip=${ip} count=${count}`);
+      return true;
+    }
+    const { error: insertError } = await sb
+      .from("edge_call_log")
+      .insert({ fn: "sync-spotify-profile", mode: "body-tokens", ip });
+    if (insertError) console.warn("edge_call_log insert failed:", insertError.message);
+    return false;
+  } catch (err) {
+    console.warn("⚠️ inline-token meter threw, allowing:", err);
+    return false;
+  }
+}
 
 type CompactArtist = { id: string; name: string; genres: string[]; image: string | null };
 type CompactTrack = { id: string; name: string; artist: string; image: string | null };
@@ -192,30 +272,50 @@ serve(async (req) => {
   let connectionExpiresAt: string | null = null;
   let admin: any = null;
 
-  if (userId) {
-    admin = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    );
-    const { data: conn, error } = await admin
-      .from("spotify_connections")
-      .select("access_token, refresh_token, expires_at")
-      .eq("user_id", userId)
-      .single();
-    if (error || !conn) {
-      return json({ error: "No Spotify connection for user" }, 404);
-    }
+  // True when the tokens came from the request body rather than from a
+  // connection we hold. That decides the response shape at the end: such a
+  // caller keeps its Spotify tokens and its taste cache on the device, so it
+  // needs the profile and the refreshed pair handed back.
+  let tokensFromBody = false;
+
+  if (!userId) {
+    console.warn("🚫 sync refused: no user token on the request");
+    return json({ error: "Sign in to sync your Spotify taste" }, 401);
+  }
+
+  admin = createClient(
+    Deno.env.get("SUPABASE_URL") ?? "",
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+  );
+  const { data: conn, error: connError } = await admin
+    .from("spotify_connections")
+    .select("access_token, refresh_token, expires_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (connError) {
+    console.error("❌ Failed to read spotify_connections:", connError);
+    return json({ error: "Could not read your Spotify connection" }, 500);
+  }
+
+  if (conn) {
     accessToken = conn.access_token;
     refreshTokenValue = conn.refresh_token;
     connectionExpiresAt = conn.expires_at;
-  } else {
-    // Guest: caller supplies tokens
-    accessToken = body.access_token ?? null;
-    refreshTokenValue = body.refresh_token ?? null;
-    connectionExpiresAt = body.expires_at ?? null;
-    if (!accessToken || !refreshTokenValue) {
-      return json({ error: "Missing access_token/refresh_token for guest" }, 400);
+  } else if (typeof body.refresh_token === "string" && body.refresh_token) {
+    // An account whose Spotify tokens live on the device: guests on the builds
+    // before anonymous identities kept them in SecureStore because there was no
+    // uid to file them under. They hold an identity now, so the tokens arrive
+    // with a JWT attached and can be honoured. Without this branch they got a
+    // 404 and their listening data silently stopped feeding their matches.
+    if (await overBodyTokenLimit(admin, callerIp(req))) {
+      return json({ error: "Too many sync requests", code: "rate_limited" }, 429);
     }
+    accessToken = typeof body.access_token === "string" ? body.access_token : null;
+    refreshTokenValue = body.refresh_token;
+    connectionExpiresAt = typeof body.expires_at === "string" ? body.expires_at : null;
+    tokensFromBody = true;
+  } else {
+    return json({ error: "No Spotify connection for user" }, 404);
   }
 
   // Refresh if expired
@@ -227,7 +327,10 @@ serve(async (req) => {
     refreshTokenValue = refreshed.refresh_token;
     connectionExpiresAt = new Date(Date.now() + (refreshed.expires_in - 30) * 1000).toISOString();
 
-    if (userId && admin) {
+    // Only when the connection is ours to update. A device-held pair has no
+    // row here, and writing one would claim a connection the server was never
+    // given; the refreshed tokens go back in the response instead.
+    if (admin && !tokensFromBody) {
       await admin.from("spotify_connections").update({
         access_token: accessToken,
         refresh_token: refreshTokenValue,
@@ -258,21 +361,30 @@ serve(async (req) => {
       }, 403);
     }
 
-    if (userId && admin) {
-      const { error: upsertError } = await admin.from("spotify_taste_profiles").upsert({
-        user_id: userId,
-        top_artists: profile.topArtists,
-        top_tracks: profile.topTracks,
-        recently_played: profile.recentlyPlayed,
-        saved_tracks: profile.savedTracks,
-        top_genres: profile.topGenres,
-        refreshed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "user_id" });
-      if (upsertError) {
-        console.error("❌ Failed to upsert taste profile:", upsertError);
-        return json({ error: "Failed to save taste profile" }, 500);
-      }
+    // Persisted for every caller, device-held tokens included: recommend-songs
+    // falls back to this row when the client sends no taste with the scan, so
+    // writing it is what makes matching work for a caller whose local cache
+    // never reaches the server.
+    const { error: upsertError } = await admin.from("spotify_taste_profiles").upsert({
+      user_id: userId,
+      top_artists: profile.topArtists,
+      top_tracks: profile.topTracks,
+      recently_played: profile.recentlyPlayed,
+      saved_tracks: profile.savedTracks,
+      top_genres: profile.topGenres,
+      refreshed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id" });
+    if (upsertError) {
+      console.error("❌ Failed to upsert taste profile:", upsertError);
+      // A device-held caller still gets its profile back: the copy that drives
+      // its matches is the one on the phone, so a failed server write is a
+      // degradation rather than a failure. A caller whose connection we hold
+      // has nowhere else for the profile to live, so that one is a 500.
+      if (!tokensFromBody) return json({ error: "Failed to save taste profile" }, 500);
+    }
+
+    if (!tokensFromBody) {
       return json({
         success: true,
         stored: "server",
@@ -284,7 +396,7 @@ serve(async (req) => {
       });
     }
 
-    // Guest: return full profile so client can cache locally
+    // Device-held tokens: return the full profile so the client can cache it
     return json({
       success: true,
       stored: "client",
@@ -304,7 +416,10 @@ serve(async (req) => {
       },
     });
   } catch (err: any) {
+    // Flat sentence to the caller. err.message here is a Spotify complaint or a
+    // PostgREST message naming spotify_taste_profiles and its constraints,
+    // neither of which the app can act on and both of which map our schema.
     console.error("❌ sync-spotify-profile error:", err);
-    return json({ error: err?.message ?? "Internal error" }, 500);
+    return json({ error: "Spotify sync is unavailable right now" }, 500);
   }
 });

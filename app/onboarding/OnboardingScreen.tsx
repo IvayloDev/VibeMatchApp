@@ -147,10 +147,17 @@ const OnboardingScreen: React.FC = () => {
           .select('top_genres, top_artists, top_tracks')
           .eq('user_id', session.user.id)
           .maybeSingle();
-        if (!data) return null;
         // The table has no source column; a row for a user who is not
         // connected can only have come from the picker.
-        return { ...data, source: connected ? 'spotify' : 'manual' };
+        if (data) return { ...data, source: connected ? 'spotify' : 'manual' };
+        // No row is NOT the same as no taste, so fall through to the device
+        // copy instead of returning null. saveManualTasteProfile writes
+        // AsyncStorage first and the row second, so a failed account sync
+        // leaves a perfectly good profile on the phone. This used to be
+        // unreachable for guests as well: `session?.user` stopped meaning
+        // "registered" once every install got an anonymous uid, so every guest
+        // whose server write had failed was shown onboarding with no taste chip
+        // and a match tuned to nothing.
       }
 
       const guestProfile = (await loadGuestTasteProfile()) as TasteProfile | null;

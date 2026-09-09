@@ -27,7 +27,7 @@ import {
   updatePendingValidationRetry,
 } from '../../lib/credits';
 import { getCreditState } from '../../lib/creditState';
-import { refreshCreditState, bootstrapSession } from '../../lib/identity';
+import { refreshCreditState, bootstrapSession, peekIdentity } from '../../lib/identity';
 import { validatePurchaseWithRetry } from '../../lib/supabase';
 import { trackEvent } from '../../lib/posthog';
 import { Spacing, BorderRadius } from '../../lib/designSystem';
@@ -64,7 +64,13 @@ const PaymentScreen = () => {
   const [starterPack, setStarterPack] = useState<PurchasesPackage | null>(null);
   const [buyingStarterPack, setBuyingStarterPack] = useState(false);
   const [currentCredits, setCurrentCredits] = useState<number>(0);
-  const [proScansToday, setProScansToday] = useState<number>(0);
+  // null means "the server has not said". `?? 0` here rendered a confident
+  // "10 of 10 matches left today" at an offline subscriber who may have used
+  // every one of them, which is the frozen-counter bug in a new place.
+  const [proScansToday, setProScansToday] = useState<number | null>(null);
+  // The free daily allowance is spent for good: no daily match is coming, so
+  // the pack row is a real next step rather than a stopgap until tomorrow.
+  const [freeExhausted, setFreeExhausted] = useState(false);
   const paywallTracked = useRef(false);
   // Timing + package refs so cancel/dismiss events can say what the user was
   // looking at and for how long. Android build 36 taught us that a cancel with
@@ -81,9 +87,17 @@ const PaymentScreen = () => {
     setScreenState('loading');
 
     // A credit pack the store charged but validate-purchase never confirmed.
-    // Nothing else in the app retries these any more, so the paywall does, one
-    // attempt each, before it reads the balance.
-    if (isAuthenticated) {
+    // Nothing else in the app retries these, so the paywall does, one attempt
+    // each, before it reads the balance.
+    //
+    // Gated on an IDENTITY, not on an account. It used to require a registered
+    // user, and both this screen and WallSheet queue a validation for everyone
+    // and then tell them their matches will be added the next time the Pro
+    // screen opens - a promise nothing kept for guests, whose queued rows sat
+    // there forever after a real charge. validate-purchase authenticates a
+    // JWT, and an anonymous JWT is a JWT, so a guest can drain this perfectly
+    // well now that every install has one.
+    if (await peekIdentity()) {
       try {
         for (const pending of await getPendingValidations()) {
           const v = await validatePurchaseWithRetry(pending.transactionId, pending.productId, 1);
@@ -104,6 +118,7 @@ const PaymentScreen = () => {
     await refreshCreditState();
     const credits = getCreditState().balance ?? 0;
     setCurrentCredits(credits);
+    setFreeExhausted(getCreditState().freeExhausted);
 
     if (!paywallTracked.current) {
       paywallTracked.current = true;
@@ -118,7 +133,7 @@ const PaymentScreen = () => {
     // Already-subscribed users get a manage screen, not a sales pitch.
     if (await hasProEntitlement()) {
       await refreshCreditState();
-      setProScansToday(getCreditState().proUsedToday ?? 0);
+      setProScansToday(getCreditState().proUsedToday);
       setScreenState('entitled');
       return;
     }
@@ -194,7 +209,25 @@ const PaymentScreen = () => {
 
   const handleRestore = async () => {
     const result = await restorePurchases();
-    if (result.success && result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
+    // Tell an outage apart from an answer. restorePurchases returns
+    // { success: false, error } when the SDK never configured or the call
+    // threw, and with no branch for that, an unreachable store came out as
+    // "No active subscription was found for this account" - which reads as
+    // "we have no record of your payment" to somebody being charged monthly.
+    // ProfileScreen was fixed for exactly this; this was the missed twin.
+    if (!result.success) {
+      trackEvent('subscription_restore_failed', {
+        error: result.error ?? 'unknown',
+        is_authenticated: isAuthenticated,
+      });
+      triggerHaptic('error');
+      Alert.alert(
+        "Couldn't Check",
+        "We couldn't reach the store to check your subscription. Your purchase is safe - please try again in a moment."
+      );
+      return;
+    }
+    if (result.customerInfo?.entitlements?.active?.[PRO_ENTITLEMENT_ID]) {
       await refreshProStatus(result.customerInfo);
       trackEvent('subscription_restored', { is_authenticated: isAuthenticated });
       triggerHaptic('success');
@@ -273,8 +306,9 @@ const PaymentScreen = () => {
         if (validation.success && validation.creditsGranted) {
           newBalance = validation.newBalance ?? currentCredits + validation.creditsGranted;
         } else {
-          // Charged but not yet granted - queue it; loadData retries queued
-          // validations the next time this screen opens. Tell the user plainly.
+          // Charged but not yet granted - queue it; loadData drains the queue
+          // the next time this screen opens, for guests as well as accounts.
+          // Tell the user plainly.
           await storePendingValidation(result.transactionId, result.productId, credits);
           triggerHaptic('warning');
           Alert.alert(
@@ -391,9 +425,13 @@ const PaymentScreen = () => {
             <MaterialCommunityIcons name="crown" size={42} color="#FFD700" />
           </View>
           <Text style={styles.proTitle}>You're Pro</Text>
-          <Text style={styles.proSubtitle}>
-            {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
-          </Text>
+          {/* Only when the server has actually counted today. Hiding the line
+              is honest; "10 of 10 left" on an offline read is not. */}
+          {proScansToday !== null && (
+            <Text style={styles.proSubtitle}>
+              {Math.max(0, PRO_DAILY_LIMIT - proScansToday)} of {PRO_DAILY_LIMIT} matches left today
+            </Text>
+          )}
           <Text style={styles.proCreditsNote}>
             Next {PRO_DAILY_LIMIT} in {formatQuotaReset()}
           </Text>
@@ -469,6 +507,21 @@ const PaymentScreen = () => {
               });
             }}
             onRestoreCompleted={async ({ customerInfo }: { customerInfo: CustomerInfo }) => {
+              // The same twin as handleRestore. With no customerInfo,
+              // refreshProStatus falls back to the last cached status, so
+              // "Nothing to Restore" would be a guess presented as an answer
+              // to somebody who just asked us to find their subscription.
+              if (!customerInfo) {
+                trackEvent('subscription_restore_failed', {
+                  error: 'no_customer_info',
+                  is_authenticated: isAuthenticated,
+                });
+                Alert.alert(
+                  "Couldn't Check",
+                  "We couldn't reach the store to check your subscription. Your purchase is safe - please try again in a moment."
+                );
+                return;
+              }
               const isPro = await refreshProStatus(customerInfo);
               if (isPro) {
                 trackEvent('subscription_restored', { is_authenticated: isAuthenticated });
@@ -495,8 +548,13 @@ const PaymentScreen = () => {
               ) : (
                 <>
                   <MaterialCommunityIcons name="lightning-bolt" size={16} color={DesignColors.primary} />
+                  {/* "Just need a few?" quietly implies the free matches will
+                      carry them the rest of the way. Once those are spent
+                      that is no longer true, so the row says what it is: the
+                      cheap way to keep matching. Same row, same height - this
+                      screen has to fit an iPhone SE without scrolling. */}
                   <Text style={styles.starterPackText}>
-                    Just need a few? {CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID]} credits for {starterPack.product.priceString}
+                    {freeExhausted ? 'Keep matching -' : 'Just need a few?'} {CREDITS_PER_PRODUCT[STARTER_PACK_PRODUCT_ID]} credits for {starterPack.product.priceString}
                   </Text>
                 </>
               )}

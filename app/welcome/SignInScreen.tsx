@@ -9,7 +9,7 @@ import { LinearGradientFallback as LinearGradient } from '../../lib/components/L
 import { supabase, signInWithApple, signInWithGoogle } from '../../lib/supabase';
 import { Colors, Typography, Spacing, Layout, BorderRadius } from '../../lib/designSystem';
 import { GuestCreditsModal } from '../../lib/components/GuestCreditsModal';
-import { requireIdentity } from '../../lib/identity';
+import { captureAnonymousForMerge, requireIdentity } from '../../lib/identity';
 import { getSpotifyConnectionStatus } from '../../lib/spotify';
 import { trackEvent } from '../../lib/posthog';
 
@@ -56,6 +56,18 @@ const SignInScreen = () => {
     }
     setLoading(true);
     trackEvent('sign_in_started', { method: 'email' });
+    // Capture the anonymous identity BEFORE the session is replaced, exactly as
+    // the Apple and Google paths do in lib/supabase.ts. signInWithPassword swaps
+    // in the account's session, and the guest's access token goes with it - and
+    // that token is the only thing claim-anonymous-identity can use to prove the
+    // two sides belong together. Without this the pending-merge key is never
+    // written, claimAnonymousIfPending finds nothing, and a guest who bought a
+    // 50-credit pack and then tapped "Already have an account? Sign In" loses
+    // the balance, the purchases rows and the Vault with no way back.
+    //
+    // Email SIGNUP does not need this: it upgrades the anonymous user in place
+    // via updateUser, so the uid never changes.
+    await captureAnonymousForMerge();
     const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
     setLoading(false);
     if (error) {
