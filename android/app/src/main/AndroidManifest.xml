@@ -1,39 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.INTERNET"/>
-  <!-- expo-image-picker needs this to read the chosen photo on Android 12 and below. -->
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
-  <!--
-    The three removals below MUST use tools:node="remove". Each permission is declared
-    in a dependency's own AndroidManifest, so simply deleting the line here does nothing:
-    the manifest merger pulls it straight back in from the library and it still ships in
-    the AAB. tools:node="remove" is the only thing that keeps it out.
-
-    RECORD_AUDIO / MODIFY_AUDIO_SETTINGS come from expo-audio. TuneMatch only plays 30s
-    track previews (lib/trackPreview.tsx uses createAudioPlayer and setAudioModeAsync and
-    nothing else). The AudioManager calls that actually need MODIFY_AUDIO_SETTINGS -
-    setCommunicationDevice, startBluetoothSco, stopBluetoothSco - all live in expo-audio's
-    AudioRecorder, which the app never instantiates. Left in place, RECORD_AUDIO puts a
-    "Microphone" entry on the Play listing for a feature that does not exist, which both
-    scares off installs and invites a Play policy review we have no declared use for.
-
-    WRITE_EXTERNAL_STORAGE comes from expo-image-picker and expo-file-system. It is a
-    no-op on Android 11+ and the app never writes outside app-scoped storage (picker
-    output and cached artwork both go through a FileProvider), but Play still counts it
-    as broad storage access.
-  -->
   <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove"/>
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" tools:node="remove"/>
   <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"/>
-  <!--
-    SYSTEM_ALERT_WINDOW is deliberately absent rather than removed with tools:node.
-    React Native declares it only in ReactAndroid's *debug* source set, for the dev-menu
-    overlay, so it never reaches a release build once it is gone from this file. A
-    tools:node="remove" here would apply to every variant and would strip the overlay
-    permission from debug builds too, breaking the dev menu. Do not re-add the plain
-    uses-permission line: Play flags it as an overlay/"draw over other apps" app.
-  -->
-
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
