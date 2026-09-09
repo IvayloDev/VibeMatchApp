@@ -29,6 +29,11 @@ import { trackEvent } from './posthog';
 const PERM_DENIED_KEY = 'tunematch_notif_perm_requested';
 const LADDER_IDS_KEY = '@tunematch_notif_ladder_ids';
 const FREE_MATCH_ID_KEY = '@tunematch_notif_free_match_id';
+const FREE_MATCH_AT_KEY = '@tunematch_notif_free_match_at';
+// One fixed identifier: the OS replaces a pending request that reuses it, so
+// two schedules can never both be pending, whatever order they land in.
+const FREE_MATCH_IDENTIFIER = 'tunematch-free-match';
+const FREE_MATCH_BODY = 'Your free match is ready. Pick a photo.';
 const ANDROID_CHANNEL_ID = 'reminders';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -240,7 +245,69 @@ export async function scheduleFreeMatchReminderIfAllowed(at: Date): Promise<bool
   return scheduleFreeMatch(at, { ask: false });
 }
 
-async function scheduleFreeMatch(at: Date, { ask }: { ask: boolean }): Promise<boolean> {
+// Calls are serialised. Before this, three Dashboard renders in the same tick
+// each read the previous id, each cancelled it, each scheduled their own and
+// only the last id was stored - and three "free match is ready" banners
+// arrived at 09:00. The fixed identifier above is the real guard; the queue
+// keeps the read-cancel-schedule-store sequence from interleaving as well.
+let freeMatchQueue: Promise<unknown> = Promise.resolve();
+
+async function scheduleFreeMatch(at: Date, opts: { ask: boolean }): Promise<boolean> {
+  const run = freeMatchQueue.then(() => scheduleFreeMatchNow(at, opts));
+  freeMatchQueue = run.catch(() => undefined);
+  return run;
+}
+
+function isFreeMatchRequest(r: Notifications.NotificationRequest): boolean {
+  const data = (r.content?.data ?? {}) as { kind?: unknown };
+  return data.kind === 'free_match' || r.content?.body === FREE_MATCH_BODY;
+}
+
+/**
+ * Cancel every pending free-match reminder: the one under the fixed
+ * identifier, the id an older build stored, and any stray copies an older
+ * build left behind (matched by body, since those carry no data tag).
+ * Returns the pending requests that were NOT ours, for callers that go on to
+ * inspect them. Never throws.
+ */
+async function clearFreeMatchReminders(): Promise<Notifications.NotificationRequest[]> {
+  const pending = await Notifications.getAllScheduledNotificationsAsync().catch(
+    () => [] as Notifications.NotificationRequest[]
+  );
+  const ours = pending.filter((r) => r.identifier === FREE_MATCH_IDENTIFIER || isFreeMatchRequest(r));
+  const previousId = await AsyncStorage.getItem(FREE_MATCH_ID_KEY);
+  const ids = new Set<string>([FREE_MATCH_IDENTIFIER, ...ours.map((r) => r.identifier)]);
+  if (previousId) ids.add(previousId);
+  await cancelIds([...ids]);
+  await AsyncStorage.multiRemove([FREE_MATCH_ID_KEY, FREE_MATCH_AT_KEY]).catch(() => {});
+  return pending.filter((r) => !ours.includes(r));
+}
+
+/**
+ * Drop the free-match reminder. Called once the server says this person has
+ * credits again (or is Pro): the daily top-up only lands on an empty balance,
+ * so "your free match is ready" would be a lie for them. Also the only path
+ * that sweeps stray copies off a device that never returns to zero. Never
+ * throws.
+ */
+export async function cancelFreeMatchReminder(): Promise<void> {
+  const run = freeMatchQueue.then(async () => {
+    try {
+      if (!Device.isDevice) return;
+      await clearFreeMatchReminders();
+    } catch (err) {
+      console.warn('[notifications] cancelFreeMatchReminder failed:', err);
+    }
+  });
+  freeMatchQueue = run.catch(() => undefined);
+  return run;
+}
+
+function minuteKey(d: Date): string {
+  return String(Math.floor(d.getTime() / 60000));
+}
+
+async function scheduleFreeMatchNow(at: Date, { ask }: { ask: boolean }): Promise<boolean> {
   try {
     if (!Device.isDevice) return false;
 
@@ -258,18 +325,32 @@ async function scheduleFreeMatch(at: Date, { ask }: { ask: boolean }): Promise<b
       fireAt = new Date(Date.now() + 60 * 1000);
     }
 
-    const previousId = await AsyncStorage.getItem(FREE_MATCH_ID_KEY);
-    if (previousId) await cancelIds([previousId]);
+    // Already armed for this very minute and still pending: nothing to do.
+    // The Dashboard calls this on every balance refresh, so this is the
+    // common case, and re-scheduling would only churn the OS queue.
+    const pending = await Notifications.getAllScheduledNotificationsAsync().catch(
+      () => [] as Notifications.NotificationRequest[]
+    );
+    const armed = pending.find((r) => r.identifier === FREE_MATCH_IDENTIFIER);
+    const strays = pending.filter((r) => r.identifier !== FREE_MATCH_IDENTIFIER && isFreeMatchRequest(r));
+    const armedAt = await AsyncStorage.getItem(FREE_MATCH_AT_KEY);
+    if (armed && strays.length === 0 && armedAt === minuteKey(fireAt)) return true;
+
+    await clearFreeMatchReminders();
 
     const id = await Notifications.scheduleNotificationAsync({
-      content: { title: 'TuneMatch', body: 'Your free match is ready. Pick a photo.' },
+      identifier: FREE_MATCH_IDENTIFIER,
+      content: { title: 'TuneMatch', body: FREE_MATCH_BODY, data: { kind: 'free_match' } },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: fireAt,
         ...androidTriggerExtras(),
       },
     });
-    await AsyncStorage.setItem(FREE_MATCH_ID_KEY, id);
+    await AsyncStorage.multiSet([
+      [FREE_MATCH_ID_KEY, id],
+      [FREE_MATCH_AT_KEY, minuteKey(fireAt)],
+    ]);
 
     trackEvent('notifications_scheduled', { kind: 'free_match', next_at: fireAt.toISOString() });
     console.log(`[notifications] free-match reminder set for ${fireAt.toISOString()}`);

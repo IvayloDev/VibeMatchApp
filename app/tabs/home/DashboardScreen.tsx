@@ -18,7 +18,11 @@ import { trackEvent, registerSuperProperties } from '../../../lib/posthog';
 import { Colors, Typography, Spacing, Layout, BorderRadius, Shadows } from '../../../lib/designSystem';
 import WallSheet from '../../../lib/components/WallSheet';
 import { nextLocalMidnight, formatUntil } from '../../../lib/dailyCredit';
-import { registerNotificationOpenedTracking, scheduleFreeMatchReminderIfAllowed } from '../../../lib/notifications';
+import {
+  cancelFreeMatchReminder,
+  registerNotificationOpenedTracking,
+  scheduleFreeMatchReminderIfAllowed,
+} from '../../../lib/notifications';
 import { startImagePrep } from '../../../lib/imagePrep';
 
 const { width, height } = Dimensions.get('window');
@@ -51,6 +55,12 @@ const DashboardScreen = () => {
   const [showWall, setShowWall] = useState(false);
   const [wallSource, setWallSource] = useState<'dashboard_cta' | 'dashboard_picker'>('dashboard_cta');
   const [nextFreeAt, setNextFreeAt] = useState<Date>(() => nextLocalMidnight());
+  // Keep the same Date object when the server reports the same instant. The
+  // effects below key on this value; a fresh object per refresh made them
+  // re-run on every balance read and re-arm the reminder each time.
+  const adoptNextFreeAt = (next: Date) =>
+    setNextFreeAt((prev) => (prev.getTime() === next.getTime() ? prev : next));
+  const nextFreeAtMs = nextFreeAt.getTime();
   // Ticks once a minute so the "next free match in" countdown stays honest.
   const [, setClockTick] = useState(0);
   // The AppState listener below outlives any single render.
@@ -84,7 +94,7 @@ const DashboardScreen = () => {
       setIsPro(pro);
       setCredits(state.balance);
       setCreditSource(state.source);
-      if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
+      if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
 
       // signed_in must keep meaning "has an account". Deriving it from the
       // identity would make every install report as signed in, and every
@@ -151,9 +161,18 @@ const DashboardScreen = () => {
     // from the server, and arming a "your free match is ready" reminder for
     // somebody who may be holding a paid pack is a notification they should
     // never get.
-    if (loading || isPro || creditSource !== 'server' || (credits ?? 0) > 0) return;
+    if (loading || creditSource !== 'server') return;
+    if (isPro || (credits ?? 0) > 0) {
+      // A balance means no daily top-up tomorrow, so no "free match is
+      // ready". This also sweeps any stray copies an older build left
+      // pending on the device.
+      cancelFreeMatchReminder();
+      return;
+    }
     scheduleFreeMatchReminderIfAllowed(nextFreeAt);
-  }, [loading, isPro, credits, creditSource, nextFreeAt]);
+    // nextFreeAtMs, not nextFreeAt: identity of the Date is not a change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, isPro, credits, creditSource, nextFreeAtMs]);
 
   useEffect(() => {
     if (loading || isPro || creditSource !== 'server' || (credits ?? 0) > 0) return;
@@ -163,7 +182,8 @@ const DashboardScreen = () => {
       if (Date.now() >= nextFreeAt.getTime()) loadUserCredits({ claimDaily: true });
     }, 1000);
     return () => clearInterval(id);
-  }, [loading, isPro, credits, creditSource, nextFreeAt]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, isPro, credits, creditSource, nextFreeAtMs]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -180,7 +200,7 @@ const DashboardScreen = () => {
     const after = getCreditState();
     setCredits(after.balance);
     setCreditSource(after.source);
-    if (after.nextFreeAt) setNextFreeAt(after.nextFreeAt);
+    if (after.nextFreeAt) adoptNextFreeAt(after.nextFreeAt);
     return typeof after.balance === 'number' && after.balance > (before ?? 0);
   };
 
@@ -202,7 +222,7 @@ const DashboardScreen = () => {
       setCreditSource(state.source);
       setIsPro(state.isPro);
       setProScansToday(state.proUsedToday ?? 0);
-      if (state.nextFreeAt) setNextFreeAt(state.nextFreeAt);
+      if (state.nextFreeAt) adoptNextFreeAt(state.nextFreeAt);
     });
 
     const task = InteractionManager.runAfterInteractions(() => {
